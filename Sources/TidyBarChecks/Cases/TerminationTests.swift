@@ -236,7 +236,9 @@ struct PendingIntentReplayTests {
             services: makeServices(reader: reader, mover: mover),
             journal: journal,
             sentinel: EventSentinel(driftTolerance: 4, minIntervalBetweenOperations: 0),
-            maxReplayAttempts: maxReplayAttempts
+            maxReplayAttempts: maxReplayAttempts,
+            // 离线测试不等真机落位：复核窗口压到 0，失败立刻可见
+            verificationWindow: 0
         )
     }
 

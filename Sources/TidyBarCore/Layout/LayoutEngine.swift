@@ -49,6 +49,11 @@ public final class LayoutEngine {
     private let sentinel: EventSentinel
     /// 孤儿意图最多重放几次，超过即丢弃。测试里可以调成 1 观察"放弃"分支。
     private let maxReplayAttempts: Int
+    /// 结果复核的等待窗口：抬起鼠标键后允许菜单栏用这么久把新位置落定。
+    /// 真机依据：35 图标在栏时同步读一次帧经常还是旧位置；600ms 上限 + 60ms 步进，
+    /// 落位一到就返回，所以正常操作不会因此变慢。
+    private let verificationWindow: TimeInterval
+    private let verificationInterval: TimeInterval
     private var lastOperationAt: Date = .distantPast
 
     public init(
@@ -56,13 +61,17 @@ public final class LayoutEngine {
         services: SystemServices,
         journal: LayoutJournal,
         sentinel: EventSentinel = EventSentinel(),
-        maxReplayAttempts: Int = LayoutJournal.defaultMaxReplayAttempts
+        maxReplayAttempts: Int = LayoutJournal.defaultMaxReplayAttempts,
+        verificationWindow: TimeInterval = 0.6,
+        verificationInterval: TimeInterval = 0.06
     ) {
         self.layout = layout
         self.services = services
         self.journal = journal
         self.sentinel = sentinel
         self.maxReplayAttempts = max(1, maxReplayAttempts)
+        self.verificationWindow = max(0, verificationWindow)
+        self.verificationInterval = max(0.005, verificationInterval)
         let dragCapable: Bool
         if let mover = services.mover {
             dragCapable = !(mover is UnverifiedMenuBarMover)
@@ -168,24 +177,49 @@ public final class LayoutEngine {
         let beforeItem = services.reader.discoverItems().first { $0.id == itemID }
         _ = try mover.move(itemID: itemID, toX: x)
 
-        // 复核的是**结果**（图标真的挪到位了吗），不是光标。
-        // macOS 对落在空隙里的拖拽是静默忽略的，只有查结果能发现"没成"。
-        // after 只做定向读取：验证一次变更只需要归属进程那一小撮图标，
-        // 为此再付 110~195ms 的全量扫描既拖慢操作也白白耗电
-        let candidates: [ManagedItem]
-        if let owner = beforeItem?.ownerBundleID {
-            candidates = services.reader.items(ownedBy: owner)
-        } else {
-            candidates = services.reader.discoverItems()
-        }
-        let afterFrame = candidates.first { $0.id == itemID }?.frame
-        if let beforeFrame = beforeItem?.frame, let afterFrame,
-           MenuBarDropTarget.didMove(before: beforeFrame, after: afterFrame, towardX: x) == false {
+        if awaitMovementLanded(itemID: itemID, beforeItem: beforeItem, towardX: x) == false {
             throw EngineError.noVisibleEffect(itemID: itemID)
         }
 
         lastOperationAt = Date()
         hasConfirmedDragSupport = true
+    }
+
+    /// 复核的是**结果**（图标真的挪到位了吗），不是光标。
+    /// macOS 对落在空隙里的拖拽是静默忽略的，只有查结果能发现"没成"。
+    ///
+    /// 必须轮询而不是读一次：真机 35 图标在栏时，抬起后那一瞬间读到的常常还是旧位置
+    /// （菜单栏重排是异步的），单次读帧会把"还没落位"误判成"系统没接受"。
+    /// 一旦读到真的动了就立刻返回，所以**成功路径不付额外延迟**，只有失败/慢的情况才会用尽窗口。
+    /// 返回 nil 表示"无法判定"（前后帧读不到），按不误判失败处理。
+    private func awaitMovementLanded(
+        itemID: String,
+        beforeItem: ManagedItem?,
+        towardX x: CGFloat
+    ) -> Bool? {
+        let deadline = verificationWindow
+        let interval = verificationInterval
+        guard let beforeItem else { return nil }
+        let beforeFrame = beforeItem.frame
+        let limit = Date().addingTimeInterval(max(0, deadline))
+        while true {
+            let candidates: [ManagedItem]
+            if let owner = beforeItem.ownerBundleID {
+                candidates = services.reader.items(ownedBy: owner)
+            } else {
+                candidates = services.reader.discoverItems()
+            }
+            if let afterFrame = candidates.first(where: { $0.id == itemID })?.frame {
+                if MenuBarDropTarget.didMove(before: beforeFrame, after: afterFrame, towardX: x) {
+                    return true
+                }
+            }
+            if Date() >= limit {
+                // 读不到帧（图标已消失）时不武断判失败：交给上层的结果复核去处理
+                return candidates.contains { $0.id == itemID } ? false : nil
+            }
+            Thread.sleep(forTimeInterval: interval)
+        }
     }
 
     /// 回滚：把内存布局恢复到意图执行前，并清除 pending

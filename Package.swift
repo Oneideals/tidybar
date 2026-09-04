@@ -17,6 +17,7 @@ let package = Package(
         .executable(name: "tidybar-drag-probe", targets: ["TidyBarDragProbe"]),
         .executable(name: "tidybar-drag-tune", targets: ["TidyBarDragTune"]),
         .executable(name: "tidybar-crash-probe", targets: ["TidyBarCrashProbe"]),
+        .executable(name: "tidybar-self-drag", targets: ["TidyBarSelfDrag"]),
     ],
     targets: [
         // 薄入口层：仅负责 NSApplication 启动与生命周期装配
@@ -49,6 +50,11 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // M0 验证项 2：⌘ 拖拽真机验证
+        .executableTarget(
+            name: "TidyBarSelfDrag",
+            dependencies: ["TidyBarCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .executableTarget(
             name: "TidyBarDragProbe",
             dependencies: ["TidyBarCore"],
