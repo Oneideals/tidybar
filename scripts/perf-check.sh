@@ -33,7 +33,7 @@ if [[ -z "$PID" ]]; then
 fi
 
 SECONDS=$((MINUTES * 60))
-echo "  进程 PID=$PID，开始计时…"
+echo "  进程 PID=${PID}，开始计时…"
 sleep "$SECONDS"
 
 MEM_KB=$(ps -o rss= -p "$PID" | tr -d ' ')

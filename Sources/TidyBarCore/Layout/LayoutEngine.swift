@@ -136,14 +136,22 @@ public final class LayoutEngine {
             throw EngineError.sentinelAborted(.throttled)
         }
 
-        let beforeFrame = services.reader.discoverItems().first { $0.id == itemID }?.frame
+        let beforeItem = services.reader.discoverItems().first { $0.id == itemID }
         do {
             _ = try mover.move(itemID: itemID, toX: x)
 
             // 复核的是**结果**（图标真的挪到位了吗），不是光标。
             // macOS 对落在空隙里的拖拽是静默忽略的，只有查结果能发现"没成"。
-            let afterFrame = services.reader.discoverItems().first { $0.id == itemID }?.frame
-            if let beforeFrame, let afterFrame,
+            // after 只做定向读取：验证一次变更只需要归属进程那一小撮图标，
+            // 为此再付 110~195ms 的全量扫描既拖慢操作也白白耗电
+            let candidates: [ManagedItem]
+            if let owner = beforeItem?.ownerBundleID {
+                candidates = services.reader.items(ownedBy: owner)
+            } else {
+                candidates = services.reader.discoverItems()
+            }
+            let afterFrame = candidates.first { $0.id == itemID }?.frame
+            if let beforeFrame = beforeItem?.frame, let afterFrame,
                MenuBarDropTarget.didMove(before: beforeFrame, after: afterFrame, towardX: x) == false {
                 rollback(intent)
                 throw EngineError.noVisibleEffect(itemID: itemID)

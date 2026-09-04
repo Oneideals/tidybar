@@ -6,17 +6,18 @@
 
 ## 当前状态
 
-**M0 进行中**。分层与逻辑已落地并有 107 条回归用例。与系统交互的两个高危环节：枚举已真机验证并接入，**拖动仍是关闭状态**，因此它现在读得到你的图标，但不会移动任何一个。
+**M0 技术验证完成**（4/4 通过），分层与逻辑已落地并有 128 条回归用例。枚举与 ⌘ 拖拽两个高危环节都已在真机打通；但 100 次全绿是在**自造 fixture 图标**上取得的，所以产品侧接管闸门（`isConfirmedSupportedOS`）仍未开放——现在它读得到你的图标，但不会移动任何一个。
 
 | 能力 | 状态 |
 | --- | --- |
 | 三分区布局模型、显隐状态机、规则求值、收纳面板几何、崩溃恢复日志、事件哨兵判定、图标搜索、位图 LRU 缓存 | 已实现，有测试 |
 | 光标/权限/屏幕（含刘海）真实读取 | 已实现（AppKit + AXIsProcessTrusted） |
 | 菜单栏图标枚举（辅助功能 API） | **已实现并真机验证**：macOS 26.6.2 实测读到 28 个第三方 + 5 个系统图标 |
-| ⌘ 拖拽移动图标（合成事件） | **已真机验证**：fixture 图标 100/100、零卡键；强杀后图标不损坏、孤儿意图可重放。产品侧闸门仍未开放 |
+| ⌘ 拖拽移动图标（合成事件） | **已真机验证**：fixture 图标 100/100、零卡键；引擎主路径 `--via-engine` 30/30。真实图标复跑前不开放接管 |
 | 强杀/崩溃恢复 | **已真机验证**：kill -9 于拖拽中途，全新进程读到鼠标与 ⌘ 均无残留、图标不损坏、意图重放收敛 |
+| 常驻占用 | **已真机验证**：phys_footprint 13 MB（36 图标在栏，静置无增长）、空闲 CPU 0.0%、包 932 KB、4 线程 |
 
-拖拽机制未验证前，工具自动运行在**收纳面板（降级）模式**：只在自有面板里管理图标，不改动系统菜单栏。这是刻意设计——Bartender 5/6 在 Tahoe 上的幽灵点击与光标劫持正是这条路径失控的结果。
+接管闸门开放前，工具自动运行在**收纳面板（降级）模式**：只在自有面板里管理图标，不改动系统菜单栏。这是刻意设计——Bartender 5/6 在 Tahoe 上的幽灵点击与光标劫持正是这条路径失控的结果。
 
 ## 快速开始
 
@@ -24,7 +25,7 @@
 
 ```bash
 swift build                       # 编译全部目标
-swift run tidybar-checks          # 跑 88 条回归用例
+swift run tidybar-checks          # 跑 128 条回归用例
 swift run tidybar-checks --verbose
 swift run tidybar-checks --filter 规则   # 按套件/用例名过滤
 
@@ -49,8 +50,14 @@ Sources/
     Search/ Performance/ Persistence/ App/
   TidyBar/              # NSApplication 薄入口
   TidyBarChecks/        # 零依赖回归 runner
-docs/                   # 软件开发计划、M0 验证清单
-scripts/                # 打包与性能核对
+  TidyBarProbe/         # 真机枚举探针（耗时、身份分布、--expect-bundle 已知答案断言）
+  TidyBarAttrDump/      # 图标 AX 属性穷举，用来确认「读不到什么」
+  TidyBarFixture/       # 自造图标 App：破坏性实验只作用于它
+  TidyBarDragProbe/     # 拖拽闸门（--repeat N / --destructive / --via-engine）
+  TidyBarDragTune/      # 落点三态验证（邻居槽位 / 空隙 / 同位）
+  TidyBarCrashProbe/    # 强杀恢复：drag / inspect / recover
+docs/                   # 软件开发计划、M0 验证清单、findings/ 真机结论
+scripts/                # 打包、性能核对、fixture 构建、M0 强杀演练
 ```
 
 依赖：仅 Foundation / AppKit。无第三方包，Carbon HotKey 与屏幕采样默认不启用。
@@ -59,14 +66,14 @@ scripts/                # 打包与性能核对
 
 写进代码并有用例守护（`PerformanceBudgetTests`），不达标即视为回归。内存口径固定为 **phys_footprint**（`footprint` 工具），不用 `ps` 的 RSS——后者把 AppKit 共享页算进来，菜单栏工具会虚高 2~3 倍。
 
-| 指标 | 上限 | 骨架实测 |
+| 指标 | 上限 | 真机实测（macOS 26.6.2，36 图标在栏） |
 | --- | --- | --- |
-| 常驻内存（20 图标静置 1 小时） | 40 MB | 11.2 MB（启动 5s，5 线程） |
-| 空闲 CPU | ≈ 0%（事件驱动，节流窗口 200ms） | 0.0% |
-| 呼出/隐藏响应 | 100 ms | 待 M0 |
-| 冷启动到接管 | 2 s | 待 M0 |
-| 安装包 | 10 MB | 688 KB |
-| 图标位图缓存 | 20 MB | 有用例守护 |
+| 常驻内存（20 图标静置 1 小时） | 40 MB | **13 MB**（2 min 内无增长；1 小时未测） |
+| 空闲 CPU | ≈ 0%（事件驱动，节流窗口 200ms） | **0.0%** |
+| 呼出/隐藏响应 | 100 ms | 待 M1（收纳面板尚未接通 UI） |
+| 冷启动到接管 | 2 s | **1.69 / 1.78 / 1.81 s**（3 次）——只剩 10% 余量，已列为待优化 |
+| 安装包 | 10 MB | **932 KB** |
+| 图标位图缓存 | 20 MB | 有用例守护，真实截图路径未接入 |
 
 复测：`./scripts/perf-check.sh --minutes 5`
 
@@ -74,13 +81,22 @@ scripts/                # 打包与性能核对
 
 不收集、不上报任何数据。设置与布局日志写入 `~/Library/Application Support/TidyBar/`，卸载即清除。
 
-## 真机验证结论
+## 真机验证结论（M0）
 
 - 验证项 1（枚举）：**通过**，并推翻了「用 title 做稳定 id」的假设——88% 的图标读不到任何名字，
   只能靠 (归属进程 + 序号)；细化身份强度后真正不稳的只剩 6%。冷启动扫描 2.6s，因此首扫必须异步。
   详见 [docs/findings/01-enumeration.md](docs/findings/01-enumeration.md)。
-- 验证项 3（强杀恢复）：**通过**，并抓到主路径 bug（引擎残留已被证伪的光标预检 → 真实产品路径此前一直静默中止）。教训：旁路直连底层跑出的绿灯不能证明主路径可用，验证必须从引擎入口进。详见 [docs/findings/03-crash-safety.md](docs/findings/03-crash-safety.md)。
 - 验证项 2（⌘ 拖拽）：**通过**。但真机数据推翻三条假设：决定成败的是**落点必须踩邻居槽位**（拖进空隙会被
   macOS 静默忽略）、鼠标事件自带的 `maskCommand` 才是 ⌘ 拖拽的判定依据（真实按键不能替代）、
   而这个 flags 会**改写全局修饰键状态**——抬起事件必须不带 flags，否则用户的普通点击会变成 ⌘ 点击。
   详见 [docs/findings/02-drag.md](docs/findings/02-drag.md)。
+- 验证项 3（强杀恢复）：**通过**，并抓到主路径 bug（引擎残留已被证伪的光标预检 → 真实产品路径此前一直静默中止）。教训：旁路直连底层跑出的绿灯不能证明主路径可用，验证必须从引擎入口进。详见 [docs/findings/03-crash-safety.md](docs/findings/03-crash-safety.md)。
+- 验证项 4（占用与功耗）：**四项预算全部达标**（13MB / 0.0% / 932KB / 4 线程）。顺带修掉两处测量本身的问题：
+  闸门改从 `LayoutEngine.apply` 打（引擎路径比直连 mover 慢约 100ms，这才是真实开销），结果复核从两次全量枚举
+  改为「before 全量 + after 定向读归属进程」。详见 [docs/findings/04-performance.md](docs/findings/04-performance.md)。
+
+## 下一步
+
+M0 收尾后按顺序推进：① 在用户真实图标上复跑 `--via-engine` 100 次闸门（破坏性实验，需明确授权）；
+② 注册 SIGTERM/SIGHUP 收尾 + 重放失败两次即清除意图；③ 接管时延压到 1s 内（并发枚举或只扫 accessory 进程）；
+④ 进入 M1 功能面（三分区 + 收纳面板 + 搜索 + 首启向导）。

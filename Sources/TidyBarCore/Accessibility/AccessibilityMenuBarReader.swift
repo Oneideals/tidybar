@@ -83,6 +83,11 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
         enumerate().items
     }
 
+    /// 单进程定向读取（几毫秒级），供结果复核等"只关心一个 App 的图标"的场景使用
+    public func items(ownedBy bundleID: String) -> [ManagedItem] {
+        discoverItems(owning: bundleID)
+    }
+
     /// 只读某一个进程的图标。
     ///
     /// 全量枚举要遍历 90 个进程，实测 110~195ms（首次 2.6s）。用它给 mover 取一个图标帧

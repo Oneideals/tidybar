@@ -81,6 +81,7 @@ func fixtureItems() -> [ManagedItem] {
 header("环境")
 print("系统: " + ProcessInfo.processInfo.operatingSystemVersionString)
 print("主屏高: " + String(Int(primaryHeight)) + "pt ｜ 辅助功能权限: " + (reader.enumerate().accessibilityGranted ? "已授予" : "未授予"))
+print("路径: " + (arguments.contains("--via-engine") ? "LayoutEngine（产品主路径）" : "直连 mover（组件级）"))
 print("投递方式: " + (bareCommand ? "鼠标事件不带 flags（已证明不可用）"
     : arguments.contains("--with-key-events") ? "flags + 真实 ⌘ 键事件" : "仅鼠标事件带 flags（不发按键）"))
 print("fixture: " + fixtureBundle + " ｜ 次数: " + String(repeatCount) + " ｜ 距离: " + String(Int(dragDistance)) + "pt")
@@ -106,6 +107,30 @@ struct DragTrial {
 /// 一次合法拖拽：目标 X 一律由邻居槽位推导。
 /// 真机扫描证明「往左/右 N 像素」这种任意目标会被 macOS 静默忽略——
 /// 既不报错也不动，是产品里最危险的失败模式，所以这里从源头上不给它出现的机会。
+/// --via-engine：走产品真实主路径（LayoutEngine.apply，含 journal + 结果复核）。
+/// 验证项 3 的教训就是「直连组件测出的绿灯不代表主路径可用」，闸门默认必须走引擎。
+var engine: LayoutEngine? = {
+    guard arguments.contains("--via-engine") else { return nil }
+    let services = SystemServices(
+        reader: reader,
+        mover: AccessibilityMenuBarMover(
+            reader: reader, cursor: cursor, poster: poster,
+            config: AccessibilityMenuBarMover.Config(isConfirmedSupportedOS: true)
+        ),
+        cursor: cursor,
+        accessibility: AppKitAccessibilityTrust(),
+        screens: AppKitScreenObserver()
+    )
+    var layout = MenuBarLayout()
+    for item in fixtureItems() { layoutWasEmptyAppend(&layout, item) }
+    return LayoutEngine(layout: layout, services: services,
+                        journal: LayoutJournal(directory: AppPaths.journalDirectory))
+}()
+
+func layoutWasEmptyAppend(_ layout: inout MenuBarLayout, _ item: ManagedItem) {
+    layout.append(item.id, to: .visible)
+}
+
 func runTrial(move movingIndex: Int, to toIndex: Int) -> DragTrial? {
     let current = fixtureItems()
     guard current.count > max(movingIndex, toIndex),
@@ -117,7 +142,11 @@ func runTrial(move movingIndex: Int, to toIndex: Int) -> DragTrial? {
     let started = Date()
     var dragMS = 0.0
     do {
-        _ = try mover.move(itemID: item.id, toX: target)
+        if let engine {
+            try engine.apply(itemID: item.id, to: .visible, targetX: target)
+        } else {
+            _ = try mover.move(itemID: item.id, toX: target)
+        }
         dragMS = Date().timeIntervalSince(started) * 1_000
     } catch {
         return DragTrial(reordered: false, detail: "", milliseconds: dragMS,

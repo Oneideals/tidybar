@@ -9,6 +9,18 @@ import CoreGraphics
 public protocol MenuBarReading: AnyObject {
     /// 当前系统菜单栏上的第三方 + 系统图标快照（屏幕坐标）
     func discoverItems() -> [ManagedItem]
+
+    /// 定向读取某个进程的图标（真机实测全量枚举 110~195ms、首次 2.6s；
+    /// 单进程只要几毫秒）。验证一次拖拽是否生效只需要归属进程那一小撮图标，
+    /// 没理由再付一次全量成本。
+    func items(ownedBy bundleID: String) -> [ManagedItem]
+}
+
+public extension MenuBarReading {
+    /// 替身/简易实现默认回退到全量扫描，真实 reader 会覆盖为定向读取
+    func items(ownedBy bundleID: String) -> [ManagedItem] {
+        discoverItems().filter { $0.ownerBundleID == bundleID }
+    }
 }
 
 /// 写：把某个图标从起点 ⌘ 拖拽到目标 X。
