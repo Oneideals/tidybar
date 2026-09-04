@@ -1,0 +1,160 @@
+import AppKit
+
+/// 应用装配层：唯一持有 AppKit 生命周期依赖的地方。
+/// 骨架阶段的目标是「能跑起来 + 诚实标注哪些能力尚未接通」，不假装已具备隐藏能力。
+public final class TidyBarApplication: NSObject, NSApplicationDelegate {
+    private var eventEngine: EventEngine?
+    private var panelController: TidyBarPanelController?
+    private var controller: TidyBarController?
+    private var tickTimer: Timer?
+    private var statusItem: NSStatusItem?
+
+    private let settingsStore: SettingsStoring
+    private let services: SystemServices
+
+    /// 骨架默认装配：读取器与移动器均为占位实现，
+    /// 因此启动后 capability 自动落到「收纳面板（降级）」，不会去动系统图标。
+    public init(
+        settingsStore: SettingsStoring = UserDefaultsSettingsStore(),
+        services: SystemServices? = nil
+    ) {
+        self.settingsStore = settingsStore
+        self.services = services ?? TidyBarApplication.placeholderServices()
+        super.init()
+    }
+
+    private static func placeholderServices() -> SystemServices {
+        SystemServices(
+            reader: PlaceholderMenuBarReader(),
+            mover: UnverifiedMenuBarMover(),
+            cursor: AppKitCursorReader(),
+            accessibility: AppKitAccessibilityTrust(),
+            screens: AppKitScreenObserver()
+        )
+    }
+
+    public func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+
+        let journal = LayoutJournal(directory: AppPaths.journalDirectory)
+        let engine = LayoutEngine(
+            layout: journal.readCommittedLayout() ?? MenuBarLayout(),
+            services: services,
+            journal: journal
+        )
+        let settings = settingsStore.load()
+        let barController = TidyBarController(
+            engine: engine,
+            reveal: RevealStateMachine(rehideDelay: settings.rehideDelay),
+            settings: settings,
+            store: settingsStore
+        )
+        self.controller = barController
+
+        let panel = TidyBarPanelController(services: services)
+        panel.onItemClick = { [weak barController] item in
+            barController?.activate(itemID: item.id)
+        }
+        self.panelController = panel
+
+        let events = EventEngine()
+        events.onEvent = { [weak self, weak barController, weak panel] event in
+            guard let self, let barController, let panel else { return }
+            barController.handle(event: event)
+            self.syncPanel(barController: barController, panel: panel)
+        }
+        events.start()
+        self.eventEngine = events
+
+        // 心跳只服务「自动重隐藏」判定，0.25s 足够顺滑且省电（报告 §4.3 空闲 CPU 目标）
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak barController, weak panel] _ in
+            guard let barController else { return }
+            if barController.tick() {
+                panel?.hide()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        tickTimer = timer
+
+        statusItem = makeStatusItem(controller: barController)
+        barController.start()
+        reportStartup(barController: barController)
+    }
+
+    public func applicationWillTerminate(_ notification: Notification) {
+        eventEngine?.stop()
+        tickTimer?.invalidate()
+    }
+
+    // MARK: - 面板同步
+
+    private func syncPanel(barController: TidyBarController, panel: TidyBarPanelController) {
+        let snapshot = barController.snapshot
+
+        if snapshot.isRevealed {
+            let hiddenItems = snapshot.items.filter { snapshot.layout.zone(of: $0.id) == .hidden }
+            panel.show(
+                items: hiddenItems,
+                screen: services.screens.primaryScreen,
+                anchorX: NSEvent.mouseLocation.x
+            )
+        } else {
+            panel.hide()
+        }
+    }
+
+    // MARK: - 本工具自己的菜单栏入口
+
+    private func makeStatusItem(controller barController: TidyBarController) -> NSStatusItem {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.title = "☰"
+        let menu = NSMenu()
+
+        let summary = NSMenuItem(
+            title: "模式：\(barController.capability.displayName)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        summary.isEnabled = false
+        menu.addItem(summary)
+        if let reason = barController.capabilityReason {
+            let note = NSMenuItem(title: "↳ \(reason)", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "呼出隐藏区", action: #selector(revealHiddenArea), keyEquivalent: "")
+        menu.addItem(withTitle: "刷新图标快照", action: #selector(refreshItems), keyEquivalent: "r")
+        let demo = menu.addItem(withTitle: "演示模式（一键收起）", action: #selector(toggleDemoMode), keyEquivalent: "d")
+        demo.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "退出 TidyBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        menu.items.forEach { $0.target = $0.action == #selector(NSApplication.terminate(_:)) ? NSApp : self }
+        item.menu = menu
+        return item
+    }
+
+    @objc private func revealHiddenArea() {
+        controller?.handle(event: .init(trigger: .dividerClick, location: NSEvent.mouseLocation))
+    }
+
+    @objc private func refreshItems() {
+        controller?.refreshItems()
+    }
+
+    @objc private func toggleDemoMode() {
+        controller?.toggleDemoMode()
+    }
+
+    private func reportStartup(barController: TidyBarController) {
+        let trusted = services.accessibility.isTrusted
+        fprint("启动完成｜辅助功能权限 = \(trusted ? "已授予" : "未授予（走降级模式）")｜模式 = \(barController.capability.displayName)")
+        let footprintMB = Double(ResourceProbe.residentMemoryBytes()) / 1_048_576
+        fprint(String(format: "自检｜phys_footprint = %.1fMB（预算 40MB）｜线程数 = %d（个位数为健康）", footprintMB, ResourceProbe.threadCount()))
+        if !trusted {
+            // 首启向导（报告 B1）在 M1 落地；这里先把系统授权入口暴露给用户
+            services.accessibility.requestTrust()
+        }
+    }
+}

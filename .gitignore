@@ -1,0 +1,25 @@
+# Swift / macOS
+.build/
+.swiftpm/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+Package.resolved
+
+# 构建产物
+dist/
+*.dSYM.zip
+*.dSYM
+*.app
+
+# 运行期状态（日志/布局意图/缓存，绝不入库）
+*.log
+.LayoutJournal/
+layout.pending.json
+layout.committed.json
+.DS_Store
+
+# 本地覆盖（签名身份、Team ID 等）
+*.local.xcconfig
+signing.local.sh

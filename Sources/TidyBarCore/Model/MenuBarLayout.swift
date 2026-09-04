@@ -1,0 +1,102 @@
+import Foundation
+
+/// 布局：记录每个分区里图标的有序 id 列表。
+/// 这是本工具唯一的「真相源」，所有隐藏/显示操作都表现为一次布局变更 + 一次落地执行。
+public struct MenuBarLayout: Codable, Equatable, Sendable {
+    /// key 为 MenuBarZone.rawValue，value 为从左到右的图标 id 顺序
+    public private(set) var zones: [String: [String]]
+
+    public init(zones: [String: [String]] = [:]) {
+        self.zones = zones
+    }
+
+    // MARK: - 读取
+
+    public func items(in zone: MenuBarZone) -> [String] {
+        zones[zone.rawValue] ?? []
+    }
+
+    public var allItemIDs: Set<String> {
+        Set(zones.values.flatMap { $0 })
+    }
+
+    public func zone(of itemID: String) -> MenuBarZone? {
+        for zone in MenuBarZone.allCases where items(in: zone).contains(itemID) {
+            return zone
+        }
+        return nil
+    }
+
+    public func position(of itemID: String) -> Int? {
+        location(of: itemID)?.1
+    }
+
+    /// 图标所在分区与序号。独立成方法，避免在 `move(itemID:to:)` 里被 `zone` 参数遮蔽。
+    private func location(of itemID: String) -> (MenuBarZone, Int)? {
+        guard let found = zone(of: itemID) else { return nil }
+        return items(in: found).firstIndex(of: itemID).map { (found, $0) }
+    }
+
+    /// 占据菜单栏物理宽度的图标总数（用于小屏空间预警）
+    public var occupiedCount: Int {
+        MenuBarZone.allCases.filter { $0.occupiesMenuBar }
+            .reduce(0) { $0 + items(in: $1).count }
+    }
+
+    // MARK: - 变更（全部返回变更结果，便于 Safety 层做前后对照与回滚）
+
+    /// 把图标放入指定分区指定位置；若原本在别处会先移除。
+    /// 返回旧位置用于失败回滚。
+    @discardableResult
+    public mutating func move(itemID: String, to zone: MenuBarZone, position: Int? = nil) -> (zone: MenuBarZone, position: Int)? {
+        let previous = location(of: itemID)
+        removeFromZones(itemID)
+
+        var list = zones[zone.rawValue] ?? []
+        let index = position.map { min(max($0, 0), list.count) } ?? list.count
+        list.insert(itemID, at: index)
+        zones[zone.rawValue] = list
+        return previous
+    }
+
+    public mutating func append(_ itemID: String, to zone: MenuBarZone) {
+        guard location(of: itemID) == nil else { return }
+        var list = zones[zone.rawValue] ?? []
+        list.append(itemID)
+        zones[zone.rawValue] = list
+    }
+
+    public mutating func remove(itemID: String) {
+        removeFromZones(itemID)
+    }
+
+    /// 依据新图标策略生成初始布局（报告 A7：新图标处理策略）
+    public static func folding(discovered itemIDs: [String], into layout: MenuBarLayout, defaultZone: MenuBarZone) -> MenuBarLayout {
+        var next = layout
+        for id in itemIDs where next.zone(of: id) == nil {
+            next.append(id, to: defaultZone)
+        }
+        // 已消失的图标（App 退出/卸载）不残留
+        let discovered = Set(itemIDs)
+        for zone in MenuBarZone.allCases {
+            next.removeFromZonesOnly(matching: { !discovered.contains($0) }, in: zone)
+        }
+        return next
+    }
+
+    // MARK: - 私有
+
+    private mutating func removeFromZones(_ itemID: String) {
+        for zone in MenuBarZone.allCases {
+            guard var list = zones[zone.rawValue] else { continue }
+            list.removeAll { $0 == itemID }
+            zones[zone.rawValue] = list.isEmpty ? nil : list
+        }
+    }
+
+    private mutating func removeFromZonesOnly(matching predicate: (String) -> Bool, in zone: MenuBarZone) {
+        guard var list = zones[zone.rawValue] else { return }
+        list.removeAll(where: predicate)
+        zones[zone.rawValue] = list.isEmpty ? nil : list
+    }
+}
