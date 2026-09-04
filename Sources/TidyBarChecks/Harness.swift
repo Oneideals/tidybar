@@ -76,6 +76,18 @@ public func expectEqual<Value: Equatable>(
     }
 }
 
+public func expectNotEqual<Value: Equatable>(
+    _ lhs: Value,
+    _ rhs: Value,
+    _ message: String = "",
+    file: String = #file,
+    line: Int = #line
+) {
+    if lhs == rhs {
+        FailureBox.add("不应相等，但两边都是 " + String(describing: lhs) + location(file, line) + (message.isEmpty ? "" : " — " + message))
+    }
+}
+
 public func expectNil<Value>(
     _ value: Value?,
     _ message: String = "",

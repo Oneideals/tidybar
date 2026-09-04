@@ -60,18 +60,26 @@ public final class TidyBarController {
 
     /// 启动即恢复上次状态；孤儿意图按设置决定重放还是丢弃（报告 B4）
     @discardableResult
-    public func start(now: Date = Date()) -> LayoutJournal.Recovery {
+    public func start(now: Date = Date(), scansSynchronously: Bool = true) -> LayoutJournal.Recovery {
         let recovery = engine.recoverOnLaunch()
         if case .interrupted(let intent, _) = recovery, !settings.autoRecoverPendingIntent {
             engine.discardPendingIntent()
             record("放弃上次未完成的布局变更：\(intent.itemID) → \(intent.targetZone.displayLabel)")
         }
-        refreshItems()
+        // 真机枚举耗时 2.6s，装配层应传 false 并把扫描交给 BackgroundEnumerator
+        if scansSynchronously { refreshItems() }
         return recovery
     }
 
     public func refreshItems() {
         items = engine.synchronize(newItemZone: settings.newItemZone)
+        publish()
+    }
+
+    /// 落地一次后台扫描的结果（调用方负责在主线程回调）
+    public func applyScan(_ scanned: [ManagedItem]) {
+        items = scanned
+        engine.fold(ids: scanned.map(\.id), newItemZone: settings.newItemZone)
         publish()
     }
 

@@ -74,12 +74,14 @@ public final class LayoutEngine {
     @discardableResult
     public func synchronize(newItemZone: MenuBarZone) -> [ManagedItem] {
         let discovered = services.reader.discoverItems()
-        layout = MenuBarLayout.folding(
-            discovered: discovered.map(\.id),
-            into: layout,
-            defaultZone: newItemZone
-        )
+        fold(ids: discovered.map(\.id), newItemZone: newItemZone)
         return discovered
+    }
+
+    /// 折叠「已在别处扫好」的图标集合。枚举真机耗时 2.6s，必须允许在后台线程做完再喂回来，
+    /// 而不是强迫调用方在主线程里重扫一遍。
+    public func fold(ids itemIDs: [String], newItemZone: MenuBarZone) {
+        layout = MenuBarLayout.folding(discovered: itemIDs, into: layout, defaultZone: newItemZone)
     }
 
     // MARK: - 变更

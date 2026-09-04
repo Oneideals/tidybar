@@ -11,6 +11,8 @@ let package = Package(
         .executable(name: "tidybar", targets: ["TidyBar"]),
         .executable(name: "tidybar-checks", targets: ["TidyBarChecks"]),
         .library(name: "TidyBarCore", targets: ["TidyBarCore"]),
+        .executable(name: "tidybar-probe", targets: ["TidyBarProbe"]),
+        .executable(name: "tidybar-attr-dump", targets: ["TidyBarAttrDump"]),
     ],
     targets: [
         // 薄入口层：仅负责 NSApplication 启动与生命周期装配
@@ -22,6 +24,18 @@ let package = Package(
         // 全部逻辑放在库里，公开接口即测试面
         .target(
             name: "TidyBarCore",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // M0 探索工具：dump 子项的全部 AX 属性名与取值（找稳定标识用）
+        .executableTarget(
+            name: "TidyBarAttrDump",
+            dependencies: ["TidyBarCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // M0 真机探针：枚举结果 / 耗时 / 覆盖率 / 坐标自检
+        .executableTarget(
+            name: "TidyBarProbe",
+            dependencies: ["TidyBarCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // 回归用例：零依赖 runner（详见 Sources/TidyBarChecks/Harness.swift 顶部说明）

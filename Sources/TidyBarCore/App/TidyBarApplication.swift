@@ -8,24 +8,27 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var controller: TidyBarController?
     private var tickTimer: Timer?
     private var statusItem: NSStatusItem?
+    private let enumerator = BackgroundEnumerator()
 
     private let settingsStore: SettingsStoring
     private let services: SystemServices
+    /// 用于量「启动到接管」这一段真实耗时（报告 §4.3 的 2s 预算）
+    private let launchedAt = Date()
 
-    /// 骨架默认装配：读取器与移动器均为占位实现，
-    /// 因此启动后 capability 自动落到「收纳面板（降级）」，不会去动系统图标。
+    /// 默认装配：读取器为 M0 已验证的辅助功能枚举（只读，安全）；
+    /// 移动器仍是未验证占位，因此 capability 自动落到「收纳面板（降级）」，不会去动系统图标。
     public init(
         settingsStore: SettingsStoring = UserDefaultsSettingsStore(),
         services: SystemServices? = nil
     ) {
         self.settingsStore = settingsStore
-        self.services = services ?? TidyBarApplication.placeholderServices()
+        self.services = services ?? TidyBarApplication.defaultServices()
         super.init()
     }
 
-    private static func placeholderServices() -> SystemServices {
+    private static func defaultServices() -> SystemServices {
         SystemServices(
-            reader: PlaceholderMenuBarReader(),
+            reader: AccessibilityMenuBarReader(),
             mover: UnverifiedMenuBarMover(),
             cursor: AppKitCursorReader(),
             accessibility: AppKitAccessibilityTrust(),
@@ -77,8 +80,27 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         tickTimer = timer
 
         statusItem = makeStatusItem(controller: barController)
-        barController.start()
+        barController.start(scansSynchronously: false)
+
+        // 冷启动全量枚举实测 ≈2.6s：同步做会击穿「启动到接管 2s」预算，
+        // 还会让菜单栏在启动瞬间卡住，因此首扫交给后台调度器，结果回主线程落地。
+        scheduleRefresh(reason: .userRequested)
         reportStartup(barController: barController)
+    }
+
+    /// 后台扫描一次，结果回主线程落地
+    private func scheduleRefresh(reason: EnumerationCadence.Trigger) {
+        guard let controller else { return }
+        let reader = services.reader
+        enumerator.request(
+            reason: reason,
+            scan: { reader.discoverItems() },
+            apply: { [weak controller] items in
+                controller?.applyScan(items)
+                let elapsed = Date().timeIntervalSince(self.launchedAt)
+                fprint(String(format: "首扫完成｜图标 %d 个｜距启动 %.2fs（预算 2s）", items.count, elapsed))
+            }
+        )
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
@@ -140,7 +162,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refreshItems() {
-        controller?.refreshItems()
+        // 走调度器而不是同步扫：连点两下不应排两个 2.6s 的全量扫描
+        scheduleRefresh(reason: .userRequested)
     }
 
     @objc private func toggleDemoMode() {

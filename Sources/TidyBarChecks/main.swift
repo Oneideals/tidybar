@@ -14,6 +14,11 @@ let filter: String? = {
 }()
 
 let suites: [TestSuite] = [
+    // M0 真机验证结论固化
+    TestSuite("MenuBarItemPolicy", MenuBarItemPolicyTests.testCases),
+    TestSuite("ScreenCoordinateSpace", ScreenCoordinateSpaceTests.testCases),
+    TestSuite("ItemIdentity", ItemIdentityTests.testCases),
+    TestSuite("EnumerationCadence", EnumerationCadenceTests.testCases),
     // 模型层
     TestSuite("MenuBarLayout", MenuBarLayoutTests.testCases),
     TestSuite("MenuBarZone", MenuBarZoneTests.testCases),
