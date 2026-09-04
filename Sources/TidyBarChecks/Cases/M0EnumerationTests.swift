@@ -214,6 +214,18 @@ struct EnumerationCadenceTests {
         expect(EnumerationCadence.shouldRefresh(lastRefreshAt: nil, now: Date()))
     }
 
+    /// 冷启动扫描节奏是**实测出来的**，不是拍出来的：
+    /// 串行首扫 4.2~13.3s（击穿 2s 预算）、并发 12 是 0.5~0.7s；
+    /// 而把单进程超时从 500ms 压到 150ms，同一时刻会静默少 2~3 个图标。
+    /// 这两条断言的作用是让"改回串行"或"调短超时换指标"都必须显式改测试。
+    func coldScanRhythmIsConcurrentAndBounded() throws {
+        let config = AccessibilityMenuBarReader.Config()
+        expect(config.processConcurrency >= 8,
+               "并发度退回串行/低并发会让冷启动击穿 2s 预算（实测串行 4.2~13.3s）")
+        expect(config.processMessagingTimeout >= 0.3 && config.processMessagingTimeout <= 1.0,
+               "超时须停在实测不丢图的区间：短于 300ms 会静默丢图标，无上限则一个卡住的 App 就能拖死首扫")
+    }
+
     func refreshIsDebouncedBeyondP95() throws {
         let now = Date(timeIntervalSince1970: 1_000)
         let justBelow = now.addingTimeInterval(-0.2)
@@ -281,6 +293,7 @@ extension EnumerationCadenceTests {
             TestCase("refreshIsDebouncedBeyondP95", suite.refreshIsDebouncedBeyondP95),
             TestCase("debounceWindowExceedsMeasuredP95", suite.debounceWindowExceedsMeasuredP95),
             TestCase("coldStartCannotBeAwaitedSynchronously", suite.coldStartCannotBeAwaitedSynchronously),
+            TestCase("coldScanRhythmIsConcurrentAndBounded", suite.coldScanRhythmIsConcurrentAndBounded),
         ]
     }
 }

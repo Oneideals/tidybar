@@ -7,6 +7,8 @@ import TidyBarCore
 //   swift run tidybar-probe --repeat 20     连测 20 次拿耗时分布（定节流值）
 //   swift run tidybar-probe --fixture 8          额外造 8 个图标（只能肉眼确认，CLI 不发布 extras）
 //   swift run tidybar-probe --expect-bundle <id>  断言某个已打包 App 的自有图标可被枚举（已知答案）
+//   swift run tidybar-probe --lab                扫描参数 A/B：并发度 × 超时，只看覆盖率与耗时
+//   swift run tidybar-probe --concurrency 4 --timeout 500   单点复测（覆盖率/耗时的某个具体配置）
 
 let arguments = CommandLine.arguments
 let repeatCount = arguments.firstIndex(of: "--repeat").flatMap { index in
@@ -42,7 +44,78 @@ if let fixtureCount, fixtureCount > 0 {
     for _ in 0..<10 { RunLoop.current.run(until: Date().addingTimeInterval(0.1)) }
 }
 
-let reader = AccessibilityMenuBarReader()
+/// 扫描节奏可以从命令行覆盖。`--lab` 用它做参数 A/B：
+/// 覆盖率与耗时是一对真实矛盾（超时越短跑得越快、丢的图标越多），不实测就没资格选值。
+func scanConfig(concurrency: Int?, timeoutMS: Int?) -> AccessibilityMenuBarReader.Config {
+    var config = AccessibilityMenuBarReader.Config()
+    if let concurrency { config.processConcurrency = concurrency }
+    // --timeout -1 = 完全不设超时（A/B 的对照组）
+    if let timeoutMS {
+        config.processMessagingTimeout = timeoutMS < 0 ? .infinity : Double(timeoutMS) / 1000
+    }
+    return config
+}
+
+func intArgument(_ flag: String) -> Int? {
+    guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+    return Int(arguments[index + 1])
+}
+
+/// 覆盖率的"已知答案"基准 = 本次运行里第一次串行无超时扫描。
+/// 不能拿历史数字比：菜单栏图标本来就随 App 启停变化，那样测出来的是噪声不是回归。
+func runScan(concurrency: Int, timeoutMS: Int?) -> (icons: Int, processes: Int, ms: Int) {
+    let report = AccessibilityMenuBarReader(config: scanConfig(concurrency: concurrency, timeoutMS: timeoutMS)).enumerate()
+    return (report.items.count, report.accessibleProcessCount, report.totalMicroseconds / 1000)
+}
+
+/// 只跑第一次枚举就打一行结论退出。冷启动成本必须在**全新进程**里量——
+/// 同一个进程里的第二次扫描已经是热的，拿它当"启动到接管"是自欺。
+if arguments.contains("--first-only") {
+    let concurrency = intArgument("--concurrency") ?? AccessibilityMenuBarReader.Config().processConcurrency
+    let timeoutMS = intArgument("--timeout")
+    let result = runScan(concurrency: concurrency, timeoutMS: timeoutMS)
+    // 打印"生效值"而不是"传了什么参数"：省略 --timeout 时打 t=0 会被读成"超时为 0"，
+    // 而实际用的是默认 500ms——一张表里两个含义就等着被误读。
+    let shownTimeout = timeoutMS.map(String.init)
+        ?? "\(Int(AccessibilityMenuBarReader.Config().processMessagingTimeout * 1000))(默认)"
+    print("FIRST c=\(concurrency) t=\(shownTimeout) icons=\(result.icons) processes=\(result.processes) ms=\(result.ms)")
+    exit(0)
+}
+
+if arguments.contains("--lab") {
+    let rounds = intArgument("--rounds") ?? 3
+    let matrix: [(label: String, concurrency: Int, timeoutMS: Int?)] = [
+        ("串行·无超时(基线)", 1, nil),
+        ("串行·500ms", 1, 500),
+        ("并发6·无超时", 6, nil),
+        ("并发6·500ms", 6, 500),
+        ("并发6·150ms", 6, 150),
+        ("并发12·500ms", 12, 500),
+    ]
+    let baseline = runScan(concurrency: 1, timeoutMS: nil)
+    print("LAB 基准（串行·无超时·第 0 次）icons=\(baseline.icons) processes=\(baseline.processes) ms=\(baseline.ms)")
+    for entry in matrix {
+        var iconDeltas: [String] = []
+        var procDeltas: [String] = []
+        var times: [String] = []
+        var worstIconDelta = 0
+        for _ in 1...rounds {
+            let result = runScan(concurrency: entry.concurrency, timeoutMS: entry.timeoutMS)
+            let iconDelta = result.icons - baseline.icons
+            let procDelta = result.processes - baseline.processes
+            worstIconDelta = min(worstIconDelta, iconDelta)
+            iconDeltas.append("\(iconDelta >= 0 ? "+" : "")\(iconDelta)")
+            procDeltas.append("\(procDelta >= 0 ? "+" : "")\(procDelta)")
+            times.append("\(result.ms)")
+        }
+        print("\(entry.label) 最差图标Δ=\(worstIconDelta) 图标Δ=[\(iconDeltas.joined(separator: " "))] 进程Δ=[\(procDeltas.joined(separator: " "))] ms=[\(times.joined(separator: " "))]")
+    }
+    exit(0)
+}
+
+let reader = AccessibilityMenuBarReader(
+    config: scanConfig(concurrency: intArgument("--concurrency"), timeoutMS: intArgument("--timeout"))
+)
 
 func printHeader(_ title: String) {
     print("\n===== \(title) =====")

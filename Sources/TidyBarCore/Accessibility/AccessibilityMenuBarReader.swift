@@ -16,6 +16,16 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
         public var skippedBundleIDs: Set<String>
         /// 单次枚举最多访问多少个进程，防御性上限
         public var maxProcesses: Int
+        /// 单个进程的 AX 消息超时。健康的读取是毫秒级，但不响应的 App 能把整次扫描拖住几秒。
+        /// 500ms 是实测折中：更短的 150ms 会**静默丢图标**（同一台机器同一时刻少 2~3 个，
+        /// 进程数同步下降），"跑得快但看不见"比慢更糟，不给它留默认位。
+        /// 传 `.infinity` 表示不设超时（仅用于 A/B 基线：量一下"关掉止损"值多少钱）。
+        public var processMessagingTimeout: TimeInterval
+        /// 进程级并发度。90 个进程串行是冷启动时延的主因，各进程互不依赖，
+        /// 是唯一一处可以安心并发的地方（读的是别的进程，不碰我们的共享状态）。
+        /// 真机 A/B：串行 4.2~13.3s → 并发 12 为 0.48~0.68s，覆盖率与串行基线逐轮一致；
+        /// 再加到 20 没有收益，所以停在 12。
+        public var processConcurrency: Int
 
         public init(
             skippedBundleIDs: Set<String> = [
@@ -23,10 +33,14 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
                 "com.apple.WindowManager",
                 "com.apple.windowmanager",
             ],
-            maxProcesses: Int = 400
+            maxProcesses: Int = 400,
+            processMessagingTimeout: TimeInterval = 0.5,
+            processConcurrency: Int = 12
         ) {
             self.skippedBundleIDs = skippedBundleIDs
             self.maxProcesses = maxProcesses
+            self.processMessagingTimeout = processMessagingTimeout
+            self.processConcurrency = max(1, processConcurrency)
         }
     }
 
@@ -97,21 +111,58 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
         guard let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) else {
             return []
         }
-        return collectItems(
-            from: application,
+        return scan(
+            application,
             screens: screensProvider(),
             primaryHeight: NSScreen.screens.first?.frame.height ?? 0
         ).accepted
     }
 
+    /// 扫描候选：过滤 + 截断 + **排序**。
+    /// 排序不是为了好看：菜单栏图标几乎全部住在 accessory 进程里，
+    /// 把 .regular 的大 App 排到后面，等于让"覆盖全部图标"这件事尽早发生——
+    /// 之后即便还有进程没扫完，已知的那部分也已经可以用于隐藏/显示。
+    /// Swift 的 sort 不保证稳定，所以拿原始下标当第二关键字，保证两次扫描顺序可复现。
+    private func candidateApplications() -> [NSRunningApplication] {
+        let filtered = workspace.runningApplications
+            .filter { $0.activationPolicy != .prohibited }
+            .filter { application in
+                guard let id = application.bundleIdentifier else { return true }
+                return !config.skippedBundleIDs.contains(id)
+            }
+            .prefix(config.maxProcesses)
+        return filtered.enumerated()
+            .sorted { lhs, rhs in
+                let lp = lhs.element.activationPolicy == .regular ? 1 : 0
+                let rp = rhs.element.activationPolicy == .regular ? 1 : 0
+                if lp != rp { return lp < rp }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
     /// 单个进程的采集结果（含被拒原因计数）
-    private func collectItems(
-        from application: NSRunningApplication,
+    private struct ProcessScan {
+        var accepted: [ManagedItem] = []
+        var rejections: [MenuBarItemPolicy.Rejection: Int] = [:]
+        var hasExtrasMenuBar = false
+        var microseconds = 0
+    }
+
+    private func scan(
+        _ application: NSRunningApplication,
         screens: [ScreenInfo],
         primaryHeight: CGFloat
-    ) -> (accepted: [ManagedItem], rejections: [MenuBarItemPolicy.Rejection: Int]) {
+    ) -> ProcessScan {
+        let started = DispatchTime.now()
         let pid = application.processIdentifier
-        guard let extras = extrasMenuBar(of: pid) else { return ([], [:]) }
+        let timeout = config.processMessagingTimeout
+        guard let extras = extrasMenuBar(
+            of: pid,
+            messagingTimeout: timeout.isFinite ? timeout : nil
+        ) else {
+            return ProcessScan(microseconds: elapsed(since: started))
+        }
         let children = self.children(of: extras)
         var accepted: [ManagedItem] = []
         var rejections: [MenuBarItemPolicy.Rejection: Int] = [:]
@@ -130,7 +181,16 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
                 rejections[reason, default: 0] += 1
             }
         }
-        return (MenuBarEnumeration.deduplicatedIDs(from: accepted), rejections)
+        return ProcessScan(
+            accepted: MenuBarEnumeration.deduplicatedIDs(from: accepted),
+            rejections: rejections,
+            hasExtrasMenuBar: true,
+            microseconds: elapsed(since: started)
+        )
+    }
+
+    private func elapsed(since start: DispatchTime) -> Int {
+        Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000)
     }
 
     /// 供 probe / M0 记录使用的详细版
@@ -156,37 +216,39 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
         var probes: [ProcessProbe] = []
         var rejections: [MenuBarItemPolicy.Rejection: Int] = [:]
 
-        let apps = workspace.runningApplications
-            .filter { $0.activationPolicy != .prohibited }
-            .filter { application in
-                guard let id = application.bundleIdentifier else { return true }
-                return !config.skippedBundleIDs.contains(id)
-            }
-            .prefix(config.maxProcesses)
+        let apps = candidateApplications()
+        // 每个进程独占一格输出：并发只用来消掉串行等待，汇总仍按固定顺序读回来。
+        // 直接往同一个 Array 的不同下标并发写会踩 Swift 的独占访问检查，
+        // 所以这里用裸缓冲区，写权限天然按格子划分。
+        let slots = UnsafeMutablePointer<ProcessScan>.allocate(capacity: apps.count)
+        slots.initialize(repeating: ProcessScan(), count: apps.count)
+        let gate = DispatchSemaphore(value: config.processConcurrency)
+        DispatchQueue.concurrentPerform(iterations: apps.count) { index in
+            gate.wait()
+            defer { gate.signal() }
+            slots[index] = scan(apps[index], screens: screens, primaryHeight: primaryHeight)
+        }
 
-        for application in apps {
-            let pid = application.processIdentifier
-            let processStarted = DispatchTime.now()
-            let collected = collectItems(from: application, screens: screens, primaryHeight: primaryHeight)
-            items.append(contentsOf: collected.accepted)
-            for (reason, count) in collected.rejections {
+        for (index, application) in apps.enumerated() {
+            let result = slots[index]
+            items.append(contentsOf: result.accepted)
+            for (reason, count) in result.rejections {
                 rejections[reason, default: 0] += count
             }
-            let accepted = collected.accepted.count
-            let extras = extrasMenuBar(of: pid)
-
             probes.append(
                 ProcessProbe(
-                    pid: pid,
+                    pid: application.processIdentifier,
                     bundleID: application.bundleIdentifier,
                     localizedName: application.localizedName ?? "?",
-                    hasExtrasMenuBar: extras != nil,
+                    hasExtrasMenuBar: result.hasExtrasMenuBar,
                     // 记的是「被接受的项数」，与 items 总数一致；被拦掉的量在 rejections 里
-                    itemCount: accepted,
-                    microseconds: Int((DispatchTime.now().uptimeNanoseconds - processStarted.uptimeNanoseconds) / 1_000)
+                    itemCount: result.accepted.count,
+                    microseconds: result.microseconds
                 )
             )
         }
+        slots.deinitialize(count: apps.count)
+        slots.deallocate()
 
         let uniqueItems = MenuBarEnumeration.deduplicatedIDs(from: items)
         return EnumerationReport(
@@ -202,9 +264,13 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
 
     // MARK: - AX 原子操作
 
-    private func extrasMenuBar(of pid: pid_t) -> AXUIElement? {
+    private func extrasMenuBar(of pid: pid_t, messagingTimeout: TimeInterval? = nil) -> AXUIElement? {
         guard pid > 0 else { return nil }
         let appElement = AXUIElementCreateApplication(pid)
+        // 不给超时就会退化成"等对方 App 心情"：一个卡住的前台 App 能把整次冷启动拖住几秒
+        if let messagingTimeout {
+            AXUIElementSetMessagingTimeout(appElement, Float(messagingTimeout))
+        }
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(
             appElement,
