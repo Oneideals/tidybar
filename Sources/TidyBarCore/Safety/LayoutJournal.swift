@@ -23,6 +23,9 @@ public struct LayoutJournal: Sendable {
         public let previousZone: MenuBarZone?
         public let previousPosition: Int?
         public let startedAt: Date
+        /// 重放失败次数（跨启动累计）。旧版本写下的 pending 文件里没有这个字段，
+        /// 解码时按 0 处理——绝不能因为升级就让孤儿意图"读不出来"而被静默丢掉。
+        public var replayFailures: Int
 
         public init(
             itemID: String,
@@ -30,7 +33,8 @@ public struct LayoutJournal: Sendable {
             targetPosition: Int?,
             previousZone: MenuBarZone?,
             previousPosition: Int?,
-            startedAt: Date = .init()
+            startedAt: Date = .init(),
+            replayFailures: Int = 0
         ) {
             self.itemID = itemID
             self.targetZone = targetZone
@@ -38,6 +42,22 @@ public struct LayoutJournal: Sendable {
             self.previousZone = previousZone
             self.previousPosition = previousPosition
             self.startedAt = startedAt
+            self.replayFailures = replayFailures
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case itemID, targetZone, targetPosition, previousZone, previousPosition, startedAt, replayFailures
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            itemID = try container.decode(String.self, forKey: .itemID)
+            targetZone = try container.decode(MenuBarZone.self, forKey: .targetZone)
+            targetPosition = try container.decodeIfPresent(Int.self, forKey: .targetPosition)
+            previousZone = try container.decodeIfPresent(MenuBarZone.self, forKey: .previousZone)
+            previousPosition = try container.decodeIfPresent(Int.self, forKey: .previousPosition)
+            startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
+            replayFailures = try container.decodeIfPresent(Int.self, forKey: .replayFailures) ?? 0
         }
     }
 
@@ -94,6 +114,26 @@ public struct LayoutJournal: Sendable {
     public func readPendingIntent() -> LayoutIntent? {
         guard let data = try? Data(contentsOf: pendingURL) else { return nil }
         return try? decoder.decode(LayoutIntent.self, from: data)
+    }
+
+    // MARK: - 重放记账
+
+    /// 一个孤儿意图最多重试几次。真机理由：意图可能永久做不成（图标所属 App 已卸载、
+    /// 系统改版后落点规则变了），每次都重试等于每次启动都撞同一堵墙，还可能反复推用户的菜单栏。
+    public static let defaultMaxReplayAttempts = 2
+
+    /// 记一次重放失败。
+    /// - Returns: 累加后的意图（pending 仍在，下次启动继续重试）；`nil` 表示已达上限、
+    ///   pending 已清除，或本来就没有 pending。
+    public func noteReplayFailure(maxAttempts: Int = LayoutJournal.defaultMaxReplayAttempts) throws -> LayoutIntent? {
+        guard var intent = readPendingIntent() else { return nil }
+        intent.replayFailures += 1
+        if intent.replayFailures >= max(1, maxAttempts) {
+            try clearPendingIntent()
+            return nil
+        }
+        try writeIntent(intent)
+        return intent
     }
 
     // MARK: - 启动决策

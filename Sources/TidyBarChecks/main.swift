@@ -29,6 +29,9 @@ let suites: [TestSuite] = [
     TestSuite("DragEventDiscipline", DragEventDisciplineTests.testCases),
     TestSuite("MenuBarDropTarget", DropTargetTests.testCases),
     TestSuite("EngineGuardDivision", EngineGuardDivisionTests.testCases),
+    TestSuite("GracefulShutdown", GracefulShutdownTests.testCases),
+    TestSuite("InFlightDragRelease", InFlightDragTests.testCases),
+    TestSuite("PendingIntentReplay", PendingIntentReplayTests.testCases),
     // 行为层
     TestSuite("RevealStateMachine", RevealStateMachineTests.testCases),
     TestSuite("EventEngine", EventEngineThrottleTests.testCases),

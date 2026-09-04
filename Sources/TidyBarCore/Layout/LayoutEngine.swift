@@ -47,18 +47,22 @@ public final class LayoutEngine {
     private let services: SystemServices
     private let journal: LayoutJournal
     private let sentinel: EventSentinel
+    /// 孤儿意图最多重放几次，超过即丢弃。测试里可以调成 1 观察"放弃"分支。
+    private let maxReplayAttempts: Int
     private var lastOperationAt: Date = .distantPast
 
     public init(
         layout: MenuBarLayout,
         services: SystemServices,
         journal: LayoutJournal,
-        sentinel: EventSentinel = EventSentinel()
+        sentinel: EventSentinel = EventSentinel(),
+        maxReplayAttempts: Int = LayoutJournal.defaultMaxReplayAttempts
     ) {
         self.layout = layout
         self.services = services
         self.journal = journal
         self.sentinel = sentinel
+        self.maxReplayAttempts = max(1, maxReplayAttempts)
         let dragCapable: Bool
         if let mover = services.mover {
             dragCapable = !(mover is UnverifiedMenuBarMover)
@@ -115,50 +119,19 @@ public final class LayoutEngine {
             return
         }
 
-        guard let x = targetX ?? targetProvider?(itemID, zone) else {
+        // 引擎层只保留两项自己该管的判定，光标的放置与飞行复核交给 mover（它才知道事件时序）
+        let x: CGFloat
+        if let targetX {
+            x = targetX
+        } else if let provided = targetProvider?(itemID, zone) {
+            x = provided
+        } else {
             rollback(intent)
             throw EngineError.noMovementCapability
         }
 
-        // 引擎层只保留两项自己该管的判定，光标的放置与飞行复核交给 mover（它才知道事件时序）：
-        //   1. 用户正按住鼠标 → 现在绝不能动手；
-        //   2. 操作节奏 → 防止规则引擎连环重排。
-        // 注意：这里**不能**再拿"当前光标位置"与图标中心比较。验证项 2 已证伪这种写法：
-        // 光标是我们稍后 warp 过去的，动手前它本来就不在图标上，比较的结果是永远中止。
-        let cursor = services.cursor
-        if cursor.isPrimaryButtonPressed {
-            rollback(intent)
-            throw EngineError.sentinelAborted(.userInteracting)
-        }
-        let elapsed = Date().timeIntervalSince(lastOperationAt)
-        if elapsed < sentinel.minIntervalBetweenOperations {
-            rollback(intent)
-            throw EngineError.sentinelAborted(.throttled)
-        }
-
-        let beforeItem = services.reader.discoverItems().first { $0.id == itemID }
         do {
-            _ = try mover.move(itemID: itemID, toX: x)
-
-            // 复核的是**结果**（图标真的挪到位了吗），不是光标。
-            // macOS 对落在空隙里的拖拽是静默忽略的，只有查结果能发现"没成"。
-            // after 只做定向读取：验证一次变更只需要归属进程那一小撮图标，
-            // 为此再付 110~195ms 的全量扫描既拖慢操作也白白耗电
-            let candidates: [ManagedItem]
-            if let owner = beforeItem?.ownerBundleID {
-                candidates = services.reader.items(ownedBy: owner)
-            } else {
-                candidates = services.reader.discoverItems()
-            }
-            let afterFrame = candidates.first { $0.id == itemID }?.frame
-            if let beforeFrame = beforeItem?.frame, let afterFrame,
-               MenuBarDropTarget.didMove(before: beforeFrame, after: afterFrame, towardX: x) == false {
-                rollback(intent)
-                throw EngineError.noVisibleEffect(itemID: itemID)
-            }
-
-            lastOperationAt = Date()
-            hasConfirmedDragSupport = true
+            try performDrag(mover: mover, itemID: itemID, x: x)
             try journal.clearPendingIntent()
             try journal.writeCommitted(layout)
         } catch let error as MenuBarMoveError {
@@ -168,7 +141,51 @@ public final class LayoutEngine {
             }
             rollback(intent)
             throw EngineError.moveFailed(error)
+        } catch let error as EngineError {
+            // 哨兵中止 / 结果复核判定"没真动"：同样必须回滚并清 pending，
+            // 否则一次失败的变更会变成下次启动的孤儿意图
+            rollback(intent)
+            throw error
         }
+    }
+
+    /// 一次真实移动的公共流程：光标纪律 → mover → 结果复核。**不碰 journal**，
+    /// pending 的生死由调用方决定（apply 失败即回滚清除；replay 失败保留意图等下次重试）。
+    /// 抽出来的目的不是省代码，是保证"重放走的就是产品主路径上那条执行链"，
+    /// 免得两条路径各测各的绿（验证项 3 就是这么被骗过一次）。
+    private func performDrag(mover: MenuBarMoving, itemID: String, x: CGFloat) throws {
+        // 注意：这里**不能**再拿"当前光标位置"与图标中心比较。验证项 2 已证伪这种写法：
+        // 光标是我们稍后 warp 过去的，动手前它本来就不在图标上，比较的结果是永远中止。
+        let cursor = services.cursor
+        if cursor.isPrimaryButtonPressed {
+            throw EngineError.sentinelAborted(.userInteracting)
+        }
+        let elapsed = Date().timeIntervalSince(lastOperationAt)
+        if elapsed < sentinel.minIntervalBetweenOperations {
+            throw EngineError.sentinelAborted(.throttled)
+        }
+
+        let beforeItem = services.reader.discoverItems().first { $0.id == itemID }
+        _ = try mover.move(itemID: itemID, toX: x)
+
+        // 复核的是**结果**（图标真的挪到位了吗），不是光标。
+        // macOS 对落在空隙里的拖拽是静默忽略的，只有查结果能发现"没成"。
+        // after 只做定向读取：验证一次变更只需要归属进程那一小撮图标，
+        // 为此再付 110~195ms 的全量扫描既拖慢操作也白白耗电
+        let candidates: [ManagedItem]
+        if let owner = beforeItem?.ownerBundleID {
+            candidates = services.reader.items(ownedBy: owner)
+        } else {
+            candidates = services.reader.discoverItems()
+        }
+        let afterFrame = candidates.first { $0.id == itemID }?.frame
+        if let beforeFrame = beforeItem?.frame, let afterFrame,
+           MenuBarDropTarget.didMove(before: beforeFrame, after: afterFrame, towardX: x) == false {
+            throw EngineError.noVisibleEffect(itemID: itemID)
+        }
+
+        lastOperationAt = Date()
+        hasConfirmedDragSupport = true
     }
 
     /// 回滚：把内存布局恢复到意图执行前，并清除 pending
@@ -203,5 +220,56 @@ public final class LayoutEngine {
             layout = committed
         }
         try? journal.clearPendingIntent()
+    }
+
+    /// 把上次未完成的意图沿**产品主路径**重做一遍。
+    ///
+    /// 与 apply 的区别只在 pending 的生死：replay 成功前不清除意图，失败时原样留在盘上，
+    /// 让下一次启动还能重试；是否还要重试由 `noteReplayFailure()` 决定。
+    /// 走 performDrag 而不是自己拼一遍流程，是为了让"重放成功"和"用户手动整理成功"
+    /// 是同一条链路的同一个结论。
+    public func replay(_ intent: LayoutJournal.LayoutIntent) throws {
+        guard let mover = services.mover, !(mover is UnverifiedMenuBarMover) else {
+            throw EngineError.noMovementCapability
+        }
+        guard let x = targetProvider?(intent.itemID, intent.targetZone) else {
+            throw EngineError.noMovementCapability
+        }
+        try performDrag(mover: mover, itemID: intent.itemID, x: x)
+        layout.move(itemID: intent.itemID, to: intent.targetZone, position: intent.targetPosition)
+        try journal.clearPendingIntent()
+        try journal.writeCommitted(layout)
+    }
+
+    /// 重放失败的记账结果
+    public enum ReplayOutcome: Equatable, Sendable {
+        /// 盘上已无 pending（本轮没什么可重试的）
+        case nothingPending
+        /// 意图保留，累计失败 N 次，下次启动继续试
+        case retryScheduled(failures: Int)
+        /// 达到上限：意图已丢弃，布局回落到上次已提交状态
+        case abandoned
+    }
+
+    /// 一次重放失败后调用。上限存在的理由：意图可能永远做不成（App 已卸载、
+    /// 系统改版后落点规则变了），每次都重试等于每次启动都撞同一堵墙，还会反复推用户的菜单栏。
+    @discardableResult
+    public func noteReplayFailure() -> ReplayOutcome {
+        guard journal.hasPendingIntent else { return .nothingPending }
+        // Swift 5 起 try? 会把 Optional 返回值压平，所以这里 nil 有两种含义：
+        // 达到上限（journal 已自行清除 pending）或写盘异常。两种都不该继续重试。
+        guard let updated = try? journal.noteReplayFailure(maxAttempts: maxReplayAttempts) else {
+            discardPendingIntent()
+            return .abandoned
+        }
+        return .retryScheduled(failures: updated.replayFailures)
+    }
+
+    /// 优雅退出前的收尾：抬起悬在半空的拖拽、把当前布局落盘。
+    /// 不承诺"清掉 pending"：若此刻真有变更在飞，它和崩溃留下的状态同样含糊，
+    /// 正确处理是交给下次启动的重放 + 上限，而不是假装成功。
+    public func prepareForTermination() {
+        (services.mover as? DragReleasing)?.releaseInFlightDrag()
+        try? journal.writeCommitted(layout)
     }
 }

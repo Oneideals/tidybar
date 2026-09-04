@@ -9,7 +9,7 @@ import CoreGraphics
 ///   1. 起手前必过 EventSentinel 预检：用户按住鼠标、光标不在期望位、操作过密 → 一个事件都不发；
 ///   2. 飞行途中每步复核"光标是否还在我们放的位置"，被外力挪走立即中止；
 ///   3. **任何退出路径都必须抬起 ⌘ 与鼠标键**，宁可拖失败，绝不能留下按住的修饰键。
-public final class AccessibilityMenuBarMover: MenuBarMoving {
+public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
     public struct Config: Sendable {
         /// 起点到终点的插值步数。太少系统会识别成点击，太多浪费时间；实测 6~10 步可用。
         public var stepCount: Int
@@ -128,25 +128,19 @@ public final class AccessibilityMenuBarMover: MenuBarMoving {
             throw MenuBarMoveError.abortedBySentinel(.cursorDrift(placementDrift, placed))
         }
 
-        // 3) 起手。held 决定退出时要不要收尾——这是「绝不留下按住的 ⌘」的关键：
+        // 3) 起手。flight 决定退出时要不要收尾——这是「绝不留下按住的 ⌘」的关键：
         //    只要 ⌘ 按下去了，无论成功、中止还是系统拒绝，defer 都必须把它抬起来。
+        //    同一份状态对外暴露 releaseInFlightDrag()，让信号收尾能插手悬在半空的拖拽；
+        //    登记放在 commandDown **之前**：真发生竞争时宁可多发一次抬起，也不能留下卡住的键。
+        beginFlight(commandHeld: config.postsPhysicalCommandKey)
+        defer { releaseInFlightDrag() }
         if config.postsPhysicalCommandKey { poster.post(.commandDown) }
-        var mouseDownPosted = false
-        var held = true
-        defer {
-            if held {
-                if mouseDownPosted {
-                    poster.post(.mouseUp(cursor.currentLocation))
-                }
-                if config.postsPhysicalCommandKey { poster.post(.commandUp) }
-            }
-        }
 
         if !post(.mouseDown(source)) {
             record(itemID: itemID, source: source, target: target, events: 3, aborted: nil, rejected: true, landing: nil)
             throw MenuBarMoveError.abortedBySentinel(.userInteracting)
         }
-        mouseDownPosted = true
+        markMouseDownPosted()
         // 持住再走：立刻移动会被判定为点击
         poster.post(.settle(config.initialHoldInterval))
 
@@ -166,10 +160,19 @@ public final class AccessibilityMenuBarMover: MenuBarMoving {
             let actual = cursor.currentLocation
             let drift = EventSentinel.distance(from: point, to: actual)
             if drift > config.maxLagPoints {
-                // held 保持 true：交给 defer 抬起 ⌘ 与鼠标键
+                // 在架标记保持有效：交给 defer 抬起 ⌘ 与鼠标键
                 record(itemID: itemID, source: source, target: target, events: 4 + step,
                        aborted: .cursorDrift(drift, actual), rejected: false, landing: actual)
                 throw MenuBarMoveError.abortedBySentinel(.cursorDrift(drift, actual))
+            }
+            // 有人在半途替我们抬起了按下（优雅退出抢到了收尾）：就此收手。
+            // 继续走完会再抬一次鼠标键，并把一次没做完的变更报成成功。
+            if !isDragInFlight {
+                record(itemID: itemID, source: source, target: target, events: 4 + step,
+                       aborted: nil, rejected: false, landing: actual)
+                totalAborts += 1
+                consecutiveSuccesses = 0
+                throw MenuBarMoveError.dragInterrupted
             }
         }
 
@@ -178,7 +181,8 @@ public final class AccessibilityMenuBarMover: MenuBarMoving {
             record(itemID: itemID, source: source, target: target, events: 4 + config.stepCount, aborted: nil, rejected: true, landing: nil)
             throw MenuBarMoveError.abortedBySentinel(.userInteracting)
         }
-        held = false
+        // 抬起动作由下面两行自己完成，这里只清空在架标记，避免 defer 再抬一次
+        endFlight()
         if config.postsPhysicalCommandKey { poster.post(.commandUp) }
         poster.post(.settle(config.settleInterval))
 
@@ -188,7 +192,67 @@ public final class AccessibilityMenuBarMover: MenuBarMoving {
         return landing
     }
 
+    // MARK: - 在架拖拽状态（信号收尾的插手点）
+
+    /// 一次"已经按下、尚未抬起"的拖拽。拆开记是因为两段的风险不对称：
+    /// 只发了 commandDown 就被打断，最需要抬起的是 ⌘；已经 mouseDown 则两个都要抬。
+    private struct Flight {
+        var mouseDownPosted = false
+        var commandHeld = false
+    }
+
+    /// 拖拽跑在工作线程，收尾回调来自主线程/信号队列，所以状态必须锁住。
+    private let flightLock = NSLock()
+    private var flight: Flight?
+
+    /// 是否有一次拖拽正悬在半空。探针与日志用它区分"干净退出"与"被打断的退出"。
+    public var isDragInFlight: Bool {
+        flightLock.lock()
+        defer { flightLock.unlock() }
+        return flight != nil
+    }
+
+    /// 就地结束半空的拖拽：抬起鼠标键与（若启用）真实 ⌘。幂等——只有第一次调用会发事件，
+    /// 所以「信号先到」和「自己收尾」同时发生也不会重复抬起。
+    ///
+    /// 真机结论要摆正位置：kill -9 时 macOS 也会回收死亡进程的事件源状态，卡键不是这里防的；
+    /// 这条 API 的意义在于让退出变得**可解释**（谁抬的、什么时候抬的），并且不依赖内核回收时机。
+    public func releaseInFlightDrag() {
+        flightLock.lock()
+        guard let current = flight else {
+            flightLock.unlock()
+            return
+        }
+        flight = nil
+        flightLock.unlock()
+
+        if current.mouseDownPosted {
+            poster.post(.mouseUp(cursor.currentLocation))
+        }
+        if current.commandHeld {
+            poster.post(.commandUp)
+        }
+    }
+
     // MARK: - 私有
+
+    private func beginFlight(commandHeld: Bool) {
+        flightLock.lock()
+        flight = Flight(commandHeld: commandHeld)
+        flightLock.unlock()
+    }
+
+    private func markMouseDownPosted() {
+        flightLock.lock()
+        flight?.mouseDownPosted = true
+        flightLock.unlock()
+    }
+
+    private func endFlight() {
+        flightLock.lock()
+        flight = nil
+        flightLock.unlock()
+    }
 
     private func post(_ event: DragEvent) -> Bool {
         poster.post(event)

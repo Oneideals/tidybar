@@ -38,13 +38,26 @@
 
 **方法学教训（写在这里防止再犯）**：旁路直连底层组件跑出来的绿灯，不能证明产品主路径可用。之后所有验证都必须从引擎入口进（`LayoutEngine.apply`），mover 单测只作为组件级补充。
 
-## 未决：SIGTERM 也留孤儿意图
+## 已补：优雅退出收尾 + 重放上限（2026-09-05 二轮）
 
-Swift 的 `defer` 不响应信号，`applicationWillTerminate` 在注销/关机时也不保证执行，所以**每次系统重启都会留下一个待重放意图**。目前行为是安全的（下次启动重放，实测收敛），但不够干净。计划补：
+原来的两个缺口都已闭合并真机复验。`scripts/m0-crash-test.sh` 现在多了两个场景：
 
-1. 注册 `SIGTERM`/`SIGHUP` 处理，退出前对未完成意图做显式回滚（`discardPendingIntent`）或提交；
-2. 重放要防抖：同一次意图若连续两次重放都失败（图标已不属于我们管辖等），降级为"清除意图 + 提示用户重新认领"，避免每次启动都白忙一次。
+| 场景 | 观测 | 判定 |
+| --- | --- | --- |
+| B：拖拽中途 SIGTERM（`--role terminate`，等到 `inflight=yes` 再发信号） | 受害者打印 `GRACEFUL signal=15 wasInFlight=yes pending=true`；独立进程读到 `mouseButtons=0 / commandHeld=no`；图标 4→4 | ✓ 半空拖拽被确定性抬起，意图按策略保留 |
+| D：埋一个永远做不成的旧格式意图（`--role poison`） | 第一次 `outcome=retryScheduled(failures: 1) pending=true`，第二次 `outcome=abandoned pending=false`，随后 inspect 无 pending | ✓ 两次即放弃；升级前的 pending 文件仍可读出 |
+
+实现分三层，都能单独被测：`GracefulShutdown`（SIGTERM/SIGHUP/SIGINT 信号源，回调最多跑一次）、
+`AccessibilityMenuBarMover.releaseInFlightDrag()`（幂等抬起，且会让进行中的拖拽在下一步以 `dragInterrupted` 收手，
+绝不"抬两次"或报假成功）、`LayoutJournal.noteReplayFailure` + `LayoutEngine.replay/noteReplayFailure`（计数累计到上限即清除意图并回落 committed）。装配层把信号路径与 `applicationWillTerminate` 汇到同一个 `flushForExit`，实测 `kill -TERM` 打真 app 会打印「退出收尾完成｜原因=signal:SIGTERM」并干净退出。
+
+**顺带修正上一轮的一句话**：表格里的"重放 ✓ 全部 pendingCleared=true"给人的印象是重放会成功。本轮同样的 kill 场景里，重放分别以 `cursorDrift(56pt)`、`userInteracting`、`noVisibleEffect` 失败。差别来自环境（光标真在被移动、图标顺序已不同），不是回归。正确说法是：**重放只保证安全（失败即回滚、不提交、有上限），不保证成功**。这也是上限机制存在的理由。
+
+## 两个方法学坑（都是"看起来像实现的 bug"）
+
+1. **`raise()` 不会触发 DispatchSource 信号源**。`raise()` 是线程级投递，而我们为了挂源已经把该信号的处置设成 `SIG_IGN` —— 信号当场被丢弃，永远不会变成进程级 pending，kevent 看不见它。必须用 `kill(getpid(), sig)`。用 `raise()` 写出来的"信号没触发"会让人误以为实现有问题，白花一轮排查。
+2. **`kill` 的参数顺序是 `(pid, sig)`**。写成 `kill(SIGTERM, getpid())` 等于给 PID 15 发信号：权限不允许时**静默返回错误**，测试表现为"永远不触发"，且完全看不出自己发错了对象。信号类断言第一次跑就必须看到"回调真的执行了"的正面证据（我们靠打印 `DBG armed 3 sources` + 最终 `GRACEFUL signal=15` 才定位到）。
 
 ## 下一步
 
-验证项 4（占用与功耗）——尤其现在引擎每次 apply 会做两次全量枚举，实测必须把 `discoverItems(owning:)` 定向读取接进引擎，否则 400ms/次的拖拽成本会直接反映到功耗上。
+验证项 4 已完成（定向读取已接进引擎，见 04-performance.md）。本项遗留的两条都已闭合，剩下的都是 M1 的事：冷启动接管时延（真 app 测得 2.80s，超预算）、以及在用户真实图标上复跑拖拽闸门。

@@ -141,6 +141,8 @@ public final class RecordingDragEventPoster: DragEventPosting {
     public private(set) var posted: [DragEvent] = []
     /// 让第 n 次投递失败，模拟系统拒绝或异常路径
     public var failAt: Int?
+    /// 每次投递后同步回调。用来在事件流**中间**插手——例如模拟优雅退出在拖拽飞行途中抬走鼠标键。
+    public var onPost: ((DragEvent) -> Void)?
 
     /// 最后一次 mouseUp 的位置（断言"抬在目标点"用）
     public var lastUp: CGPoint? {
@@ -155,6 +157,7 @@ public final class RecordingDragEventPoster: DragEventPosting {
     @discardableResult
     public func post(_ event: DragEvent) -> Bool {
         posted.append(event)
+        onPost?(event)
         if let failAt, posted.count - 1 == failAt { return false }
         return true
     }

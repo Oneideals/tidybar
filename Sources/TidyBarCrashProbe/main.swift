@@ -98,6 +98,50 @@ case "drag":
         fflush(stdout)
     }
 
+case "terminate":
+    // 受害者（优雅退出版）：同样拉长一次拖拽，但外部发的是 SIGTERM 而不是 kill -9
+    let services = makeServices()
+    let engine = LayoutEngine(layout: journal.readCommittedLayout() ?? MenuBarLayout(), services: services, journal: journal)
+    _ = engine.recoverOnLaunch()
+    let shutdown = GracefulShutdown()
+    shutdown.arm { sig in
+        // 收尾跑在信号队列上：这里只做 mover/引擎允许的线程安全动作，不再回到主队列
+        let inFlight = (services.mover as? DragReleasing)?.isDragInFlight ?? false
+        engine.prepareForTermination()
+        print("GRACEFUL signal=\(sig) wasInFlight=\(inFlight ? "yes" : "no") pending=\(journal.hasPendingIntent)")
+        fflush(stdout)
+        exit(0)
+    }
+    let current = MenuBarEnumeration.sortedLeftToRight(AccessibilityMenuBarReader().discoverItems(owning: fixtureBundle))
+    guard current.count >= 3,
+          let target = MenuBarDropTarget.targetX(in: current, moving: 0, to: 2) else {
+        print("TERMVICTIM abort: fixture 图标不足")
+        exit(3)
+    }
+    print("TERMVICTIM pid=\(ProcessInfo.processInfo.processIdentifier) order=\(current.map(\.title).joined(separator: ">"))")
+    fflush(stdout)
+    // 监视线程：把"真的进入按下状态"打成一行。脚本据此发信号，而不是靠固定 sleep 猜窗口——
+    // 上一版就是因此打在了枚举阶段（冷启动全量扫描要 2 秒多），测到的 wasInFlight 永远是 no。
+    Thread.detachNewThread {
+        let releasing = services.mover as? DragReleasing
+        while true {
+            if releasing?.isDragInFlight == true {
+                print("TERMVICTIM inflight=yes")
+                fflush(stdout)
+                return
+            }
+            usleep(10_000)
+        }
+    }
+    do {
+        try engine.apply(itemID: current[0].id, to: .visible, targetX: target)
+        print("TERMVICTIM completed（没被 SIGTERM 命中，本例无效）")
+        fflush(stdout)
+    } catch {
+        print("TERMVICTIM error \(error)")
+        fflush(stdout)
+    }
+
 case "recover":
     // 恢复者：模拟下次启动，验证孤儿意图被识别并重放
     let services = makeServices()
@@ -108,19 +152,25 @@ case "recover":
     if case .clean = recovery {
         print("RECOVER clean（无孤儿意图 → kill 没落在窗口内，本例无效）")
     } else if case .interrupted(let intent, _) = recovery {
-        print("RECOVER detected intent \(intent.itemID) → \(intent.targetZone.rawValue)")
-        let current = MenuBarEnumeration.sortedLeftToRight(
-            AccessibilityMenuBarReader().discoverItems(owning: fixtureBundle)
-        )
-        if let target = MenuBarDropTarget.targetX(in: current, moving: 0, to: 2) {
-            do {
-                try engine.apply(itemID: intent.itemID, to: intent.targetZone, targetX: target)
-                print("RECOVER replayed ok pendingCleared=\(!journal.hasPendingIntent)")
-            } catch {
-                print("RECOVER replay failed \(error)")
-            }
-        } else {
-            print("RECOVER 无合法落点，放弃重放（不得硬拖）")
+        print("RECOVER detected intent \(intent.itemID) → \(intent.targetZone.rawValue) failures=\(intent.replayFailures)")
+        // 中止原因分两种，读数不留白就永远分不清"哨兵正常让位"与"实现有 bug"：
+        // 真人在动鼠标 → 应该中止；warp 本身失效 → 才是问题。
+        print("RECOVER preflight cursor=\(NSEvent.mouseLocation) leftButtonPressed=\(NSEvent.pressedMouseButtons & 1 != 0)")
+        // 与产品装配层同一条路：只经 engine.replay，不再自己拼 apply
+        engine.targetProvider = { itemID, _ in
+            let items = MenuBarEnumeration.sortedLeftToRight(
+                AccessibilityMenuBarReader().discoverItems(owning: fixtureBundle)
+            )
+            guard items.count >= 3,
+                  let from = items.firstIndex(where: { $0.id == itemID }) else { return nil }
+            return MenuBarDropTarget.targetX(in: items, moving: from, to: 2)
+        }
+        do {
+            try engine.replay(intent)
+            print("RECOVER replayed ok pendingCleared=\(!journal.hasPendingIntent)")
+        } catch {
+            let outcome = engine.noteReplayFailure()
+            print("RECOVER replay failed \(error) outcome=\(outcome) pending=\(journal.hasPendingIntent)")
         }
     }
     print("RECOVER order \(before.joined(separator: ">")) → \(fixtureOrder().joined(separator: ">"))")
@@ -131,6 +181,21 @@ case "inspect":
     printJournalState(journal)
     let order = fixtureOrder()
     print("  ICONS count=\(order.count) order=\(order.joined(separator: ">"))")
+
+case "poison":
+    // 埋一个"永远做不成"的孤儿意图（itemID 指向已不存在的图标），并且故意用**旧格式**写盘：
+    // 一次覆盖两件事——升级前留下的文件仍要能读出来，以及重放两次后必须放弃而不是每次开机都撞墙。
+    let dead = LayoutJournal.LayoutIntent(
+        itemID: "local.tidybar.gone", targetZone: .hidden, targetPosition: nil,
+        previousZone: .visible, previousPosition: 0
+    )
+    try journal.writeIntent(dead)
+    let pendingURL = journalDirectory.appendingPathComponent("layout.pending.json")
+    var object = (try? JSONSerialization.jsonObject(with: Data(contentsOf: pendingURL))) as? [String: Any] ?? [:]
+    object.removeValue(forKey: "replayFailures")
+    try JSONSerialization.data(withJSONObject: object).write(to: pendingURL, options: .atomic)
+    print("POISON planted legacy-format intent itemID=\(dead.itemID) readable=\(journal.readPendingIntent() != nil)")
+    printJournalState(journal)
 
 default:
     print("未知角色 \(role)")

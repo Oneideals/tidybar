@@ -52,14 +52,39 @@ for i in $(seq 1 "$ROUNDS"); do
 done
 
 echo
-echo "══════ 场景 B：干净退出（SIGTERM，defer 应正常收尾）══════"
-"$BIN" --role drag > /tmp/victim_term.log 2>&1 &
+echo "══════ 场景 B：拖拽中途 SIGTERM（必须走优雅收尾，而不是靠内核回收）══════"
+"$BIN" --role terminate > /tmp/victim_term.log 2>&1 &
 VPID=$!
-sleep 1.4
+# 等到拖拽真的进入按下状态再发信号：冷启动枚举要 2s 左右，固定 sleep 会打在动手之前
+WAITED=0
+while [ "$WAITED" -lt 125 ]; do   # 0.2s × 125 = 25s 上限
+  grep -q "inflight=yes" /tmp/victim_term.log && break
+  sleep 0.2
+  WAITED=$((WAITED + 1))
+done
 kill -TERM "$VPID" 2>/dev/null
 wait "$VPID" 2>/dev/null
 sleep 0.6
+sed 's/^/  /' /tmp/victim_term.log
 "$BIN" --role inspect
+if grep -q "GRACEFUL signal=15 wasInFlight=yes" /tmp/victim_term.log; then
+  echo "  ✓ 收尾回调被触发，且当时确实有拖拽悬在半空"
+else
+  echo "  ✗ 没抓到 GRACEFUL/wasInFlight=yes，说明信号没接住或没命中拖拽窗口"; FAILS=$((FAILS+1))
+fi
+if grep -q "VICTIM completed\|TERMVICTIM completed" /tmp/victim_term.log; then
+  echo "  ✗ 拖拽自己跑完了，本次没被打中，结论不作数"; FAILS=$((FAILS+1))
+fi
+RESIDUE=$("$BIN" --role inspect | grep RESIDUE)
+if echo "$RESIDUE" | grep -q "commandHeld=yes"; then
+  echo "  ✗ 优雅退出后 ⌘ 仍报按住"; FAILS=$((FAILS+1))
+fi
+if [ "$(echo "$RESIDUE" | sed -n 's/.*mouseButtons=\([0-9-]*\).*/\1/p')" != "0" ]; then
+  echo "  ✗ 优雅退出后鼠标键仍报按住（半空拖拽没被抬起）"; FAILS=$((FAILS+1))
+fi
+if [ "$(COUNT_OF)" != "$BASELINE_COUNT" ]; then
+  echo "  ✗ 图标数量在优雅退出后发生变化"; FAILS=$((FAILS+1))
+fi
 
 echo
 echo "══════ 场景 C：journal 目录被破坏时不得启动失败 ══════"
@@ -69,6 +94,28 @@ printf '{"zones":"broken"}' > /tmp/tidybar-corrupt/TidyBar/LayoutJournal/layout.
 "$BIN" --role inspect --journal /tmp/tidybar-corrupt/TidyBar/LayoutJournal | sed 's/^/  /' \
   && echo "  ✓ 损坏的 journal 未导致崩溃（读不出即视为无状态）" \
   || { echo "  ✗ 损坏 journal 导致进程失败"; FAILS=$((FAILS+1)); }
+
+echo
+echo "══════ 场景 D：永远做不成的意图，重试两次必须放弃（旧格式文件也要能读）══════"
+"$BIN" --role poison | tee /tmp/poison.log | sed 's/^/  /'
+if ! grep -q "readable=true" /tmp/poison.log; then
+  echo "  ✗ 旧格式 pending 文件读不出来（升级会凭空丢掉用户的未完成变更）"; FAILS=$((FAILS+1))
+fi
+FIRST=$("$BIN" --role recover | grep "replay failed" || true)
+echo "  第一次：${FIRST:-（没有失败记录，本例作废）}"
+if ! echo "$FIRST" | grep -q "outcome=retryScheduled(failures: 1) pending=true"; then
+  echo "  ✗ 第一次失败应保留意图并记 1 次"; FAILS=$((FAILS+1))
+fi
+SECOND=$("$BIN" --role recover | grep "replay failed" || true)
+echo "  第二次：${SECOND:-（没有失败记录，本例作废）}"
+if ! echo "$SECOND" | grep -q "outcome=abandoned pending=false"; then
+  echo "  ✗ 第二次失败应放弃意图并清除 pending"; FAILS=$((FAILS+1))
+fi
+if "$BIN" --role inspect | grep -q "pending=local.tidybar.gone"; then
+  echo "  ✗ 达到上限后意图仍留在盘上 → 每次启动都会重演"; FAILS=$((FAILS+1))
+else
+  echo "  ✓ 上限生效，孤儿意图已清除"
+fi
 
 echo
 echo "══════ 结果 ══════"

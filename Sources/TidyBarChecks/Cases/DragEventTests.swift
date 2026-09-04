@@ -290,7 +290,6 @@ struct EngineGuardDivisionTests {
     func engineReportsSilentNoOpAsFailure() throws {
         // macOS 会把落在空隙里的拖拽静默忽略：事件全发完了图标却不动。
         // 引擎必须靠"结果复核"发现这件事，绝不能当成功写进已提交布局
-        let cursor = FakeCursor()
         let reader = FakeMenuBarReader(items: [TestItems.item("com.test.b", centerX: 600, centerY: 1_188)])
         let inert = FakeMenuBarMover()          // appliesMovement 默认 true，这里造一个不动的
         inert.appliesMovement = false

@@ -31,6 +31,14 @@ public protocol MenuBarMoving: AnyObject {
     func move(itemID: String, toX targetX: CGFloat) throws -> CGPoint
 }
 
+/// 可被打断收尾的移动器：进程被要求退出时，把悬在半空的按下就地抬起。
+/// 单独成协议是为了让装配层只写 `(mover as? DragReleasing)?.releaseInFlightDrag()`，
+/// 占位实现与假拖拽器不必为了「根本不发输入事件」而假装能收尾。
+public protocol DragReleasing: AnyObject {
+    var isDragInFlight: Bool { get }
+    func releaseInFlightDrag()
+}
+
 /// 移动失败原因
 public enum MenuBarMoveError: Error, Equatable {
     /// 哨兵预检未通过（光标漂移 / 用户在操作 / 节流）
@@ -39,6 +47,9 @@ public enum MenuBarMoveError: Error, Equatable {
     case itemVanished(String)
     /// 当前系统版本下机制不可用 → 上层应降级为「仅收纳面板」模式（报告 §4.4 风险表）
     case unsupportedOS
+    /// 拖拽进行中被外部收尾（优雅退出抢先抬起了按下）。
+    /// 必须立刻收手：继续走完会再抬一次鼠标键，并把一次没做完的变更报成成功。
+    case dragInterrupted
 }
 
 /// 光标与输入设备状态读取（EventSentinel 的输入源）

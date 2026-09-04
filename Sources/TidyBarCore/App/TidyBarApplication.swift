@@ -8,6 +8,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var controller: TidyBarController?
     private var tickTimer: Timer?
     private var statusItem: NSStatusItem?
+    /// 注销/关机/launchd 回收发来的信号不保证会走 applicationWillTerminate，显式挂信号源
+    private var shutdown: GracefulShutdown?
+    private var isExiting = false
     private let enumerator = BackgroundEnumerator()
 
     private let settingsStore: SettingsStoring
@@ -86,6 +89,44 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 还会让菜单栏在启动瞬间卡住，因此首扫交给后台调度器，结果回主线程落地。
         scheduleRefresh(reason: .userRequested)
         reportStartup(barController: barController)
+
+        // 收尾信号：TERM=注销/关机，HUP=终端/launchd 回收，INT=Ctrl-C。
+        // SIGKILL 不可捕获，那正是 LayoutJournal 要处理的场景，别把功劳记到这里。
+        let shutdown = GracefulShutdown()
+        shutdown.arm { [weak self] sig in
+            let name = Self.signalName(sig)
+            // 信号回调在专用队列上，碰 AppKit 与落盘一律回主线程
+            DispatchQueue.main.async {
+                self?.flushForExit(reason: "signal:\(name)")
+                exit(0)
+            }
+        }
+        self.shutdown = shutdown
+    }
+
+    private static func signalName(_ sig: Int32) -> String {
+        switch sig {
+        case SIGTERM: return "SIGTERM"
+        case SIGHUP: return "SIGHUP"
+        case SIGINT: return "SIGINT"
+        default: return "SIG\(sig)"
+        }
+    }
+
+    /// 退出前收尾。正常终止与信号终止共用，且只允许执行一次——
+    /// 重复执行会写出两份"已提交布局"，看起来无害，实则让日志里的退出原因不再唯一。
+    private func flushForExit(reason: String) {
+        guard !isExiting else { return }
+        isExiting = true
+        shutdown?.disarm()
+        eventEngine?.stop()
+        tickTimer?.invalidate()
+        controller?.flushForTermination()
+        fprint("退出收尾完成｜原因=\(reason)｜半空拖拽已抬起、布局已落盘")
+    }
+
+    public func applicationWillTerminate(_ notification: Notification) {
+        flushForExit(reason: "NSApp.terminate")
     }
 
     /// 后台扫描一次，结果回主线程落地
@@ -101,11 +142,6 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 fprint(String(format: "首扫完成｜图标 %d 个｜距启动 %.2fs（预算 2s）", items.count, elapsed))
             }
         )
-    }
-
-    public func applicationWillTerminate(_ notification: Notification) {
-        eventEngine?.stop()
-        tickTimer?.invalidate()
     }
 
     // MARK: - 面板同步

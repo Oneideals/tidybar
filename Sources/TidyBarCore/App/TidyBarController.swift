@@ -62,13 +62,47 @@ public final class TidyBarController {
     @discardableResult
     public func start(now: Date = Date(), scansSynchronously: Bool = true) -> LayoutJournal.Recovery {
         let recovery = engine.recoverOnLaunch()
-        if case .interrupted(let intent, _) = recovery, !settings.autoRecoverPendingIntent {
-            engine.discardPendingIntent()
-            record("放弃上次未完成的布局变更：\(intent.itemID) → \(intent.targetZone.displayLabel)")
+        if case .interrupted(let intent, _) = recovery {
+            if settings.autoRecoverPendingIntent {
+                replay(intent)
+            } else {
+                engine.discardPendingIntent()
+                record("放弃上次未完成的布局变更：\(intent.itemID) → \(intent.targetZone.displayLabel)")
+            }
         }
         // 真机枚举耗时 2.6s，装配层应传 false 并把扫描交给 BackgroundEnumerator
         if scansSynchronously { refreshItems() }
         return recovery
+    }
+
+    /// 把上次没做完的变更真的再做一次。
+    ///
+    /// 降级模式下故意什么都不做：那时布局只决定自有面板里显示谁，不动系统菜单栏，
+    /// `recoverOnLaunch` 折叠完就已经是最终状态了——此时去拖图标等于凭猜测制造副作用。
+    private func replay(_ intent: LayoutJournal.LayoutIntent) {
+        let label = "\(intent.itemID) → \(intent.targetZone.displayLabel)"
+        guard engine.capability == .fullDrag else {
+            record("收纳面板模式，无需重放上次变更：\(label)")
+            return
+        }
+        do {
+            try engine.replay(intent)
+            record("已重放上次未完成的变更：\(label)")
+        } catch {
+            switch engine.noteReplayFailure() {
+            case .retryScheduled(let failures):
+                record("重放失败（累计 \(failures) 次），下次启动继续尝试：\(error)")
+            case .abandoned:
+                record("重放连续失败，已放弃该意图并回到上次已提交的布局")
+            case .nothingPending:
+                record("重放失败且盘上已无待恢复意图：\(error)")
+            }
+        }
+    }
+
+    /// 退出前收尾（正常退出与 SIGTERM/SIGHUP 共用）：抬起半空拖拽 + 布局落盘
+    public func flushForTermination() {
+        engine.prepareForTermination()
     }
 
     public func refreshItems() {
@@ -193,6 +227,9 @@ public final class TidyBarController {
     }
 
     // MARK: - 私有
+
+    /// 诊断日志快照（报告 B6）。设置面板里的"上次为什么没动"就读这里。
+    public var logs: [String] { diagnostics }
 
     private var diagnostics: [String] = []
 
