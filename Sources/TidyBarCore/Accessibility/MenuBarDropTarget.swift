@@ -42,6 +42,19 @@ public enum MenuBarDropTarget {
         return last.frame.maxX + 2
     }
 
+    /// 结果复核：图标是否朝目标方向移动了足够距离。
+    /// macOS 对落在空隙里的拖拽静默忽略（不报错、不动），因此"事件发出去了"不等于"变更成功了"；
+    /// 只有拿前后帧对比才能把这种失败暴露出来。
+    public static func didMove(before: CGRect, after: CGRect, towardX targetX: CGFloat, minTravel: CGFloat = 3) -> Bool {
+        let from = before.midX
+        let to = after.midX
+        // 本来就在目标位（差半个图标以内）：没有东西需要移动，不算失败
+        if abs(targetX - from) <= minTravel { return true }
+        // 否则方向必须与请求一致，且位移达到可观察量级
+        if (targetX - from) * (to - from) <= 0 { return false }
+        return abs(to - from) >= minTravel
+    }
+
     /// 判定一次拖拽是否真的改变了顺序（比"坐标变了"更可靠：落回原位也算没成）。
     public static func didReorder<Item: Equatable>(before: [Item], after: [Item]) -> Bool {
         before != after

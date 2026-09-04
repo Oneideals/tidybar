@@ -13,6 +13,9 @@ public final class LayoutEngine {
         case moveFailed(MenuBarMoveError)
         /// 执行后系统状态与期望不符：可能图标被别的 App 收回，或拖拽被系统改写
         case verificationFailed(expected: String, actualZone: MenuBarZone?)
+        /// 事件都按预期投出去了，图标却纹丝不动：macOS 对落在空隙里的拖拽是静默忽略的，
+        /// 只有复核结果才能发现"没成"，绝不能当成成功写进已提交布局
+        case noVisibleEffect(itemID: String)
     }
 
     public enum Capability: String, Equatable, Sendable {
@@ -117,30 +120,35 @@ public final class LayoutEngine {
             throw EngineError.noMovementCapability
         }
 
-        // 哨兵预检：期望光标位于被拖图标中心（即我们把光标放过去的位置），
-        // 真实光标由系统报告；两者偏离说明有第三方（系统/用户）在动鼠标，必须让位。
+        // 引擎层只保留两项自己该管的判定，光标的放置与飞行复核交给 mover（它才知道事件时序）：
+        //   1. 用户正按住鼠标 → 现在绝不能动手；
+        //   2. 操作节奏 → 防止规则引擎连环重排。
+        // 注意：这里**不能**再拿"当前光标位置"与图标中心比较。验证项 2 已证伪这种写法：
+        // 光标是我们稍后 warp 过去的，动手前它本来就不在图标上，比较的结果是永远中止。
         let cursor = services.cursor
-        let draggedItem = services.reader.discoverItems().first { $0.id == itemID }
-        let expectedCursor = draggedItem.map { CGPoint(x: $0.centerX, y: $0.frame.midY) } ?? cursor.currentLocation
-        let verdict = sentinel.preflight(
-            expectedCursor: expectedCursor,
-            actualCursor: cursor.currentLocation,
-            isMouseDown: cursor.isPrimaryButtonPressed,
-            elapsedSinceLastOperation: Date().timeIntervalSince(lastOperationAt)
-        )
-        guard verdict == .clear else {
+        if cursor.isPrimaryButtonPressed {
             rollback(intent)
-            throw EngineError.sentinelAborted(verdict)
+            throw EngineError.sentinelAborted(.userInteracting)
+        }
+        let elapsed = Date().timeIntervalSince(lastOperationAt)
+        if elapsed < sentinel.minIntervalBetweenOperations {
+            rollback(intent)
+            throw EngineError.sentinelAborted(.throttled)
         }
 
+        let beforeFrame = services.reader.discoverItems().first { $0.id == itemID }?.frame
         do {
-            let landing = try mover.move(itemID: itemID, toX: x)
-            let expectedLanding = CGPoint(x: x, y: expectedCursor.y)
-            let post = sentinel.postflight(cursorAfterEvent: landing, expectedLanding: expectedLanding)
-            guard post == .clear else {
+            _ = try mover.move(itemID: itemID, toX: x)
+
+            // 复核的是**结果**（图标真的挪到位了吗），不是光标。
+            // macOS 对落在空隙里的拖拽是静默忽略的，只有查结果能发现"没成"。
+            let afterFrame = services.reader.discoverItems().first { $0.id == itemID }?.frame
+            if let beforeFrame, let afterFrame,
+               MenuBarDropTarget.didMove(before: beforeFrame, after: afterFrame, towardX: x) == false {
                 rollback(intent)
-                throw EngineError.sentinelAborted(post)
+                throw EngineError.noVisibleEffect(itemID: itemID)
             }
+
             lastOperationAt = Date()
             hasConfirmedDragSupport = true
             try journal.clearPendingIntent()

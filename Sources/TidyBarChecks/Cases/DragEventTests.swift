@@ -256,6 +256,89 @@ func isSentinelAbort(_ error: MenuBarMoveError, _ verdict: EventSentinel.Verdict
     return false
 }
 
+/// 引擎与 mover 的职责分界：光标纪律归 mover，结果复核归引擎。
+/// 这条断言守的是验证项 3 暴露的那个主路径 bug——引擎在 warp 之前拿光标比位置，
+/// 结果任何真实变更都被自己判成"漂移中止"。
+struct EngineGuardDivisionTests {
+    func engineWorksEvenWhenCursorStartsElsewhere() throws {
+        // 光标停在屏幕中央（真实用户的常态）。引擎不得因此拒绝工作——
+        // 这正是验证项 3 抓到的主路径故障：旧实现在 warp 之前拿光标比位置，永远判"漂移中止"
+        let cursor = FakeCursor(location: CGPoint(x: 700, y: 300))
+        let recorder = RecordingDragEventPoster()
+        let reader = FakeMenuBarReader(items: [TestItems.item("com.test.a", centerX: 600, centerY: 1_188)])
+        let mover = AccessibilityMenuBarMover(
+            reader: reader, cursor: cursor, poster: recorder,
+            config: AccessibilityMenuBarMover.Config(stepCount: 4, settleInterval: 0, initialHoldInterval: 0,
+                                                    maxPlacementDriftPoints: 400, postsPhysicalCommandKey: true,
+                                                    isConfirmedSupportedOS: true)
+        )
+        let journal = LayoutJournal(directory: TestPaths.journalDirectory("engine-guards"))
+        var initial = MenuBarLayout()
+        initial.append("com.test.a", to: .visible)
+        let engine = LayoutEngine(layout: initial, services: makeServices(reader: reader, mover: mover), journal: journal)
+
+        do {
+            try engine.apply(itemID: "com.test.a", to: .hidden, targetX: 640)
+        } catch let error as LayoutEngine.EngineError {
+            if case .sentinelAborted(.cursorDrift) = error {
+                try record("引擎仍在拿光标位置做预检 → 主路径永远中止（验证项 3 的原始 bug）")
+            }
+        }
+        expect(recorder.contains("warp") || recorder.contains("mouseDown"), "没被预检挡住才会发出事件")
+    }
+
+    func engineReportsSilentNoOpAsFailure() throws {
+        // macOS 会把落在空隙里的拖拽静默忽略：事件全发完了图标却不动。
+        // 引擎必须靠"结果复核"发现这件事，绝不能当成功写进已提交布局
+        let cursor = FakeCursor()
+        let reader = FakeMenuBarReader(items: [TestItems.item("com.test.b", centerX: 600, centerY: 1_188)])
+        let inert = FakeMenuBarMover()          // appliesMovement 默认 true，这里造一个不动的
+        inert.appliesMovement = false
+        inert.coupledReader = reader
+        let journal = LayoutJournal(directory: TestPaths.journalDirectory("engine-noop"))
+        var initial = MenuBarLayout()
+        initial.append("com.test.b", to: .visible)
+        let engine = LayoutEngine(layout: initial, services: makeServices(reader: reader, mover: inert), journal: journal)
+
+        do {
+            try engine.apply(itemID: "com.test.b", to: .hidden, targetX: 780)
+            try record("图标没动却上报成功 → 会把没发生的变更写进已提交布局")
+        } catch let error as LayoutEngine.EngineError {
+            if case .noVisibleEffect = error {} else { try record("应为 noVisibleEffect，实际 \(error)") }
+        }
+        expectNil(journal.readCommittedLayout(), "失败的变更不得提交")
+        expectNil(journal.readPendingIntent(), "主动回滚要清掉意图；孤儿意图只应来自没来得及收尾的强杀")
+    }
+
+    func resultCheckRejectsSilentNoOp() {
+        let moved = MenuBarDropTarget.didMove(
+            before: CGRect(x: 600, y: 1_053, width: 24, height: 24),
+            after: CGRect(x: 644, y: 1_053, width: 24, height: 24),
+            towardX: 660
+        )
+        expect(moved, "朝目标移动应判为成功")
+        expect(!MenuBarDropTarget.didMove(
+            before: CGRect(x: 600, y: 1_053, width: 24, height: 24),
+            after: CGRect(x: 600, y: 1_053, width: 24, height: 24),
+            towardX: 660), "纹丝不动必须判为失败（静默忽略）")
+        expect(!MenuBarDropTarget.didMove(
+            before: CGRect(x: 600, y: 1_053, width: 24, height: 24),
+            after: CGRect(x: 560, y: 1_053, width: 24, height: 24),
+            towardX: 660), "反向移动不得算成功")
+    }
+}
+
+extension EngineGuardDivisionTests {
+    static var testCases: [TestCase] {
+        let suite = EngineGuardDivisionTests()
+        return [
+            TestCase("engineWorksEvenWhenCursorStartsElsewhere", suite.engineWorksEvenWhenCursorStartsElsewhere),
+            TestCase("engineReportsSilentNoOpAsFailure", suite.engineReportsSilentNoOpAsFailure),
+            TestCase("resultCheckRejectsSilentNoOp", suite.resultCheckRejectsSilentNoOp),
+        ]
+    }
+}
+
 extension DragEventDisciplineTests {
     static var testCases: [TestCase] {
         let suite = DragEventDisciplineTests()

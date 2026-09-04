@@ -29,6 +29,11 @@ final class FakeMenuBarMover: MenuBarMoving {
     var landingY: CGFloat = 1_188
     var injectedError: MenuBarMoveError?
     private(set) var moved: [(itemID: String, x: CGFloat)] = []
+    /// 联动读取器：真实系统里拖完图标位置就变了，假件必须照做，
+    /// 否则 LayoutEngine 的"结果复核"在测试里永远判失败，成功路径根本测不到
+    weak var coupledReader: FakeMenuBarReader?
+    /// 置为 false 模拟 macOS 的静默忽略：事件发了但图标不动
+    var appliesMovement = true
 
     init(landingY: CGFloat = 1_188) {
         self.landingY = landingY
@@ -37,6 +42,15 @@ final class FakeMenuBarMover: MenuBarMoving {
     func move(itemID: String, toX targetX: CGFloat) throws -> CGPoint {
         if let injectedError { throw injectedError }
         moved.append((itemID, targetX))
+        if appliesMovement, let reader = coupledReader,
+           let index = reader.items.firstIndex(where: { $0.id == itemID }) {
+            var shifted = reader.items[index]
+            shifted.frame = CGRect(x: targetX - shifted.frame.width / 2,
+                                   y: shifted.frame.minY,
+                                   width: shifted.frame.width,
+                                   height: shifted.frame.height)
+            reader.items[index] = shifted
+        }
         return CGPoint(x: targetX, y: landingY)
     }
 }

@@ -16,6 +16,7 @@ let package = Package(
         .executable(name: "tidybar-fixture", targets: ["TidyBarFixture"]),
         .executable(name: "tidybar-drag-probe", targets: ["TidyBarDragProbe"]),
         .executable(name: "tidybar-drag-tune", targets: ["TidyBarDragTune"]),
+        .executable(name: "tidybar-crash-probe", targets: ["TidyBarCrashProbe"]),
     ],
     targets: [
         // 薄入口层：仅负责 NSApplication 启动与生命周期装配
@@ -33,6 +34,12 @@ let package = Package(
         .executableTarget(
             name: "TidyBarFixture",
             dependencies: [],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // M0 验证项 3：强杀/崩溃恢复（受害者、检查者、恢复者三角色）
+        .executableTarget(
+            name: "TidyBarCrashProbe",
+            dependencies: ["TidyBarCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // M0 验证项 2 的参数扫描（定时序包络用）

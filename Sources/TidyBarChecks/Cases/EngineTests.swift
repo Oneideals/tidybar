@@ -55,22 +55,39 @@ struct LayoutEngineTests {
     }
 
     /// 落点偏离目标 40pt：典型的「光标被系统接管」现场，必须中止
-    func cursorDriftDuringDragStopsEverything() throws {
+    /// 验证项 3 之后的职责划分：光标纪律（含落点漂移）归 mover，
+    /// 引擎只认「图标到底动没动」。这里 FakeMenuBarMover 没有联动 reader，
+    /// 等于模拟 macOS 静默忽略，引擎必须判失败并回滚。
+    func dragWithNoVisibleEffectRollsBack() throws {
         let reader = FakeMenuBarReader(ids: [itemID])
         let (engine, journal) = makeEngine(reader: reader, mover: FakeMenuBarMover(landingY: 1_148))
 
         do {
-            try engine.apply(itemID: itemID, to: .hidden, targetX: 600)
-            try record("落点漂移时应当抛错")
+            // 目标要离开原位（600 是图标当前中心），否则"已在目标位"规则会合法放过
+            try engine.apply(itemID: itemID, to: .hidden, targetX: 700)
+            try record("图标没动必须判为失败，否则会把没发生的变更提交")
         } catch let error as LayoutEngine.EngineError {
-            guard case .sentinelAborted(.cursorDrift(let distance, _)) = error else {
-                try record("应判定为光标漂移，实际：\(error)")
+            guard case .noVisibleEffect = error else {
+                try record("应判定 noVisibleEffect，实际：\(error)")
                 return
             }
-            expect(abs(distance - 40) < 0.01)
         }
-        expect(engine.layout.zone(of: itemID) == nil)
+        expect(engine.layout.zone(of: itemID) == nil, "回滚后不留半成品布局")
         expect(!journal.hasPendingIntent)
+        expect(!engine.hasConfirmedDragSupport, "没产生效果不算一次成功验证")
+    }
+
+    /// 联动读取器的假拖拽器 = 系统真的重排了：引擎才允许提交
+    func dragThatActuallyMovesCommits() throws {
+        let reader = FakeMenuBarReader(ids: [itemID])
+        let mover = FakeMenuBarMover()
+        mover.coupledReader = reader
+        let (engine, journal) = makeEngine(reader: reader, mover: mover)
+
+        try engine.apply(itemID: itemID, to: .hidden, targetX: 640)
+        expectEqual(engine.layout.zone(of: itemID), .hidden)
+        expect(engine.hasConfirmedDragSupport)
+        expectNil(journal.readPendingIntent())
     }
 
     // MARK: 降级路径
@@ -312,7 +329,8 @@ extension LayoutEngineTests {
         return [
             TestCase("successfulMoveCommitsAndClearsPending", suite.successfulMoveCommitsAndClearsPending),
             TestCase("userHoldingMouseAbortsAndRollsBack", suite.userHoldingMouseAbortsAndRollsBack),
-            TestCase("cursorDriftDuringDragStopsEverything", suite.cursorDriftDuringDragStopsEverything),
+            TestCase("dragWithNoVisibleEffectRollsBack", suite.dragWithNoVisibleEffectRollsBack),
+            TestCase("dragThatActuallyMovesCommits", suite.dragThatActuallyMovesCommits),
             TestCase("unsupportedSystemDegradesToPanelOnly", suite.unsupportedSystemDegradesToPanelOnly),
             TestCase("moverErrorRollsBackLayout", suite.moverErrorRollsBackLayout),
             TestCase("orphanedIntentIsReplayedOnLaunch", suite.orphanedIntentIsReplayedOnLaunch),
