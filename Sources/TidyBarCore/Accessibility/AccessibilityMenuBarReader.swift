@@ -83,6 +83,51 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
         enumerate().items
     }
 
+    /// 只读某一个进程的图标。
+    ///
+    /// 全量枚举要遍历 90 个进程，实测 110~195ms（首次 2.6s）。用它给 mover 取一个图标帧
+    /// 是纯浪费，用它看"拖拽进行中的位置"更是每看一眼就错过整个动作。
+    /// 单进程读取只有几毫秒，是拖拽期间采样的唯一可行工具。
+    public func discoverItems(owning bundleID: String) -> [ManagedItem] {
+        guard let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) else {
+            return []
+        }
+        return collectItems(
+            from: application,
+            screens: screensProvider(),
+            primaryHeight: NSScreen.screens.first?.frame.height ?? 0
+        ).accepted
+    }
+
+    /// 单个进程的采集结果（含被拒原因计数）
+    private func collectItems(
+        from application: NSRunningApplication,
+        screens: [ScreenInfo],
+        primaryHeight: CGFloat
+    ) -> (accepted: [ManagedItem], rejections: [MenuBarItemPolicy.Rejection: Int]) {
+        let pid = application.processIdentifier
+        guard let extras = extrasMenuBar(of: pid) else { return ([], [:]) }
+        let children = self.children(of: extras)
+        var accepted: [ManagedItem] = []
+        var rejections: [MenuBarItemPolicy.Rejection: Int] = [:]
+        for (ordinal, child) in children.enumerated() {
+            switch mapChild(
+                child,
+                owner: application,
+                ordinal: ordinal,
+                ownerItemCount: children.count,
+                screens: screens,
+                primaryHeight: primaryHeight
+            ) {
+            case .accepted(let item):
+                accepted.append(item)
+            case .rejected(let reason):
+                rejections[reason, default: 0] += 1
+            }
+        }
+        return (MenuBarEnumeration.deduplicatedIDs(from: accepted), rejections)
+    }
+
     /// 供 probe / M0 记录使用的详细版
     public func enumerate() -> EnumerationReport {
         let started = DispatchTime.now()
@@ -117,26 +162,13 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
         for application in apps {
             let pid = application.processIdentifier
             let processStarted = DispatchTime.now()
-            let extras = extrasMenuBar(of: pid)
-            let children: [AXUIElement] = extras.map { self.children(of: $0) } ?? []
-            var accepted = 0
-
-            for (ordinal, child) in children.enumerated() {
-                switch mapChild(
-                    child,
-                    owner: application,
-                    ordinal: ordinal,
-                    ownerItemCount: children.count,
-                    screens: screens,
-                    primaryHeight: primaryHeight
-                ) {
-                case .accepted(let item):
-                    items.append(item)
-                    accepted += 1
-                case .rejected(let reason):
-                    rejections[reason, default: 0] += 1
-                }
+            let collected = collectItems(from: application, screens: screens, primaryHeight: primaryHeight)
+            items.append(contentsOf: collected.accepted)
+            for (reason, count) in collected.rejections {
+                rejections[reason, default: 0] += count
             }
+            let accepted = collected.accepted.count
+            let extras = extrasMenuBar(of: pid)
 
             probes.append(
                 ProcessProbe(

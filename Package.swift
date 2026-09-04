@@ -13,6 +13,9 @@ let package = Package(
         .library(name: "TidyBarCore", targets: ["TidyBarCore"]),
         .executable(name: "tidybar-probe", targets: ["TidyBarProbe"]),
         .executable(name: "tidybar-attr-dump", targets: ["TidyBarAttrDump"]),
+        .executable(name: "tidybar-fixture", targets: ["TidyBarFixture"]),
+        .executable(name: "tidybar-drag-probe", targets: ["TidyBarDragProbe"]),
+        .executable(name: "tidybar-drag-tune", targets: ["TidyBarDragTune"]),
     ],
     targets: [
         // 薄入口层：仅负责 NSApplication 启动与生命周期装配
@@ -24,6 +27,24 @@ let package = Package(
         // 全部逻辑放在库里，公开接口即测试面
         .target(
             name: "TidyBarCore",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // M0 实验品：造我们自己的图标（拖拽验证专用，绝不拿用户 App 的图标试手）
+        .executableTarget(
+            name: "TidyBarFixture",
+            dependencies: [],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // M0 验证项 2 的参数扫描（定时序包络用）
+        .executableTarget(
+            name: "TidyBarDragTune",
+            dependencies: ["TidyBarCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // M0 验证项 2：⌘ 拖拽真机验证
+        .executableTarget(
+            name: "TidyBarDragProbe",
+            dependencies: ["TidyBarCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // M0 探索工具：dump 子项的全部 AX 属性名与取值（找稳定标识用）
