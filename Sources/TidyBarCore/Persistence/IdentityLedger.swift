@@ -194,3 +194,62 @@ public enum IdentityLedger {
         }
     }
 }
+
+
+/// 从"没有台账"的旧版本升上来（设计文档 §4）。
+public enum IdentityLedgerMigration {
+    /// 迁移结果：三类计数都要打日志，升级时发生了什么必须可追溯。
+    public struct Outcome: Equatable, Sendable {
+        public let migrated: Int       // 老布局里的每个 id 各生成一条记录
+        public let matched: Int        // 新台账里当场就在现场对上的
+        public let ambiguous: Int      // 老布局里同进程多 id、迁移本身不产生歧义（id 是唯一键），恒 0；保留字段为了将来
+    }
+
+    /// 给旧布局的每个已登记 id 生成一条 `inferred` 记录。
+    ///
+    /// 为什么是 `inferred` 而不是 `user`：老数据无法区分"用户亲手分配"与"默认策略落位"，
+    /// 冒充用户决定会让免修剪保护囤一堆误钉（ChangeOrigin 那次教训的镜像）。
+    /// 只有迁移后用户再亲手改过一次，才会升级成 `.user`。
+    public static func migrate(
+        layout: MenuBarLayout,
+        observed: [ManagedItem],
+        now: Date
+    ) -> ([IdentityRecord], Outcome) {
+        let observedByID = Dictionary(uniqueKeysWithValues: observed.map { ($0.id, $0) })
+        var records: [IdentityRecord] = []
+        var matched = 0
+        for zone in MenuBarZone.allCases {
+            for id in layout.items(in: zone) {
+                let item = observedByID[id]
+                records.append(IdentityRecord(
+                    assignmentKey: "a-" + UUID().uuidString,
+                    ownerBundleID: item?.ownerBundleID ?? ownerFromLegacyID(id),
+                    observedTitle: item?.title ?? "",
+                    observedOrdinal: item?.ordinalInOwner ?? 0,
+                    ownerItemCount: item?.ownerItemCount ?? 1,
+                    aliases: [id],
+                    zoneRaw: zone.rawValue,
+                    pinnedBy: .inferred,
+                    lastSeenAt: item != nil ? now : .distantPast
+                ))
+                if item != nil { matched += 1 }
+            }
+        }
+        return (records, Outcome(migrated: records.count, matched: matched, ambiguous: 0))
+    }
+
+    /// 老台账不存在时的兜底：从 id 前缀取归属（`com.x.y.标题` → `com.x.y`）。
+    /// 取不到就整串当归属——宁可名字难看，也不能因为迁移把条目丢掉。
+    static func ownerFromLegacyID(_ id: String) -> String {
+        guard let dot = id.lastIndex(of: ".") else { return id }
+        return String(id[..<dot])
+    }
+
+    /// 迁移前把旧布局复制成只读备份。可回退不是锦上添花：
+    /// 迁移 bug 一旦发生，没有备份就只能让用户手工重排。
+    public static func backupLegacyLayout(journal: LayoutJournal, to destination: URL) throws {
+        guard let committed = journal.readCommittedLayout() else { return }
+        let data = try JSONEncoder().encode(committed)
+        try data.write(to: destination, options: .atomic)
+    }
+}

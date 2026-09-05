@@ -95,6 +95,33 @@ public final class LayoutEngine {
             : "当前系统版本下 ⌘ 拖拽机制尚未验证，已自动切换为收纳面板模式"
     }
 
+    /// 升级迁移结果（一次性），供装配层打日志。nil = 不需要迁移。
+    public private(set) var lastMigration: IdentityLedgerMigration.Outcome?
+
+    /// 启动时发现"有已提交布局、但台账是空的"⇒ 旧版本升上来，为每个老 id 建记录。
+    ///
+    /// 刻意不在 `init` 里做：迁移要写盘，init 失败会把构造器变 throwing，
+    /// 而这里失败的正确处置是"当作没迁移过、下次启动再试"，不是让工具打不开。
+    /// 备份先行：迁移 bug 一旦发生，没备份就只能让用户手工重排（设计文档 §4）。
+    public func migrateLegacyLayoutIfNeeded(observed: [ManagedItem]) {
+        guard let ledgerStore else { return }
+        let records = ledgerStore.load()
+        guard records.isEmpty, !layout.allItemIDs.isEmpty else { return }
+
+        if let backup = legacyBackupURL {
+            try? IdentityLedgerMigration.backupLegacyLayout(journal: journal, to: backup)
+        }
+        let (migrated, outcome) = IdentityLedgerMigration.migrate(
+            layout: layout, observed: observed, now: clock()
+        )
+        ledgerRecords = migrated
+        try? ledgerStore.save(migrated)
+        lastMigration = outcome
+    }
+
+    /// 备份落点由装配层指定（Application Support 下），引擎只管写。
+    public var legacyBackupURL: URL?
+
     // MARK: - 同步
 
     /// 从系统重新读取图标并折叠进布局；新出现的图标按策略归位（报告 A7）。

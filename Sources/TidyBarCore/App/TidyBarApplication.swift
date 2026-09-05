@@ -78,6 +78,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             journal: journal,
             ledger: IdentityLedgerStore(url: AppPaths.identityLedgerFile)
         )
+        engine.legacyBackupURL = AppPaths.supportDirectory()
+            .appendingPathComponent("layout.committed.pre-ledger.json")
         let settings = settingsStore.load()
         let barController = TidyBarController(
             engine: engine,
@@ -285,6 +287,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             scan: { reader.discoverItems() },
             apply: { [weak self, weak controller] items in
                 guard let self else { return }
+                controller?.layoutEngine.migrateLegacyLayoutIfNeeded(observed: items)
+                if let outcome = controller?.layoutEngine.lastMigration {
+                    fprint("台账迁移｜老条目 \(outcome.migrated) 项，当场对上 \(outcome.matched) 项；旧布局已备份可回退")
+                }
                 controller?.applyScan(items)
                 self.syncDividerPositions(from: items)
                 let elapsed = Date().timeIntervalSince(self.launchedAt)

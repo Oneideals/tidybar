@@ -38,7 +38,7 @@ let suites: [TestSuite] = [
     TestSuite("PositionSignature", PositionSignatureTests.testCases),
     TestSuite("TitleDriftAdoption", TitleDriftAdoptionTests.testCases),
     TestSuite("ResidualPairing", ResidualPairingTests.testCases),
-    TestSuite("IdentityLedger", IdentityLedgerTests.testCases + LedgerAcrossLaunchTests.testCases),
+    TestSuite("IdentityLedger", IdentityLedgerTests.testCases + LedgerAcrossLaunchTests.testCases + LedgerMigrationTests.testCases),
     TestSuite("SettingsEvolution", SettingsEvolutionTests.testCases),
     TestSuite("DividerGeometry", DividerGeometryTests.testCases),
     // 行为层

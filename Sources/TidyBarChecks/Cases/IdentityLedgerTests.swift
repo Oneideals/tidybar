@@ -238,3 +238,90 @@ extension LedgerAcrossLaunchTests {
         return [TestCase("assignmentSurvivesRestartAfterRename", suite.assignmentSurvivesRestartAfterRename)]
     }
 }
+
+// MARK: - 旧版本升级迁移（设计文档 §4）
+
+struct LedgerMigrationTests {
+    /// 旧布局的每个 id 各得一条记录；首个别名就是老 id，分区与老布局一致。
+    /// 全部标 `inferred`：老数据分不清"用户分配"与"默认落位"，冒充用户会囤误钉。
+    func legacyLayoutGrowsOneRecordPerItem() throws {
+        var layout = MenuBarLayout()
+        layout.append("com.a.x", to: .hidden)
+        layout.append("com.b.y", to: .visible)
+        let live = icon("com.a", "x", ordinal: 0, of: 1, x: 600)
+        let (records, outcome) = IdentityLedgerMigration.migrate(
+            layout: layout, observed: [live], now: Date(timeIntervalSince1970: 5_000)
+        )
+        expectEqual(records.count, 2)
+        expectEqual(outcome.migrated, 2)
+        expectEqual(outcome.matched, 1, "现场在场的只有 com.a.x")
+        let hidden = records.first { $0.aliases == ["com.a.x"] }
+        expectEqual(hidden?.zoneRaw, MenuBarZone.hidden.rawValue)
+        expectEqual(hidden?.pinnedBy, IdentityRecord.Pin.inferred, "迁移不得冒充用户决定")
+        // 现场对上的记录要有 lastSeenAt；否则将来会被 prune 当陈旧清掉
+        expect(records.first { $0.aliases == ["com.a.x"] }?.lastSeenAt != .distantPast)
+        expect(records.first { $0.aliases == ["com.b.y"] }?.lastSeenAt == .distantPast,
+               "不在场的条目不能伪装成刚见过——它该在 30 天后被清理（除非用户钉住）")
+    }
+
+    /// id 里拆不出归属时整串当归属：宁可名字难看，不许因为迁移丢条目。
+    func oddLegacyIDStillMigrates() throws {
+        var layout = MenuBarLayout()
+        layout.append("无点号的老id", to: .visible)
+        let (records, _) = IdentityLedgerMigration.migrate(layout: layout, observed: [], now: Date())
+        expectEqual(records.count, 1)
+        expectEqual(records.first?.ownerBundleID, "无点号的老id")
+    }
+
+    /// 迁移前旧布局必须有只读备份——迁移 bug 发生时这是唯一的回退路径。
+    func backupIsWrittenBeforeMigration() throws {
+        let dir = TestPaths.journalDirectory("ledger-migrate")
+        let journal = LayoutJournal(directory: dir)
+        var layout = MenuBarLayout()
+        layout.append("com.a.x", to: .hidden)
+        try journal.writeCommitted(layout)
+        let backup = dir.appendingPathComponent("layout.committed.pre-ledger.json")
+        try IdentityLedgerMigration.backupLegacyLayout(journal: journal, to: backup)
+        let restored = try JSONDecoder().decode(MenuBarLayout.self, from: Data(contentsOf: backup))
+        expectEqual(restored.zone(of: "com.a.x"), MenuBarZone.hidden)
+    }
+
+    /// 引擎侧：有台账/空布局都不迁移；真迁移后 lastMigration 有值且记录已落盘。
+    func engineMigratesOnlyWhenNeeded() throws {
+        let url = TestPaths.journalDirectory("ledger-engine-mig").appendingPathComponent("identity-ledger.json")
+        let store = IdentityLedgerStore(url: url)
+
+        // 空布局 ⇒ 不迁移
+        var layout = MenuBarLayout()
+        let empty = LayoutEngine(layout: layout,
+            services: makeServices(reader: FakeMenuBarReader(ids: []), mover: FakeMenuBarMover()),
+            journal: LayoutJournal(directory: TestPaths.journalDirectory("m0")), ledger: store)
+        empty.migrateLegacyLayoutIfNeeded(observed: [])
+        expectNil(empty.lastMigration)
+
+        // 有布局无台账 ⇒ 迁移一次；再来一次不再重复
+        layout.append("com.a.x", to: .hidden)
+        let engine = LayoutEngine(layout: layout,
+            services: makeServices(reader: FakeMenuBarReader(ids: []), mover: FakeMenuBarMover()),
+            journal: LayoutJournal(directory: TestPaths.journalDirectory("m1")), ledger: store)
+        let live = icon("com.a", "x", ordinal: 0, of: 1, x: 600)
+        engine.migrateLegacyLayoutIfNeeded(observed: [live])
+        expectEqual(engine.lastMigration?.migrated, 1)
+        expectEqual(store.load().count, 1)
+
+        engine.migrateLegacyLayoutIfNeeded(observed: [live])
+        expectEqual(store.load().count, 1, "重复迁移会造出双份记录，把别名表搅乱")
+    }
+}
+
+extension LedgerMigrationTests {
+    static var testCases: [TestCase] {
+        let suite = LedgerMigrationTests()
+        return [
+            TestCase("legacyLayoutGrowsOneRecordPerItem", suite.legacyLayoutGrowsOneRecordPerItem),
+            TestCase("oddLegacyIDStillMigrates", suite.oddLegacyIDStillMigrates),
+            TestCase("backupIsWrittenBeforeMigration", suite.backupIsWrittenBeforeMigration),
+            TestCase("engineMigratesOnlyWhenNeeded", suite.engineMigratesOnlyWhenNeeded),
+        ]
+    }
+}

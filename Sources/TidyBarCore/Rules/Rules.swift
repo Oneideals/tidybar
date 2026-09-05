@@ -166,6 +166,14 @@ public struct RuleAction: Equatable, Sendable, Codable {
 
     /// 单图标动作
     public static func show(_ itemID: String) -> RuleAction { .init(kind: .show, itemID: itemID) }
+    /// 按目标分区构造（编辑器用：选了"隐藏"就得到 hide）
+    public static func forZone(_ zone: MenuBarZone) -> RuleAction {
+        switch zone {
+        case .visible: return .init(kind: .show)
+        case .hidden: return .init(kind: .hide)
+        case .alwaysHidden: return .init(kind: .alwaysHide)
+        }
+    }
     public static func hide(_ itemID: String) -> RuleAction { .init(kind: .hide, itemID: itemID) }
     public static func alwaysHide(_ itemID: String) -> RuleAction { .init(kind: .alwaysHide, itemID: itemID) }
     public static func applyProfile(_ name: String) -> RuleAction { .init(kind: .applyProfile, profileName: name) }
