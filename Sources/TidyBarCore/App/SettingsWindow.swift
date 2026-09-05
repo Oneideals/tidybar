@@ -12,6 +12,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let rehideValue = NSTextField(labelWithString: "")
     private let hotKeyLine = NSTextField(labelWithString: "")
     private let statusLine = NSTextField(labelWithString: "")
+    private let overview = IconOverviewView(onReassign: { _, _ in })   // 回调在 init 里重设
 
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
@@ -25,6 +26,10 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         window.title = "TidyBar 设置"
         window.isReleasedWhenClosed = false
         super.init(window: window)
+        overview.onReassign = { [weak controller] itemID, zone in
+            _ = controller?.move(itemID, to: zone)
+        }
+        overview.onZoneChanged = { [weak self] in self?.refresh() }
         build(hotKeyDescription: hotKeyDescription)
         refresh()
     }
@@ -86,6 +91,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     }
 
     private func refresh() {
+        overview.reload(rows: IconOverviewBuilder.rows(from: controller))
         askToggle.state = controller.settings.askAboutNewItems ? .on : .off
         rehideStepper.doubleValue = controller.settings.rehideDelay
         rehideValue.stringValue = controller.settings.rehideDelay == 0
@@ -140,12 +146,32 @@ public final class FirstRunWizardController: NSWindowController {
     private let onFinish: () -> Void
     private let body = NSTextField(wrappingLabelWithString: "")
     private var step = 1
+    /// 第 2 步复用的总览：与设置页同一个视图类型、同一套行语义，不会各长一套。
+    private lazy var overviewInWizard: IconOverviewView = IconOverviewView(onReassign: { _, _ in })
+
+    private func installOverviewInWizard() {
+        if overviewInWizard.superview == nil, let root = window?.contentView {
+            overviewInWizard.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(overviewInWizard)
+            NSLayoutConstraint.activate([
+                overviewInWizard.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+                overviewInWizard.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
+                overviewInWizard.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 10),
+                overviewInWizard.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -56),
+            ])
+            overviewInWizard.onReassign = { [weak controller] itemID, zone in
+                _ = controller?.move(itemID, to: zone)
+            }
+            overviewInWizard.onZoneChanged = { [weak self] in self?.showStep() }
+        }
+        overviewInWizard.reload(rows: IconOverviewBuilder.rows(from: controller))
+    }
 
     public init(controller: TidyBarController, onFinish: @escaping () -> Void) {
         self.controller = controller
         self.onFinish = onFinish
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 420, height: 200),
+            contentRect: CGRect(x: 0, y: 0, width: 460, height: 430),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -184,14 +210,17 @@ public final class FirstRunWizardController: NSWindowController {
 
     private func showStep() {
         window?.title = "欢迎用 TidyBar（\(step)/3）"
+        // 总览只在第 2 步出现；别的步骤收回，避免窗口里挂着一块不相关的长表
+        if step != 2 { overviewInWizard.removeFromSuperview() }
         let trusted = controller.layoutEngineAllowsTakeoverDescription
         switch step {
         case 1:
             body.stringValue = "第 1 步：辅助功能权限决定我能不能读到并整理你的图标。\n当前：\(trusted)\n没授予的话我只会显示占位首字母，不会去搬动任何图标。"
         case 2:
-            body.stringValue = "第 2 步：☰ 菜单 →「整理图标」可以把不常用的收进隐藏区。\n默认策略是"
+            body.stringValue = "第 2 步：这张表就是全景——每个图标现在在哪个区一目了然。\n点右侧按钮即可调整；默认策略是"
                 + (controller.settings.askAboutNewItems ? "出现新图标时先问你" : "新图标自动收进隐藏区")
-                + "；这一步也可以完全跳过，之后随时在设置里改。"
+                + "。也可以完全跳过，之后在设置里改。"
+            installOverviewInWizard()
         default:
             body.stringValue = "第 3 步：呼出隐藏区——点 ☰、点菜单栏分隔符"
                 + (controller.settings.revealTriggers.contains(.hotkey) ? "，或按 ⌥Space。" : "。")
