@@ -91,7 +91,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         )
         self.controller = barController
 
-        let panel = TidyBarPanelController(services: services)
+        let capturer = ScreenCaptureKitIconCapturer()
+        let panel = TidyBarPanelController(services: services, capturer: capturer)
         panel.onItemClick = { [weak barController, weak panel] item in
             guard let barController else { return }
             let outcome = barController.activate(itemID: item.id)
@@ -202,6 +203,13 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
         if ProcessInfo.processInfo.environment["TIDYBAR_SELFCHECK_SEARCH"] == "1" {
             searchSelfCheck(barController: barController)
+        }
+        if ProcessInfo.processInfo.environment["TIDYBAR_REVEAL_PANEL"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self, weak barController, weak panel] in
+                guard let self, let barController, let panel else { return }
+                barController.handle(event: .init(trigger: .dividerClick, location: NSEvent.mouseLocation))
+                self.syncPanel(barController: barController, panel: panel)
+            }
         }
 
         // 收尾信号：TERM=注销/关机，HUP=终端/launchd 回收，INT=Ctrl-C。

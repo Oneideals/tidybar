@@ -69,25 +69,17 @@ public final class TidyBarPanelView: NSView {
         for (index, item) in items.enumerated() {
             let origin = PanelGeometry.itemOrigin(in: bounds, index: index, metrics: metrics)
             let rect = CGRect(x: origin.x, y: origin.y, width: metrics.itemSide, height: metrics.itemSide)
-            NSColor.secondaryLabelColor.withAlphaComponent(0.18).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
+            NSColor.secondaryLabelColor.withAlphaComponent(0.12).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+            let inset = rect.insetBy(dx: 2.5, dy: 2.5)
             if let image = images[item.id] {
-                // 真实位图优先。留 3pt 内缩，避免图标贴边被圆角切掉
-                let inset = rect.insetBy(dx: 3, dy: 3)
+                // 1. 真实屏幕录制截图优先（如果有 ScreenCaptureKit 授权且已抓到）
                 NSGraphicsContext.current?.cgContext.draw(image, in: inset)
-                continue
+            } else {
+                // 2. 真实 App 原生高清图标（从系统应用包读取，零授权秒开）
+                let appIcon = AppIconResolver.resolve(for: item)
+                appIcon.draw(in: inset)
             }
-            // 占位：首字母。没授权时这是常态路径，不是错误状态
-            let label = String(item.title.prefix(1)).uppercased()
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ]
-            let size = label.size(withAttributes: attributes)
-            label.draw(
-                at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
-                withAttributes: attributes
-            )
         }
     }
 
@@ -208,6 +200,11 @@ public final class TidyBarPanelController: NSObject {
         )
         panel.setFrame(frame, display: true, animate: false)
         panel.orderFrontRegardless()
+
+        requestMissingBitmaps(for: items) { [weak self] in
+            guard let self, self.isVisible else { return }
+            self.panelView.images = self.cachedImages(for: items)
+        }
     }
 
     public func hide() {

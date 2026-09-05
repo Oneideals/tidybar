@@ -203,7 +203,9 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
             row.bezelStyle = .shadowlessSquare
             row.font = NSFont.systemFont(ofSize: 12)
             row.alignment = .left
-            row.imagePosition = .noImage
+            row.image = AppIconResolver.resolve(for: item)
+            row.imagePosition = .imageLeft
+            row.imageScaling = .scaleProportionallyUpOrDown
             row.identifier = NSUserInterfaceItemIdentifier(item.id)
             if index == selection {
                 row.contentTintColor = .controlAccentColor

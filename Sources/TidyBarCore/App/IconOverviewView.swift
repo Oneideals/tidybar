@@ -126,7 +126,7 @@ public final class IconOverviewView: NSView {
             let appName = item.title.isEmpty ? (item.ownerBundleID ?? "未知应用") : item.title
             let bundle = item.ownerBundleID ?? "未知来源"
             let posHint = item.isPositionalIdentity ? " · [位置匹配]" : ""
-            inspectorIconView.image = IconImageResolver.resolve(for: item)
+            inspectorIconView.image = AppIconResolver.resolve(for: item)
             inspectorIconView.isHidden = false
             inspectorTextLabel.stringValue = "当前图标：\(appName)（\(bundle)）\(posHint) ｜ 分区：\(zone.displayLabel) ｜ 拖拽或单击移至其他托盘"
             inspectorTextLabel.textColor = .labelColor
@@ -467,7 +467,7 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
     private func setup() {
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.imageScaling = .scaleProportionallyUpOrDown
-        iconImageView.image = IconImageResolver.resolve(for: row.item)
+        iconImageView.image = AppIconResolver.resolve(for: row.item)
         addSubview(iconImageView)
 
         let displayName = row.item.title.isEmpty ? (row.item.ownerBundleID ?? "图标") : row.item.title
@@ -595,64 +595,6 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
     }
 }
 
-// MARK: - 真实 App 图标解析器
-
-private enum IconImageResolver {
-    static func resolve(for item: ManagedItem) -> NSImage {
-        // 1. 尝试从 ownerBundleID 获取真实应用高清图标
-        if let bundleID = item.ownerBundleID, !bundleID.isEmpty {
-            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-                return NSWorkspace.shared.icon(forFile: appURL.path)
-            }
-        }
-
-        // 2. 常见系统项的 SF Symbol 映射
-        let lowerTitle = item.title.lowercased()
-        let lowerOwner = (item.ownerBundleID ?? "").lowercased()
-        let combined = lowerTitle + " " + lowerOwner
-
-        let symbolName: String?
-        if combined.contains("wifi") || combined.contains("airport") {
-            symbolName = "wifi"
-        } else if combined.contains("battery") || combined.contains("power") {
-            symbolName = "battery.100"
-        } else if combined.contains("sound") || combined.contains("volume") {
-            symbolName = "speaker.wave.3"
-        } else if combined.contains("bluetooth") {
-            symbolName = "bonjour"
-        } else if combined.contains("clock") || combined.contains("time") {
-            symbolName = "clock"
-        } else if combined.contains("search") || combined.contains("spotlight") {
-            symbolName = "magnifyingglass"
-        } else if combined.contains("control") {
-            symbolName = "switch.2"
-        } else if combined.contains("weather") {
-            symbolName = "cloud.sun"
-        } else {
-            symbolName = nil
-        }
-
-        if let symbolName, let symImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: item.title) {
-            return symImage
-        }
-
-        // 3. 拟物首字母徽标
-        let image = NSImage(size: NSSize(width: 24, height: 24))
-        image.lockFocus()
-        NSColor.labelColor.withAlphaComponent(0.12).setFill()
-        NSBezierPath(roundedRect: NSRect(x: 1, y: 1, width: 22, height: 22), xRadius: 5, yRadius: 5).fill()
-        let letter = String(item.title.prefix(2)).uppercased()
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10, weight: .bold),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        let str = NSAttributedString(string: letter.isEmpty ? "•" : letter, attributes: attrs)
-        let s = str.size()
-        str.draw(at: NSPoint(x: (24 - s.width) / 2, y: (24 - s.height) / 2))
-        image.unlockFocus()
-        return image
-    }
-}
 
 // MARK: - 总览的组装器
 
