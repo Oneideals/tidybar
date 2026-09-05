@@ -126,7 +126,7 @@ public final class IconOverviewView: NSView {
         updateInspector(item: nil, zone: nil)
     }
 
-    @objc private func applySmartRecommendations() {
+    @objc public func applySmartRecommendations() {
         let recommendations = SmartItemClassifier.classifyAll(items: rows.map(\.item))
         for rec in recommendations {
             onReassign(rec.itemID, rec.recommendedZone)

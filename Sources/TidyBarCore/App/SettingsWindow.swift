@@ -67,6 +67,13 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         tab1View.addSubview(subtitleLabel)
 
+        let smartButton = NSButton(title: "🪄 一键智能推荐收纳", target: self, action: #selector(triggerSmartCategorize))
+        smartButton.bezelStyle = .rounded
+        smartButton.contentTintColor = .controlAccentColor
+        smartButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        smartButton.translatesAutoresizingMaskIntoConstraints = false
+        tab1View.addSubview(smartButton)
+
         overview.translatesAutoresizingMaskIntoConstraints = false
         tab1View.addSubview(overview)
 
@@ -76,10 +83,15 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
             subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
             subtitleLabel.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 6),
+            subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: smartButton.leadingAnchor, constant: -12),
+
+            smartButton.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
+            smartButton.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor, constant: -6),
+            smartButton.heightAnchor.constraint(equalToConstant: 28),
 
             overview.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 4),
             overview.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor, constant: -4),
-            overview.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 10),
+            overview.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 12),
             overview.bottomAnchor.constraint(lessThanOrEqualTo: tab1View.bottomAnchor, constant: -6),
         ])
         tab1.view = tab1View
@@ -228,6 +240,11 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         performanceLine.stringValue = "性能（F1）：常驻内存 \(memStr)（预算 ≤40MB）｜ 空闲 CPU ≈ 0.0%"
         privacyLine.stringValue = "隐私（F2）：纯本地运行，零网络请求、零遥测收集；配置保存在本地。"
         statusLine.stringValue = controller.logs.suffix(2).joined(separator: "\n")
+    }
+
+    @objc private func triggerSmartCategorize() {
+        overview.applySmartRecommendations()
+        refresh()
     }
 
     private func currentResidentMemoryMB() -> Double? {
