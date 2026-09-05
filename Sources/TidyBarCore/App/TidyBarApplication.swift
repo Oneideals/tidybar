@@ -8,6 +8,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var controller: TidyBarController?
     private var tickTimer: Timer?
     private var statusItem: NSStatusItem?
+    private var searchUI: TidyBarSearchUI?
     /// 注销/关机/launchd 回收发来的信号不保证会走 applicationWillTerminate，显式挂信号源
     private var shutdown: GracefulShutdown?
     private var isExiting = false
@@ -70,6 +71,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
         self.panelController = panel
 
+        let search = TidyBarSearchUI()
+        search.queryHandler = { [weak barController] query in barController?.search(query) ?? [] }
+        search.activateHandler = { [weak barController] item in
+            barController?.activate(itemID: item.id) ?? .actionUnsupported
+        }
+        search.zoneLabel = { [weak barController] id in
+            guard let zone = barController?.snapshot.layout.zone(of: id) else { return "未分类" }
+            return TidyBarController.zoneLabel(zone)
+        }
+        self.searchUI = search
+
         let events = EventEngine()
         events.onEvent = { [weak self, weak barController, weak panel] event in
             guard let self, let barController, let panel else { return }
@@ -96,6 +108,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 还会让菜单栏在启动瞬间卡住，因此首扫交给后台调度器，结果回主线程落地。
         scheduleRefresh(reason: .userRequested)
         reportStartup(barController: barController)
+        // 自检必须在**真 app 进程**里跑：探针 CLI 没有 NSApp 激活策略与完整 run loop，
+        // 键盘焦点这类断言在它里面必然失败，测出来的是环境不等价而不是产品有 bug。
+        if ProcessInfo.processInfo.environment["TIDYBAR_SELFCHECK_SEARCH"] == "1" {
+            searchSelfCheck(barController: barController)
+        }
 
         // 收尾信号：TERM=注销/关机，HUP=终端/launchd 回收，INT=Ctrl-C。
         // SIGKILL 不可捕获，那正是 LayoutJournal 要处理的场景，别把功劳记到这里。
@@ -189,6 +206,25 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(withTitle: "呼出隐藏区", action: #selector(revealHiddenArea), keyEquivalent: "")
+        // 分区分配先走菜单：跨区拖拽要等接管闸门开放，而"把某个图标收进隐藏区"
+        // 这个意图本身不依赖拖拽，不必让它陪着闸门一起等着。
+        menu.addItem(withTitle: "搜索图标…", action: #selector(presentSearch), keyEquivalent: "f")
+        menu.addItem(
+            TidyBarMenuBuilder.zoneAssignment(
+                controller: barController,
+                target: self,
+                assignSelector: #selector(assignZone(_:))
+            )
+        )
+        menu.addItem(
+            TidyBarMenuBuilder.firstRunGuide(
+                accessibilityGranted: services.accessibility.isTrusted,
+                target: self,
+                openSettingsSelector: #selector(openAccessibilitySettings),
+                doneSelector: #selector(dismissGuide),
+                skipSelector: #selector(dismissGuide)
+            )
+        )
         menu.addItem(withTitle: "刷新图标快照", action: #selector(refreshItems), keyEquivalent: "r")
         let demo = menu.addItem(withTitle: "演示模式（一键收起）", action: #selector(toggleDemoMode), keyEquivalent: "d")
         demo.keyEquivalentModifierMask = [.command, .shift]
@@ -199,6 +235,51 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         item.menu = menu
         return item
     }
+
+    /// 呼出搜索面板。
+    ///
+    /// 为什么还挂在 ☰ 菜单里而不是全局快捷键（报告 A8 的 ⌥Space）：
+    /// `NSEvent.addGlobalMonitorForEvents` 只能**观察**按键、不能吞掉它，
+    /// 用 ⌥Space 呼出的同时会把一个空格打进用户正在输入的文本框里——这比没有快捷键更糟。
+    /// 真要全局热键必须走 RegisterEventHotKey（Carbon）或 CGEventTap 才能消费掉按键，
+    /// 而这两条都还没在本项目里验证过，所以先不假装支持。
+    @objc private func presentSearch() {
+        let screenHeight = NSScreen.main?.frame.height ?? 0
+        searchUI?.present(anchorX: NSEvent.mouseLocation.x, screenHeight: screenHeight)
+    }
+
+    private func searchSelfCheck(barController: TidyBarController) {
+        guard let search = searchUI else { return }
+        search.present(anchorX: NSEvent.mouseLocation.x, screenHeight: NSScreen.main?.frame.height ?? 900)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        // 断言写错过一次：文本框成为首响应者后，AppKit 会把**字段编辑器(NSText)**
+            // 设为 firstResponder，所以只认 NSTextField 会把"其实成功了"判成失败。
+            let responder = search.panel.firstResponder
+            let focused = responder is NSTextField || responder is NSText
+            let line = "搜索自检｜visible=\(search.panel.isVisible ? "yes" : "no") canBecomeKey=\(search.panel.canBecomeKey ? "yes" : "no") 输入框取得焦点=\(focused ? "yes" : "no") 结果行数=\(search.resultRowCount)"
+            fprint(line)
+            print(line)
+            exit((search.panel.isVisible && focused) ? 0 : 1)
+        }
+    }
+
+    /// 分区分配：只改归属（布局意图），不搬动系统图标。
+    @objc private func assignZone(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? ZoneAssignmentRequest, let controller else { return }
+        controller.move(request.itemID, to: request.zone)
+    }
+
+    @objc private func openAccessibilitySettings() {
+        services.accessibility.requestTrust()
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// 引导完成/跳过：当前只收起子菜单。刻意**不往 AppSettings 加字段**——
+    /// 它是合成 Codable，加一个存储字段会让老用户已存的设置解码失败并被静默重置，
+    /// 那比"引导每次都还在"严重得多。等有了迁移机制（报告 P1-C）再持久化。
+    @objc private func dismissGuide() {}
 
     @objc private func revealHiddenArea() {
         controller?.handle(event: .init(trigger: .dividerClick, location: NSEvent.mouseLocation))

@@ -94,6 +94,35 @@ if let target = argumentValue("--activate") {
     exit(outcome == .pressed ? 0 : 1)
 }
 
+/// 搜索面板 UI 自检：真实呼出一次，断言可见、能接键盘、查询确实执行。
+/// 只断言"逻辑算出 N 条"不够——面板起不来或抢不到键盘焦点，用户看到的就是"按了没东西"。
+if arguments.contains("--search-ui") {
+    let items = globalOrder()
+    let ui = TidyBarSearchUI(maxResults: 8)
+    var queries = 0
+    ui.queryHandler = { query in
+        queries += 1
+        return ItemSearch.rank(items, query: query, title: { $0.title })
+    }
+    ui.activateHandler = { _ in .pressed }
+    ui.zoneLabel = { _ in "显示" }
+    ui.present(anchorX: 600, screenHeight: NSScreen.screens.first?.frame.height ?? 900)
+    let visible = ui.panel.isVisible
+    let keyable = ui.panel.canBecomeKey
+    let focused = (ui.panel.firstResponder as? NSTextField) != nil
+    ui.panel.contentView?.subviews.compactMap { $0 as? NSTextField }.first?.stringValue = "f"
+    ui.controlTextDidChange(Notification(name: Notification.Name("probe")))
+    let rows = ui.resultRowCount
+    print("SEARCHUI visible=\(visible ? "yes" : "no") canBecomeKey=\(keyable ? "yes" : "no") fieldFocused=\(focused ? "yes" : "no") queries=\(queries) rows=\(rows) 在栏图标=\(items.count)")
+    check("面板真的显示出来", visible)
+    check("面板能接键盘输入", keyable && focused)
+    check("查询确实被执行", queries > 0)
+    check("行数不超过上限", rows <= 8)
+    ui.dismiss()
+    check("关闭后面板隐藏", !ui.panel.isVisible)
+    exit(failures.isEmpty ? 0 : 1)
+}
+
 /// 可点性普查：只读动作列表，不真的点任何图标。
 if arguments.contains("--press-census") {
     let census = reader.pressCapabilityCensus()
