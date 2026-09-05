@@ -90,7 +90,7 @@ public final class LayoutEngine {
     @discardableResult
     public func synchronize(newItemZone: MenuBarZone) -> [ManagedItem] {
         let discovered = services.reader.discoverItems()
-        fold(ids: discovered.map(\.id), newItemZone: newItemZone)
+        fold(items: discovered, newItemZone: newItemZone)
         return discovered
     }
 
@@ -98,6 +98,26 @@ public final class LayoutEngine {
     /// 而不是强迫调用方在主线程里重扫一遍。
     public func fold(ids itemIDs: [String], newItemZone: MenuBarZone) {
         layout = MenuBarLayout.folding(discovered: itemIDs, into: layout, defaultZone: newItemZone)
+    }
+
+    /// 带归属信息的折叠：新出现的 id 若在本工具里查不到，先试"同进程唯一配置"认领，
+    /// 认领成功就把配置**改名**成新 id——不改名只是权宜之计，下次扫描又要重新猜。
+    public func fold(items discovered: [ManagedItem], newItemZone: MenuBarZone) {
+        var adopted = layout
+        var renames: [(from: String, to: String)] = []
+        let known = layout.allItemIDs
+        for item in discovered where !known.contains(item.id) {
+            guard item.ownerItemCount == 1, let owner = item.ownerBundleID,
+                  let zone = adopted.soleZone(forOwner: owner) else { continue }
+            let prefix = ManagedItem.normalized(owner) + "."
+            if let stale = adopted.items(in: zone).first(where: { $0.hasPrefix(prefix) }) {
+                renames.append((stale, item.id))
+            }
+        }
+        for rename in renames {
+            adopted.rename(id: rename.from, to: rename.to)
+        }
+        layout = MenuBarLayout.folding(discovered: discovered.map(\.id), into: adopted, defaultZone: newItemZone)
     }
 
     // MARK: - 变更

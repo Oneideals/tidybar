@@ -20,6 +20,22 @@ public struct MenuBarLayout: Codable, Equatable, Sendable {
         Set(zones.values.flatMap { $0 })
     }
 
+    /// 该归属进程在本工具的布局里**只有一条**配置时，返回它所在的分区。
+    ///
+    /// 用来接住"标题漂移"：微信把未读数写进 AXTitle，含标题的 id 会随状态变化，
+    /// 老配置于是认不出同一个图标，用户会遇到"我明明收起来了，它又冒出来"。
+    /// 一个进程只有一个图标时，"这条配置属于这个进程"已经足够定位到人，
+    /// 不需要标题参与。多于一个图标时这里返回 nil——那种情况只能靠位置认领，
+    /// 硬接会把配置接到兄弟图标上，比认错更糟。
+    public func soleZone(forOwner ownerBundleID: String) -> MenuBarZone? {
+        let prefix = ManagedItem.normalized(ownerBundleID) + "."
+        let matches = MenuBarZone.allCases.flatMap { zone in
+            items(in: zone).filter { $0.hasPrefix(prefix) }
+        }
+        guard matches.count == 1, let only = matches.first else { return nil }
+        return zone(of: only)
+    }
+
     public func zone(of itemID: String) -> MenuBarZone? {
         for zone in MenuBarZone.allCases where items(in: zone).contains(itemID) {
             return zone
@@ -98,5 +114,17 @@ public struct MenuBarLayout: Codable, Equatable, Sendable {
         guard var list = zones[zone.rawValue] else { return }
         list.removeAll(where: predicate)
         zones[zone.rawValue] = list.isEmpty ? nil : list
+    }
+
+    /// 原地改名（保持所在分区与左右顺序）。标题漂移后的配置迁移就靠它落到新 id 上。
+    public mutating func rename(id old: String, to new: String) {
+        guard old != new, let current = zone(of: old) else { return }
+        var list = items(in: current)
+        guard let index = list.firstIndex(of: old) else { return }
+        // 新 id 已经被登记在**别的**分区时不能硬塞，否则同一图标会同时出现在两个分区
+        if let existing = zone(of: new), existing != current { return }
+        list.removeAll { $0 == old || $0 == new }
+        list.insert(new, at: min(index, list.count))
+        zones[current.rawValue] = list
     }
 }

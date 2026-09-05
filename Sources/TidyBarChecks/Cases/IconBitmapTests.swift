@@ -248,3 +248,103 @@ extension PositionSignatureTests {
         ]
     }
 }
+
+// MARK: - 标题漂移后的归属认领（微信这种"一个进程一个图标 + 标题带未读数"的最常见形态）
+
+struct TitleDriftAdoptionTests {
+    private func wechat(_ title: String) -> ManagedItem {
+        ManagedItem(
+            id: ManagedItem.stableID(ownerBundleID: "com.tencent.xinwechat", title: title),
+            ownerBundleID: "com.tencent.xinwechat",
+            title: title,
+            frame: CGRect(x: 900, y: 1_188, width: 24, height: 24),
+            isSystemOwned: false,
+            identitySource: .axTitle,
+            ordinalInOwner: 0,
+            ownerItemCount: 1
+        )
+    }
+
+    /// 用户把微信收进隐藏区，微信随后把未读数写进标题 → id 变了。
+    /// 这时配置必须跟着走，否则用户看到的是"我明明收起来了，它又冒出来"。
+    func renamedIconKeepsItsAssignment() throws {
+        var layout = MenuBarLayout()
+        layout.append(wechat("微信").id, to: .hidden)
+        let engine = LayoutEngine(
+            layout: layout,
+            services: makeServices(reader: FakeMenuBarReader(ids: []), mover: FakeMenuBarMover()),
+            journal: LayoutJournal(directory: TestPaths.journalDirectory("drift-adopt"))
+        )
+        engine.fold(items: [wechat("微信 (3)")], newItemZone: .visible)
+
+        let renamed = wechat("微信 (3)")
+        expectEqual(engine.layout.zone(of: renamed.id), .hidden, "改标题后归属丢失")
+        expectNil(engine.layout.zone(of: wechat("微信").id), "旧 id 必须一并迁走，否则同一图标占两个坑")
+    }
+
+    /// 一个进程有**多个**图标时不许猜：猜错会把兄弟图标的配置偷走，比认错更难查。
+    func multiIconOwnerIsNotGuessed() throws {
+        var layout = MenuBarLayout()
+        layout.append("com.adguard.mac.adguard.1", to: .hidden)
+        let two = ManagedItem(
+            id: "com.adguard.mac.adguard.2",
+            ownerBundleID: "com.adguard.mac.adguard",
+            title: "2",
+            frame: CGRect(x: 800, y: 1_188, width: 24, height: 24),
+            isSystemOwned: false,
+            identitySource: .axTitle,
+            ordinalInOwner: 1,
+            ownerItemCount: 2
+        )
+        let engine = LayoutEngine(
+            layout: layout,
+            services: makeServices(reader: FakeMenuBarReader(ids: []), mover: FakeMenuBarMover()),
+            journal: LayoutJournal(directory: TestPaths.journalDirectory("drift-multi"))
+        )
+        // 同进程的另一个图标也在场：它才是那条配置的真正主人。折叠只增不减在场项，
+        // 所以旧配置必须留在隐藏区，新项按默认分区新建——不能被"就近认领"过去。
+        engine.fold(items: [ManagedItem(
+            id: "com.adguard.mac.adguard.1",
+            ownerBundleID: "com.adguard.mac.adguard",
+            title: "1",
+            frame: CGRect(x: 770, y: 1_188, width: 24, height: 24),
+            isSystemOwned: false,
+            identitySource: .axTitle,
+            ordinalInOwner: 0,
+            ownerItemCount: 2
+        ), two], newItemZone: .visible)
+        expectEqual(engine.layout.zone(of: two.id), .visible, "多图标进程只能按位置新建，不能认领别人的配置")
+        expectEqual(engine.layout.zone(of: "com.adguard.mac.adguard.1"), .hidden, "旧配置必须原地不动")
+    }
+
+    func soleZoneRequiresExactlyOneConfiguredIcon() throws {
+        var layout = MenuBarLayout()
+        layout.append("com.a.x", to: .hidden)
+        expectEqual(layout.soleZone(forOwner: "com.a"), .hidden)
+        layout.append("com.a.y", to: .visible)
+        expectNil(layout.soleZone(forOwner: "com.a"), "同进程两条配置时无法判断该接哪一条")
+        expectNil(layout.soleZone(forOwner: "com.b"))
+    }
+
+    /// 改名要保持左右顺序——顺序就是可见区的排布，乱了等于把图标挪了位。
+    func renamePreservesOrderAndZone() throws {
+        var layout = MenuBarLayout()
+        layout.append("com.a.old", to: .visible)
+        layout.append("com.b.one", to: .visible)
+        layout.rename(id: "com.a.old", to: "com.a.new")
+        expectEqual(layout.items(in: .visible), ["com.a.new", "com.b.one"])
+        expectEqual(layout.zone(of: "com.a.new"), .visible)
+    }
+}
+
+extension TitleDriftAdoptionTests {
+    static var testCases: [TestCase] {
+        let suite = TitleDriftAdoptionTests()
+        return [
+            TestCase("renamedIconKeepsItsAssignment", suite.renamedIconKeepsItsAssignment),
+            TestCase("multiIconOwnerIsNotGuessed", suite.multiIconOwnerIsNotGuessed),
+            TestCase("soleZoneRequiresExactlyOneConfiguredIcon", suite.soleZoneRequiresExactlyOneConfiguredIcon),
+            TestCase("renamePreservesOrderAndZone", suite.renamePreservesOrderAndZone),
+        ]
+    }
+}

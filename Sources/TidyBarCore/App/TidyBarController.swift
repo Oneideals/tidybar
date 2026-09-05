@@ -113,7 +113,7 @@ public final class TidyBarController {
     /// 落地一次后台扫描的结果（调用方负责在主线程回调）
     public func applyScan(_ scanned: [ManagedItem]) {
         items = scanned
-        engine.fold(ids: scanned.map(\.id), newItemZone: settings.newItemZone)
+        engine.fold(items: scanned, newItemZone: settings.newItemZone)
         publish()
     }
 
