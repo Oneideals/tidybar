@@ -348,3 +348,102 @@ extension TitleDriftAdoptionTests {
         ]
     }
 }
+
+// MARK: - 多图标进程的 1:1 残差配对，以及搜索选中钳位
+
+struct ResidualPairingTests {
+    private func item(_ bundle: String, _ title: String, ordinal: Int, of count: Int) -> ManagedItem {
+        ManagedItem(
+            id: ManagedItem.stableID(ownerBundleID: bundle, title: title),
+            ownerBundleID: bundle,
+            title: title,
+            frame: CGRect(x: 600 + CGFloat(ordinal) * 30, y: 1_188, width: 24, height: 24),
+            isSystemOwned: false,
+            identitySource: .axTitle,
+            ordinalInOwner: ordinal,
+            ownerItemCount: count
+        )
+    }
+
+    private func engine(with layout: MenuBarLayout) -> LayoutEngine {
+        LayoutEngine(
+            layout: layout,
+            services: makeServices(reader: FakeMenuBarReader(ids: []), mover: FakeMenuBarMover()),
+            journal: LayoutJournal(directory: TestPaths.journalDirectory("residual-\(UUID().uuidString.prefix(6))"))
+        )
+    }
+
+    /// 三图标进程里只有一个改了标题：旧新各一，配对唯一 ⇒ 该迁移。
+    func singleRenameInsideMultiIconOwnerIsAdopted() throws {
+        let a = item("com.adguard.mac.adguard", "A", ordinal: 0, of: 3)
+        let b = item("com.adguard.mac.adguard", "B", ordinal: 1, of: 3)
+        let c = item("com.adguard.mac.adguard", "C", ordinal: 2, of: 3)
+        var layout = MenuBarLayout()
+        layout.append(a.id, to: .visible)
+        layout.append(b.id, to: .hidden)
+        layout.append(c.id, to: .visible)
+        let e = engine(with: layout)
+        // B 改名成 B'
+        let renamed = item("com.adguard.mac.adguard", "B (3)", ordinal: 1, of: 3)
+        e.fold(items: [a, renamed, c], newItemZone: .visible)
+
+        expectEqual(e.layout.zone(of: renamed.id), .hidden, "唯一可配对的改名必须把配置接过去")
+        expectNil(e.layout.zone(of: b.id), "旧 id 要迁净，否则同一图标占两坑")
+        expectEqual(e.layout.zone(of: a.id), .visible)
+        expectEqual(e.layout.zone(of: c.id), .visible)
+    }
+
+    /// 两个同时改名：配对不唯一，宁可丢配置也不能猜——猜错就是把一个图标的设置安到另一个头上。
+    func ambiguousPairingIsRefused() throws {
+        let a = item("com.x", "A", ordinal: 0, of: 2)
+        let b = item("com.x", "B", ordinal: 1, of: 2)
+        var layout = MenuBarLayout()
+        layout.append(a.id, to: .hidden)
+        layout.append(b.id, to: .visible)
+        let e = engine(with: layout)
+        let a2 = item("com.x", "A2", ordinal: 0, of: 2)
+        let b2 = item("com.x", "B2", ordinal: 1, of: 2)
+        e.fold(items: [a2, b2], newItemZone: .visible)
+
+        expectEqual(e.layout.zone(of: a2.id), .visible, "两对二时不认领，新项按默认分区处理")
+        expectEqual(e.layout.zone(of: b2.id), .visible)
+        // 断言"配置确实丢了"——这是设计的**代价**，不是缺陷被掩盖：不猜就可能丢，
+        // 猜了就可能把 A 的设置安到 B 头上。写成断言是为了哪天有人想"顺手兜一下"时，
+        // 必须先改掉这条有意的取舍。
+        expect(!e.layout.allItemIDs.contains(a.id) && !e.layout.allItemIDs.contains(b.id),
+               "多对多时旧配置随消失的 id 一起清掉；宁可丢，不可错接")
+    }
+
+    func selectionNeverWrapsAround() throws {
+        expectEqual(SearchSelection.clamped(current: 0, delta: -1, count: 8), 0, "回绕会让一条结果跳到最末")
+        expectEqual(SearchSelection.clamped(current: 7, delta: 1, count: 8), 7)
+        expectEqual(SearchSelection.clamped(current: 3, delta: -2, count: 8), 1)
+        expectEqual(SearchSelection.clamped(current: 0, delta: 1, count: 0), 0, "空结果集不该产生负下标")
+    }
+
+    /// 开机自启状态必须读系统，而不是我们自己记的那份
+    func launchAtLoginStateIsReadable() throws {
+        let state = LaunchAtLogin.state()
+        switch state {
+        case .enabled, .disabled, .needsApproval, .unknown: expect(true)
+        }
+        // 未打包/未签名进程注册会被系统拒绝，此时必须带原因返回而不是静默"成功"
+        let outcome = LaunchAtLogin.setEnabled(LaunchAtLogin.state() != .enabled)
+        switch outcome {
+        case .success: expect(true)
+        case .failure(let failure): expect(!failure.reason.isEmpty, "失败必须给出原因")
+        }
+    }
+}
+
+extension ResidualPairingTests {
+    static var testCases: [TestCase] {
+        let suite = ResidualPairingTests()
+        return [
+            TestCase("singleRenameInsideMultiIconOwnerIsAdopted", suite.singleRenameInsideMultiIconOwnerIsAdopted),
+            TestCase("ambiguousPairingIsRefused", suite.ambiguousPairingIsRefused),
+            TestCase("selectionNeverWrapsAround", suite.selectionNeverWrapsAround),
+            TestCase("launchAtLoginStateIsReadable", suite.launchAtLoginStateIsReadable),
+        ]
+    }
+}

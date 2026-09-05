@@ -116,6 +116,12 @@ public struct MenuBarLayout: Codable, Equatable, Sendable {
         zones[zone.rawValue] = list.isEmpty ? nil : list
     }
 
+/// 该归属进程在本工具布局里已有的配置 id（可能来自多个分区，顺序按分区登记次序）。
+    public func configuredIDs(ofOwner ownerBundleID: String) -> [String] {
+        let prefix = ManagedItem.normalized(ownerBundleID) + "."
+        return MenuBarZone.allCases.flatMap { items(in: $0).filter { $0.hasPrefix(prefix) } }
+    }
+
     /// 原地改名（保持所在分区与左右顺序）。标题漂移后的配置迁移就靠它落到新 id 上。
     public mutating func rename(id old: String, to new: String) {
         guard old != new, let current = zone(of: old) else { return }

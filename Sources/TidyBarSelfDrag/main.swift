@@ -325,7 +325,9 @@ enum ImageStats {
 /// 旧 id 必须迁净，且漂移确实被 detectTitleDrift 报出来。
 if arguments.contains("--drift-e2e") {
     let bundle = argumentValue("--bundle") ?? "local.tidybar.fixture"
-    let probe = globalOrder().filter { $0.ownerBundleID == bundle && $0.title.hasPrefix("MX") }
+    let probe = globalOrder().filter {
+        $0.ownerBundleID == bundle && ($0.title.hasPrefix("MX") || $0.title.hasPrefix("MY"))
+    }
     guard let original = probe.first else {
         print("DRIFT 没找到会自改标题的图标。先跑：TIDYBAR_MUTATE_TITLE=1 open dist/TidyBarFixture.app --args 4")
         exit(3)
@@ -334,6 +336,7 @@ if arguments.contains("--drift-e2e") {
 
     var seeded = MenuBarLayout()
     seeded.append(original.id, to: .hidden)
+    let frameA = globalOrder().filter { $0.ownerBundleID == bundle }
     let gateReader = AccessibilityMenuBarReader()
     let driftEngine = LayoutEngine(
         layout: seeded,
@@ -344,17 +347,27 @@ if arguments.contains("--drift-e2e") {
         journal: LayoutJournal(directory: URL(fileURLWithPath: NSTemporaryDirectory() + "tidybar-drift-e2e"))
     )
 
+    driftEngine.fold(items: frameA, newItemZone: .visible)
+    // 折叠会把未登记的项按默认分区放进来，所以要在这之后再把目标项归到隐藏区
+    driftEngine.assignForChecks(original.id, to: .hidden)
+    print("  登记现场后：" + MenuBarZone.allCases
+        .map { $0.rawValue + "=[" + driftEngine.layout.items(in: $0).joined(separator: ",") + "]" }
+        .joined(separator: " "))
+
     // 轮询到标题**真的变了**为止。上一版是睡固定 6 秒，正好落在标题复位的那一帧，
     // 于是漂移记数为 0——把"没观测到"误当成"没有漂移"，这是同一类错误。
-    let frameA = globalOrder().filter { $0.ownerBundleID == bundle }
+    let requiredNewIDs = argumentValue("--need-new").flatMap(Int.init) ?? 1
     var later: [ManagedItem] = frameA
     var drifted: [ManagedItem] = []
     for _ in 0..<14 {
         usleep(1_000_000)
         let frame = globalOrder().filter { $0.ownerBundleID == bundle }
-        if frame.contains(where: { $0.ownerBundleID == bundle && $0.id != original.id && $0.title.hasPrefix("MX") }) {
+        let changed = frame.filter { $0.id != original.id && ($0.title.hasPrefix("MX") || $0.title.hasPrefix("MY")) }
+        // 反例要求同进程一次出现 ≥2 个新 id（两个图标同时改名）——配对不再唯一。
+        // 早先版本"看到第一个变化就停"，于是反例其实测的是正例，假绿。
+        if changed.count >= requiredNewIDs {
             later = frame
-            drifted = frame.filter { $0.id != original.id && $0.title.hasPrefix("MX") }
+            drifted = changed
             break
         }
     }
@@ -364,11 +377,26 @@ if arguments.contains("--drift-e2e") {
 
     driftEngine.fold(items: later, newItemZone: .visible)
     let adopted = drifted.first.map { driftEngine.layout.zone(of: $0.id) } ?? nil
-    check("改名后的图标仍留在隐藏区（配置跟过去了）", adopted == .hidden,
-          detail: "实际 \(String(describing: adopted))")
+    let stale = driftEngine.layout.zone(of: original.id)
+    if arguments.contains("--expect-no-adopt") {
+        // 反例：同进程一次冒出两个新 id 时，"哪个旧配置属于哪个新图标"没有唯一答案。
+        // 此时必须**什么都不迁**——把 A 的设置安到 B 头上比丢一次配置难查得多。
+        check("多对多时拒绝认领（没有任何新 id 被安上隐藏区）",
+              drifted.allSatisfy { driftEngine.layout.zone(of: $0.id) != .hidden },
+              detail: drifted.map { $0.id + "=" + String(describing: driftEngine.layout.zone(of: $0.id)) }.joined(separator: ", "))
+        check("原配置没被偷偷接到别人身上（旧 id 要么仍在、要么随消失项清掉）",
+              stale == nil || stale == .hidden, detail: "旧 id 归属 \(String(describing: stale))")
+    } else {
+        check("改名后的图标仍留在隐藏区（配置跟过去了）", adopted == .hidden,
+              detail: "实际 \(String(describing: adopted))")
+        check("旧 id 已迁净，不会同占两坑", stale == nil,
+              detail: "旧 id 仍指向 \(String(describing: stale))")
+    }
     check("旧 id 已迁净，不会同占两坑", driftEngine.layout.zone(of: original.id) == nil || drifted.isEmpty,
           detail: "旧 id 仍指向 \(String(describing: driftEngine.layout.zone(of: original.id)))")
-    print("DRIFT 布局现状 " + driftEngine.layout.allItemIDs.sorted().joined(separator: " | "))
+    print("  折叠后：" + MenuBarZone.allCases
+        .map { $0.rawValue + "=[" + driftEngine.layout.items(in: $0).joined(separator: ",") + "]" }
+        .joined(separator: " "))
     exit(failures.isEmpty ? 0 : 1)
 }
 

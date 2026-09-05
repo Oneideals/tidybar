@@ -37,6 +37,7 @@ let suites: [TestSuite] = [
     TestSuite("DragGate", DragGateTests.testCases),
     TestSuite("PositionSignature", PositionSignatureTests.testCases),
     TestSuite("TitleDriftAdoption", TitleDriftAdoptionTests.testCases),
+    TestSuite("ResidualPairing", ResidualPairingTests.testCases),
     // 行为层
     TestSuite("RevealStateMachine", RevealStateMachineTests.testCases),
     TestSuite("EventEngine", EventEngineThrottleTests.testCases),

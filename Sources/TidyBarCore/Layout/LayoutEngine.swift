@@ -100,25 +100,37 @@ public final class LayoutEngine {
         layout = MenuBarLayout.folding(discovered: itemIDs, into: layout, defaultZone: newItemZone)
     }
 
-    /// 带归属信息的折叠：新出现的 id 若在本工具里查不到，先试"同进程唯一配置"认领，
-    /// 认领成功就把配置**改名**成新 id——不改名只是权宜之计，下次扫描又要重新猜。
+    /// 带归属信息的折叠：新出现的 id 若在本工具里查不到，先尝试**认领**它应继承的配置，
+    /// 并把配置**改名**到新 id 上——只认领不改名，配置会一直挂在死 id 上；
+    /// 不认领只等新 id，就是用户看到的"我明明收起来了，它又冒出来"。
+    ///
+    /// 认领条件（一条，且刻意保守）：同一归属进程内
+    /// 「还留在配置里但现场已不见的旧 id」**恰好一个**，且「现场新出现但配置里没有的新 id」
+    /// **也恰好一个** ⇒ 只能是同一个图标改了标题，迁过去。
+    /// 数量对不上（1↔2、2↔2、0↔N）时不猜：把一个图标的设置安到另一个头上，
+    /// 比丢一次配置更难查，也更伤信任。
     public func fold(items discovered: [ManagedItem], newItemZone: MenuBarZone) {
         var adopted = layout
-        var renames: [(from: String, to: String)] = []
         let known = layout.allItemIDs
-        for item in discovered where !known.contains(item.id) {
-            guard item.ownerItemCount == 1, let owner = item.ownerBundleID,
-                  let zone = adopted.soleZone(forOwner: owner) else { continue }
-            let prefix = ManagedItem.normalized(owner) + "."
-            if let stale = adopted.items(in: zone).first(where: { $0.hasPrefix(prefix) }) {
-                renames.append((stale, item.id))
+        let freshIDs = Set(discovered.map(\.id))
+
+        for owner in Set(discovered.compactMap(\.ownerBundleID)) {
+            let stale = adopted.configuredIDs(ofOwner: owner).filter { !freshIDs.contains($0) }
+            let fresh = discovered.filter { $0.ownerBundleID == owner && !known.contains($0.id) }
+            guard stale.count == 1, fresh.count == 1, let from = stale.first, let to = fresh.first?.id else {
+                if stale.count > 1 && fresh.count > 1 {
+                    // 多对多只在真发生时留一行痕，方便事后回答"为什么我的设置没了"
+                    lastAmbiguousOwners.insert(owner)
+                }
+                continue
             }
-        }
-        for rename in renames {
-            adopted.rename(id: rename.from, to: rename.to)
+            adopted.rename(id: from, to: to)
         }
         layout = MenuBarLayout.folding(discovered: discovered.map(\.id), into: adopted, defaultZone: newItemZone)
     }
+
+    /// 出现过"多对多、不敢猜"的进程，供诊断与设置界面提示（不是判错，是如实声明无能为力）。
+    public private(set) var lastAmbiguousOwners: Set<String> = []
 
     // MARK: - 变更
 
@@ -245,6 +257,12 @@ public final class LayoutEngine {
     /// 仅供回归测试装载初始分区状态；产品路径一律走 `recoverOnLaunch`/`apply`。
     public func adoptLayoutForChecks(_ layout: MenuBarLayout) {
         self.layout = layout
+    }
+
+    /// 仅供自检：只改归属，不发起任何拖拽。
+    /// 自检需要"先登记现场、再把某项归到隐藏区"这种中间状态，而产品路径一律经 `apply`。
+    public func assignForChecks(_ itemID: String, to zone: MenuBarZone) {
+        layout.move(itemID: itemID, to: zone, position: nil)
     }
 
     // MARK: - 点击转发（报告 A3/A8：面板与搜索结果里的点击）

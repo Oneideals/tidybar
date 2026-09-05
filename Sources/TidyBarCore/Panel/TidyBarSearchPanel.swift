@@ -31,6 +31,18 @@ public final class TidyBarSearchPanel: NSPanel {
 
 /// 搜索面板的装配与状态。查询与排序交给 `TidyBarController.search`（纯逻辑，已有单测），
 /// 这里只负责把结果摆出来、把激活传回去。
+/// 搜索结果选中项钳位。
+///
+/// 越界时夹到端点而不是回绕：回绕会让"在第一条上按一下 ↑"直接跳到最后一条，
+/// 在 8 条结果里几乎必然导致回车激活错的那一项。
+public enum SearchSelection {
+    public static func clamped(current: Int, delta: Int, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        let shifted = (current < 0 ? 0 : current) + delta
+        return max(0, min(count - 1, shifted))
+    }
+}
+
 public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     public let panel = TidyBarSearchPanel()
     private let field = NSTextField()
@@ -101,12 +113,34 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
         NSApp.activate(ignoringOtherApps: true)
         field.stringValue = ""
         refresh()
+        installKeyMonitor()
         claimKeyboard()
     }
 
     public func dismiss() {
+        if let monitor = keyMonitor { NSEvent.removeMonitor(monitor); keyMonitor = nil }
+        keyMonitor = nil
         panel.orderOut(nil)
         onDismiss?()
+    }
+
+    /// 键盘导航用局部监视器接：↑↓ 移动选中、回车激活、Esc 关闭。
+    /// 不用 NSTableView 的 keyDown 转发是因为这里只有几行结果，
+    /// 而局部监视器能吃到"焦点在输入框里"时的方向键——那正是搜索时唯一有意义的按键。
+    private var keyMonitor: Any?
+
+    private func installKeyMonitor() {
+        if let monitor = keyMonitor { NSEvent.removeMonitor(monitor); keyMonitor = nil }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            switch event.keyCode {
+            case 126: self.moveSelection(-1); return nil      // ↑
+            case 125: self.moveSelection(1); return nil       // ↓
+            case 36, 76: self.submit(); return nil            // 回车 / 小键盘回车
+            case 53: self.dismiss(); return nil               // Esc
+            default: return event
+            }
+        }
     }
 
     /// 抢键盘焦点。
@@ -124,7 +158,13 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
 
     private var window: NSWindow? { panel }
 
-    public func controlTextDidChange(_ notification: Notification) { refresh() }
+    public func controlTextDidChange(_ notification: Notification) {
+        selection = 0        // 结果集换了，选中项必须回到第一条，否则回车会激活上一次选中的那一项
+        refresh()
+    }
+
+    /// 当前选中项下标。键盘 ↑/↓ 改它，回车取它。
+    public private(set) var selection: Int = 0
 
     /// 结果行：标题 + 归属 + 当前分区。三项都要，因为 88% 图标没有可读标题，
     /// 只显示 title 会看到一排"第 2 个"，分不清是谁。
@@ -150,6 +190,10 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
             row.alignment = .left
             row.imagePosition = .noImage
             row.identifier = NSUserInterfaceItemIdentifier(item.id)
+            if index == selection {
+                row.contentTintColor = .controlAccentColor
+            }
+
             stack.addItem(view: row)
         }
     }
@@ -170,8 +214,21 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     }
 
     @objc private func submit() {
-        guard let first = rows.first else { return }
-        finish(with: first)
+        guard rows.indices.contains(selection) else {
+            guard let first = rows.first else { return }
+            finish(with: first)
+            return
+        }
+        finish(with: rows[selection])
+    }
+
+    /// 键盘移动选中项。A8 验收要"键入名称定位并激活"，只支持鼠标点选等于把搜索结果
+    /// 变成一块必须用鼠标伺候的列表；越界时夹到端点而不是回绕，回绕在 8 条结果里
+    /// 会让人按一次就跳到最后一条，很难看也很难解释。
+    public func moveSelection(_ delta: Int) {
+        guard !rows.isEmpty else { return }
+        selection = SearchSelection.clamped(current: selection, delta: delta, count: rows.count)
+        refresh()
     }
 
     private func finish(with item: ManagedItem) {
