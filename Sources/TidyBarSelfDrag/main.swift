@@ -109,6 +109,65 @@ if let target = argumentValue("--activate") {
     exit(outcome == .pressed ? 0 : 1)
 }
 
+/// 台账跨启动真机验证（两段式，必须在**两个独立进程**里跑）：
+///   --ledger-seed  ：登记现场、把目标归入隐藏区、写台账与布局，正常退出
+///   --ledger-verify：全新进程，布局从磁盘回来、现场已改名 ⇒ 断言配置被接住
+/// 为什么两个进程：崩溃恢复的语义包含"布局从磁盘回来"，单进程内存里什么都在，测不出跨启动。
+if arguments.contains("--ledger-seed") || arguments.contains("--ledger-verify") {
+    let bundle = argumentValue("--bundle") ?? "local.tidybar.fixture"
+    let ledgerDir = argumentValue("--ledger-dir") ?? (NSTemporaryDirectory() + "tidybar-ledger-e2e")
+    let store = IdentityLedgerStore(url: URL(fileURLWithPath: ledgerDir + "/identity-ledger.json"))
+    let items = globalOrder().filter { $0.ownerBundleID == bundle }
+    guard let target = items.first(where: { $0.title.hasPrefix("MX") }) ?? items.first else {
+        print("LEDGER 没有可用的目标图标")
+        exit(3)
+    }
+
+    if arguments.contains("--ledger-seed") {
+        let engine = LayoutEngine(
+            layout: MenuBarLayout(),
+            services: SystemServices(reader: reader, mover: UnverifiedMenuBarMover(), cursor: cursor,
+                accessibility: AppKitAccessibilityTrust(), screens: AppKitScreenObserver()),
+            journal: LayoutJournal(directory: URL(fileURLWithPath: ledgerDir + "/journal")),
+            ledger: store
+        )
+        engine.fold(items: items, newItemZone: .visible)
+        engine.assignForChecks(target.id, to: .hidden)
+        // assignForChecks 只改内存不落盘（它本就是给自检准备的）；
+        // 跨启动验证必须走 recordZoneOnly——那是"挪边界/改归属"的真实落盘路径。
+        engine.recordZoneOnly(itemID: target.id, zone: .hidden)
+        engine.fold(items: items, newItemZone: .visible)
+        let line = "LEDGER-SEED ok 目标=" + target.id + " 台账条目=" + String(engine.ledgerRecordsSnapshot.count)
+        print(line)
+        exit(0)
+    }
+
+    let journal = LayoutJournal(directory: URL(fileURLWithPath: ledgerDir + "/journal"))
+    let committed = journal.readCommittedLayout() ?? MenuBarLayout()
+    let engine = LayoutEngine(
+        layout: committed,
+        services: SystemServices(reader: reader, mover: UnverifiedMenuBarMover(), cursor: cursor,
+            accessibility: AppKitAccessibilityTrust(), screens: AppKitScreenObserver()),
+        journal: journal, ledger: store
+    )
+    let now = globalOrder().filter { $0.ownerBundleID == bundle }
+    engine.fold(items: now, newItemZone: .visible)
+    let mx = now.first(where: { $0.title.hasPrefix("MX") })
+    let stale = committed.allItemIDs.first { committed.zone(of: $0) == .hidden }
+    print("LEDGER-VERIFY 现场MX=" + (mx?.id ?? "无") + " 提交布局隐藏项=" + (stale ?? "无"))
+    if let mx, let stale {
+        let zoneNow = engine.layout.zone(of: mx.id)
+        check("跨启动后改名项仍在隐藏区", zoneNow == .hidden, detail: "实际 " + String(describing: zoneNow))
+        check("旧 id 已迁净", engine.layout.zone(of: stale) == nil || stale == mx.id)
+    } else if let stale, mx == nil {
+        check("改名后的 id 已被台账接住（旧 id 不再挂着）", engine.layout.zone(of: stale) == nil,
+              detail: "旧 id 仍挂着 ⇒ 台账没接住")
+    } else {
+        check("目标在场或旧隐藏项在场（本例前提）", false, detail: "seed 与 verify 之间目标退场，本例作废")
+    }
+    exit(failures.isEmpty ? 0 : 1)
+}
+
 /// 搜索面板 UI 自检：真实呼出一次，断言可见、能接键盘、查询确实执行。
 /// 只断言"逻辑算出 N 条"不够——面板起不来或抢不到键盘焦点，用户看到的就是"按了没东西"。
 if arguments.contains("--search-ui") {

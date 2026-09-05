@@ -20,6 +20,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var settingsWindow: TidyBarSettingsWindowController?
     private var wizard: FirstRunWizardController?
     private var memoryPressureSource: DispatchSourceMemoryPressure?
+    private var rescanObservers: [NSObjectProtocol] = []
     private let enumerator = BackgroundEnumerator()
 
     private let settingsStore: SettingsStoring
@@ -114,6 +115,22 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         events.start()
         self.eventEngine = events
 
+        // 菜单栏变化 → 重扫。这是 A7（新图标检测 <500ms）的前提，
+        // 也是"空闲时没有任何周期任务"设计的另一半：平时零轮询，
+        // 系统通知菜单栏变了才去扫，且经去抖合并。
+        // 没有这一段时，新出现的图标要等用户手动刷新才被看见。
+        rescanObservers = [
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
+            ) { [weak self] _ in self?.scheduleRefresh(reason: .itemAppeared) },
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
+            ) { [weak self] _ in self?.scheduleRefresh(reason: .itemDisappeared) },
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+            ) { [weak self] _ in self?.scheduleRefresh(reason: .frontmostAppChanged) },
+        ]
+
         let hotKey = GlobalHotKey { [weak self, weak barController] in
             guard let self, let barController else { return }
             barController.handle(event: .init(trigger: .hotkey, location: NSEvent.mouseLocation))
@@ -194,6 +211,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private func scheduleAutoConceal(barController: TidyBarController, panel: TidyBarPanelController?) {
         memoryPressureSource?.cancel()
         memoryPressureSource = nil
+        rescanObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
+        rescanObservers = []
         tickTimer?.invalidate()
         tickTimer = nil
         guard let remaining = barController.remainingRevealTime else { return }
