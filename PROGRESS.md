@@ -1,13 +1,13 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-09-05T13:11:39Z (read-only projection)
-> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 1
+> **Last Updated:** 2026-09-05T13:19:42Z (read-only projection)
+> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 5
 
 ---
 
 ## 🎯 Recent Milestones & Completed Tasks ([DONE])
 
-_No completed milestones recorded yet._
+- [DONE] (agy, 2026-09-05) 修复设置窗口编译、实现搜索面板键盘导航、落地IOKit系统状态采集器、布局档案管理、菜单栏外观样式与性能隐私面板
 
 ## 📋 Open Issues & Backlog ([TODO])
 
@@ -15,11 +15,11 @@ _No open issues._
 
 ## 🔄 Active Leases & In-Progress Work
 
-- **agy** (`9dce787c-1123-4752-9084-546453137806`): 修复设置窗口编译并完成剩余开发 *(files: sources/tidybarcore/app/settingswindow.swift)*
+- **agy** (`9dce787c-1123-4752-9084-546453137806`): 按Bartender风格重构设置页面为三行图标拖拽泳道 *(files: sources/tidybarcore/app/iconoverviewview.swift)*
 
 ## 📝 Working Tree Changes
 
-- `.M` `Sources/TidyBarCore/App/SettingsWindow.swift`
+_Working tree is clean._
 
 ## 💡 Handoff Instructions for Next Agent
 

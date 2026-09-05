@@ -19,9 +19,8 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
-        let height: CGFloat = 630
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 460, height: height),
+            contentRect: CGRect(x: 0, y: 0, width: 560, height: 460),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -42,79 +41,148 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private func build(hotKeyDescription: String) {
         guard let root = window?.contentView else { return }
 
-        // 第一页主体：图标总览（三分区全景）。其余设置项在其下方。
-        overview.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(overview)
+        let tabView = NSTabView()
+        tabView.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(tabView)
         NSLayoutConstraint.activate([
-            overview.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            overview.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-            overview.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
-            overview.heightAnchor.constraint(equalToConstant: 224),
+            tabView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            tabView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            tabView.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
+            tabView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
         ])
 
-        var previous: NSView = overview
-        func place(_ view: NSView, gap: CGFloat) {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            root.addSubview(view)
+        // Tab 1: 图标整理（Bartender 风格三行泳道）
+        let tab1 = NSTabViewItem(identifier: "icons")
+        tab1.label = "图标整理"
+        let tab1View = NSView()
+        overview.translatesAutoresizingMaskIntoConstraints = false
+        tab1View.addSubview(overview)
+        NSLayoutConstraint.activate([
+            overview.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor),
+            overview.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor),
+            overview.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 6),
+            overview.bottomAnchor.constraint(equalTo: tab1View.bottomAnchor, constant: -6),
+        ])
+        tab1.view = tab1View
+        tabView.addTabViewItem(tab1)
+
+        // Tab 2: 常规设置
+        let tab2 = NSTabViewItem(identifier: "general")
+        tab2.label = "常规设置"
+        let tab2View = NSView()
+        buildGeneralTab(in: tab2View, hotKeyDescription: hotKeyDescription)
+        tab2.view = tab2View
+        tabView.addTabViewItem(tab2)
+
+        // Tab 3: 外观与性能
+        let tab3 = NSTabViewItem(identifier: "about")
+        tab3.label = "外观与性能"
+        let tab3View = NSView()
+        buildAboutTab(in: tab3View)
+        tab3.view = tab3View
+        tabView.addTabViewItem(tab3)
+    }
+
+    private func buildGeneralTab(in view: NSView, hotKeyDescription: String) {
+        var previous: NSView?
+        func place(_ item: NSView, topOffset: CGFloat) {
+            item.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(item)
+            let topConstraint = previous == nil
+                ? item.topAnchor.constraint(equalTo: view.topAnchor, constant: topOffset)
+                : item.topAnchor.constraint(equalTo: previous!.bottomAnchor, constant: topOffset)
             NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-                view.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -20),
-                view.topAnchor.constraint(equalTo: previous.bottomAnchor, constant: gap),
+                item.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+                item.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -20),
+                topConstraint,
             ])
-            previous = view
+            previous = item
         }
 
-        let title = NSTextField(labelWithString: "呼出方式（当前生效）")
-        place(title, gap: 24)
+        let triggerTitle = NSTextField(labelWithString: "呼出方式：")
+        triggerTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        place(triggerTitle, topOffset: 20)
+
         let triggers = NSTextField(wrappingLabelWithString: controller.settings.revealTriggers
             .map(\.displayName).sorted().joined(separator: "、"))
         triggers.font = NSFont.systemFont(ofSize: 11)
-        triggers.maximumNumberOfLines = 2
-        place(triggers, gap: 36)
+        triggers.textColor = .secondaryLabelColor
+        place(triggers, topOffset: 6)
 
         hotKeyLine.stringValue = "快捷键：" + hotKeyDescription
         hotKeyLine.font = NSFont.systemFont(ofSize: 11)
-        place(hotKeyLine, gap: 24)
+        place(hotKeyLine, topOffset: 12)
 
-        askToggle.target = self
-        askToggle.action = #selector(toggleAsk)
-        place(askToggle, gap: 24)
-
-        stylingToggle.target = self
-        stylingToggle.action = #selector(toggleStyling)
-        place(stylingToggle, gap: 24)
+        let sep1 = NSBox()
+        sep1.boxType = .separator
+        place(sep1, topOffset: 16)
 
         launchToggle.target = self
         launchToggle.action = #selector(toggleLaunchAtLogin)
-        place(launchToggle, gap: 26)
+        place(launchToggle, topOffset: 16)
+
+        askToggle.target = self
+        askToggle.action = #selector(toggleAsk)
+        place(askToggle, topOffset: 16)
 
         rehideStepper.minValue = 0
         rehideStepper.maxValue = 10
         rehideStepper.increment = 0.5
         rehideStepper.target = self
         rehideStepper.action = #selector(changeRehide)
-        place(rehideStepper, gap: 26)
+        place(rehideStepper, topOffset: 16)
+
         rehideValue.font = NSFont.systemFont(ofSize: 11)
-        root.addSubview(rehideValue)
+        view.addSubview(rehideValue)
         rehideValue.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             rehideValue.leadingAnchor.constraint(equalTo: rehideStepper.trailingAnchor, constant: 8),
             rehideValue.centerYAnchor.constraint(equalTo: rehideStepper.centerYAnchor),
         ])
+    }
+
+    private func buildAboutTab(in view: NSView) {
+        var previous: NSView?
+        func place(_ item: NSView, topOffset: CGFloat) {
+            item.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(item)
+            let topConstraint = previous == nil
+                ? item.topAnchor.constraint(equalTo: view.topAnchor, constant: topOffset)
+                : item.topAnchor.constraint(equalTo: previous!.bottomAnchor, constant: topOffset)
+            NSLayoutConstraint.activate([
+                item.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+                item.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -20),
+                topConstraint,
+            ])
+            previous = item
+        }
+
+        stylingToggle.target = self
+        stylingToggle.action = #selector(toggleStyling)
+        place(stylingToggle, topOffset: 20)
+
+        let stylingHint = NSTextField(labelWithString: "在菜单栏下方绘制微妙的半透明胶囊背景与细边框（鼠标点击完全穿透）")
+        stylingHint.font = NSFont.systemFont(ofSize: 10)
+        stylingHint.textColor = .tertiaryLabelColor
+        place(stylingHint, topOffset: 4)
+
+        let sep = NSBox()
+        sep.boxType = .separator
+        place(sep, topOffset: 16)
 
         performanceLine.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         performanceLine.textColor = .secondaryLabelColor
-        place(performanceLine, gap: 26)
+        place(performanceLine, topOffset: 16)
 
         privacyLine.font = NSFont.systemFont(ofSize: 10)
         privacyLine.textColor = .secondaryLabelColor
-        privacyLine.maximumNumberOfLines = 2
-        place(privacyLine, gap: 22)
+        privacyLine.maximumNumberOfLines = 3
+        place(privacyLine, topOffset: 12)
 
         statusLine.font = NSFont.systemFont(ofSize: 10)
-        statusLine.textColor = .secondaryLabelColor
-        statusLine.maximumNumberOfLines = 2
-        place(statusLine, gap: 22)
+        statusLine.textColor = .tertiaryLabelColor
+        statusLine.maximumNumberOfLines = 3
+        place(statusLine, topOffset: 16)
     }
 
     private func refresh() {
