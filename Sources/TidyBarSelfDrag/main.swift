@@ -440,6 +440,24 @@ check("无卡键/卡钮残留", totals.stuck == 0, detail: "\(totals.stuck) 次�
 check("图标身份全程可复用", totals.identityLost == 0, detail: "\(totals.identityLost) 次拖完找不到同一 id")
 check("零失败轮次", failures.isEmpty, detail: totals.lastError)
 
+if failures.isEmpty && totals.moved == repeatCount && arguments.contains("--confirm-this-machine") {
+    // 确认记录只能由"真跑过并通过的闸门"自己写，不能手改常量、也不能凭口头声明。
+    var gate = DragGateStore(url: AppPaths.dragGateFile).load()
+    gate.record(DragConfirmation(
+        osVersion: MachineIdentity.osVersion(),
+        machineID: MachineIdentity.hardwareID(),
+        rounds: totals.moved,
+        confirmedAt: Date()
+    ))
+    do {
+        try DragGateStore(url: AppPaths.dragGateFile).save(gate)
+        print("  已记录接管确认：\(MachineIdentity.osVersion()) @ \(MachineIdentity.hardwareID().prefix(12))… 共 \(totals.moved) 轮")
+    } catch {
+        print("  ✗ 确认记录写入失败：\(error)")
+        failures.append("确认记录写入失败")
+    }
+}
+
 header("结论")
 if failures.isEmpty && totals.moved == repeatCount {
     print("  ✓ 真实菜单栏环境下的闸门通过 \(repeatCount) 轮（双向往返 = \(totals.moved * 2) 次拖拽）")

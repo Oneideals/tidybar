@@ -32,11 +32,24 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private static func defaultServices() -> SystemServices {
         // reader 自己就是点击转发的实现方（它才知道每个元素在 AX 树里的位置）。
-        // mover 仍是未验证占位——**读得到、点得动、但不搬动**，正是接管闸门关闭时的产品形态。
         let reader = AccessibilityMenuBarReader()
+        // 搬动图标与否由**已确认名单**决定，不是代码里的常量：名单空 → 走占位移动器，
+        // 只读只点不搬；这台机器这个系统版本真跑过闸门并记录过 → 才换真实移动器。
+        let gate = DragGateStore(url: AppPaths.dragGateFile).load()
+        let confirmed = gate.allowsTakeover(
+            os: MachineIdentity.osVersion(),
+            machine: MachineIdentity.hardwareID()
+        )
         return SystemServices(
             reader: reader,
-            mover: UnverifiedMenuBarMover(),
+            mover: confirmed
+                ? AccessibilityMenuBarMover(
+                    reader: reader,
+                    cursor: AppKitCursorReader(),
+                    poster: CGDragEventPoster(primaryScreenHeight: NSScreen.screens.first?.frame.height ?? 0),
+                    config: AccessibilityMenuBarMover.Config(isConfirmedSupportedOS: true)
+                )
+                : UnverifiedMenuBarMover(),
             cursor: AppKitCursorReader(),
             accessibility: AppKitAccessibilityTrust(),
             screens: AppKitScreenObserver(),

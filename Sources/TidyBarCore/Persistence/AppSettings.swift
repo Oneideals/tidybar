@@ -105,4 +105,9 @@ public enum AppPaths {
     public static var journalDirectory: URL {
         supportDirectory().appendingPathComponent("LayoutJournal", isDirectory: true)
     }
+
+    /// 拖拽接管的已确认名单（按机器 + 系统版本各记一条），与布局日志分开存放。
+    public static var dragGateFile: URL {
+        supportDirectory().appendingPathComponent("drag-confirmed.json")
+    }
 }

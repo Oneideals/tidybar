@@ -454,3 +454,72 @@ extension PendingIntentReplayTests {
         ]
     }
 }
+
+// MARK: - 接管闸门：按机器 + 系统版本确认，不能靠改常量
+
+struct DragGateTests {
+    private let os = "26.6.2"
+    private let machine = "hw:AAAA-BBBB"
+
+    private func confirmation(os: String, machine: String, rounds: Int = 100) -> DragConfirmation {
+        DragConfirmation(osVersion: os, machineID: machine, rounds: rounds,
+                         confirmedAt: Date(timeIntervalSince1970: 1_000))
+    }
+
+    /// 名单为空 → 一律不动图标。默认必须是关的，"忘了翻开关"不该变成"用户图标被搬走"。
+    func emptyGateBlocksTakeover() throws {
+        expect(DragGate().allowsTakeover(os: os, machine: machine) == false)
+    }
+
+    /// 版本必须精确匹配：26.6 与 26.6.2 不是同一台机器上的同一个系统（小版本就改过事件行为）。
+    func versionMustMatchExactly() throws {
+        var gate = DragGate()
+        gate.record(confirmation(os: os, machine: machine))
+        expect(gate.allowsTakeover(os: os, machine: machine))
+        expect(!gate.allowsTakeover(os: "26.6", machine: machine), "同一大版本下的其他小版本不能搭便车")
+        expect(!gate.allowsTakeover(os: "26.5.1", machine: machine))
+    }
+
+    /// 机器也必须匹配：在别人没跑过闸金的机器上，这份名单不该生效。
+    func machineMustMatch() throws {
+        var gate = DragGate()
+        gate.record(confirmation(os: os, machine: machine))
+        expect(!gate.allowsTakeover(os: os, machine: "hw:ZZZZ-ZZZZ"))
+    }
+
+    /// 同一(机器,版本)重复确认只留最新一条，避免名单里堆历史。
+    func reRecordingReplacesPreviousConfirmation() throws {
+        var gate = DragGate()
+        gate.record(confirmation(os: os, machine: machine, rounds: 5))
+        gate.record(confirmation(os: os, machine: machine, rounds: 100))
+        expectEqual(gate.confirmations.count, 1)
+        expectEqual(gate.confirmations.first?.rounds, 100)
+    }
+
+    /// 坏文件/无文件必须退回"未确认"，而不是抛错让工具打不开。
+    func unreadableStoreFallsBackToClosed() throws {
+        let dir = TestPaths.journalDirectory("drag-gate")
+        let store = DragGateStore(url: dir.appendingPathComponent("drag.json"))
+        expect(!store.load().allowsTakeover(os: os, machine: machine))
+        try "not json".write(to: dir.appendingPathComponent("drag.json"), atomically: true, encoding: .utf8)
+        expect(store.load().confirmations.isEmpty, "读不懂就当作未确认")
+
+        var gate = DragGate()
+        gate.record(confirmation(os: os, machine: machine))
+        try store.save(gate)
+        expect(store.load().allowsTakeover(os: os, machine: machine), "落盘后应能原样读回")
+    }
+}
+
+extension DragGateTests {
+    static var testCases: [TestCase] {
+        let suite = DragGateTests()
+        return [
+            TestCase("emptyGateBlocksTakeover", suite.emptyGateBlocksTakeover),
+            TestCase("versionMustMatchExactly", suite.versionMustMatchExactly),
+            TestCase("machineMustMatch", suite.machineMustMatch),
+            TestCase("reRecordingReplacesPreviousConfirmation", suite.reRecordingReplacesPreviousConfirmation),
+            TestCase("unreadableStoreFallsBackToClosed", suite.unreadableStoreFallsBackToClosed),
+        ]
+    }
+}
