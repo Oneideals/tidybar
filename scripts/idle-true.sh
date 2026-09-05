@@ -29,14 +29,17 @@ cpu_seconds() {
 }
 
 hid_idle_ns() {
-  ioreg -c IOHIDSystem -d 1 2>/dev/null | sed -n 's/.*"HIDIdleTime" = \([0-9]*\).*/\1/p' | head -1
+  # 不用 -d 1：深度限制实测不稳定（同样命令有时整棵树只回一层 root），
+  # 采样循环里一排空行会把归因脚本喂崩。全量 grep 反而稳定；取不到时输出 0，
+  # 由 Python 侧把"0 idle"当作无效样本丢弃而不是误判成"用户在输入"。
+  ioreg -c IOHIDSystem 2>/dev/null | grep -m1 '"HIDIdleTime"' | sed -E 's/[^0-9]*([0-9]+).*/\1/'
 }
 
 footprint_mb() {
   footprint -p "$1" 2>/dev/null | awk '/phys_footprint:/ {print $2; exit}'
 }
 
-echo "静置观测（无输入口径）｜pid=$PID｜时长 ${MINUTES} 分钟｜判定区间：无键鼠输入 ≥30s"
+echo "静置观测（无输入口径）｜pid=${PID}｜时长 ${MINUTES} 分钟｜判定区间：无键鼠输入 ≥30s"
 
 CPU0=$(cpu_seconds "$PID")
 F0=$(footprint_mb "$PID")
@@ -51,6 +54,7 @@ while [ "$ELAPSED" -lt $((MINUTES * 60)) ]; do
   sleep 2
   ELAPSED=$((ELAPSED + 2))
   IDLE=$(hid_idle_ns); CPU=$(cpu_seconds "$PID")
+  [ -z "$IDLE" ] && IDLE=-1
   echo "$IDLE $CPU" >> "$SAMPLES"
 done
 
@@ -64,8 +68,14 @@ import sys
 
 samples = []
 for line in open(sys.argv[1]):
-    idle_ns, cpu = line.split()
-    samples.append((int(idle_ns), float(cpu)))
+    parts = line.split()
+    if len(parts) != 2:
+        continue        # ioreg 偶发取不到就丢这一段，归因宁少勿错
+    idle_ns, cpu = parts
+    try:
+        samples.append((int(idle_ns), float(cpu)))
+    except ValueError:
+        continue
 cpu0 = float(sys.argv[2])
 idle0 = int(sys.argv[3])
 
