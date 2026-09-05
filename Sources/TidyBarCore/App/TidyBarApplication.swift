@@ -8,6 +8,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var controller: TidyBarController?
     private var tickTimer: Timer?
     private var statusItem: NSStatusItem?
+    /// 两条分隔符（报告 A2）。它们同样是**我们自己的图标**：用户改边界时拖的是它们，
+    /// 不需要为了挪一条线去搬动别人的图标。位置只从现场读回，不自记坐标。
+    private var dividerItems: [NSStatusItem] = []
     private var searchUI: TidyBarSearchUI?
     /// 注销/关机/launchd 回收发来的信号不保证会走 applicationWillTerminate，显式挂信号源
     private var shutdown: GracefulShutdown?
@@ -22,6 +25,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private let settingsStore: SettingsStoring
     private let services: SystemServices
     /// 用于量「启动到接管」这一段真实耗时（报告 §4.3 的 2s 预算）
+    /// 分隔符字形：窄、可辨、不与常见状态项字形冲突
+    private static let dividerGlyph = "│"
     private let launchedAt = Date()
 
     /// 默认装配：读取器为 M0 已验证的辅助功能枚举（只读，安全）；
@@ -259,8 +264,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         enumerator.request(
             reason: reason,
             scan: { reader.discoverItems() },
-            apply: { [weak controller] items in
+            apply: { [weak self, weak controller] items in
+                guard let self else { return }
                 controller?.applyScan(items)
+                self.syncDividerPositions(from: items)
                 let elapsed = Date().timeIntervalSince(self.launchedAt)
                 fprint(String(format: "首扫完成｜图标 %d 个｜距启动 %.2fs（预算 2s）", items.count, elapsed))
             }
@@ -309,6 +316,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 这个意图本身不依赖拖拽，不必让它陪着闸门一起等着。
         menu.addItem(withTitle: "搜索图标…", action: #selector(presentSearch), keyEquivalent: "f")
         menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        menu.addItem(withTitle: dividerItems.isEmpty ? "摆放分隔符（划定三个区）" : "收起分隔符",
+                     action: #selector(toggleDividers), keyEquivalent: "")
         if !barController.pendingNewItems.isEmpty {
             menu.addItem(TidyBarMenuBuilder.newItemQuestions(
                 controller: barController,
@@ -368,6 +377,48 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             print(line)
             exit((search.panel.isVisible && focused) ? 0 : 1)
         }
+    }
+
+    /// 摆出/收起两条分隔符。
+    ///
+    /// 只有接管已在本机解锁才允许摆：没有分隔符时改分区靠"同区同伴"给落点，
+    /// 有分隔符才谈得上"按位置自动归区"。摆出来后拖动它 = 用已验过的 ⌘ 拖拽搬我们自己的图标。
+    @objc private func toggleDividers() {
+        if dividerItems.isEmpty {
+            for _ in 0..<2 {
+                let divider = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+                divider.button?.title = Self.dividerGlyph
+                divider.button?.toolTip = "TidyBar 分隔符：⌘ 拖动它调整区的边界"
+                dividerItems.append(divider)
+            }
+            fprint("已摆出 2 条分隔符，可 ⌘ 拖动调整边界")
+        } else {
+            dividerItems.forEach { NSStatusBar.system.removeStatusItem($0) }
+            dividerItems.removeAll()
+            controller?.dividerCenters = (nil, nil)
+            controller?.dividerIDs = []
+            fprint("已收起分隔符")
+        }
+        controller?.refreshItems()
+    }
+
+    /// 从现场读回分隔符位置（左/右两条的中心 x），并据此重算每个图标的归属。
+    private func syncDividerPositions(from items: [ManagedItem]) {
+        guard !dividerItems.isEmpty else {
+            controller?.dividerCenters = (nil, nil)
+            return
+        }
+        let centers = items.filter { $0.title == Self.dividerGlyph }
+            .map { $0.frame.midX }
+            .sorted()
+        guard centers.count >= 2 else {
+            // 只读到一条（刚摆出来还没被枚举到，或某个 App 吞了位置）：宁可当作没有边界
+            controller?.dividerCenters = (nil, nil)
+            return
+        }
+        controller?.dividerCenters = (centers.first, centers.last)
+        controller?.dividerIDs = Set(items.filter { $0.title == Self.dividerGlyph }.map(\.id))
+        controller?.realignToDividers()
     }
 
     @objc private func openSettings() {

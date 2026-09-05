@@ -340,6 +340,14 @@ public final class LayoutEngine {
     /// 台账快照（诊断与设置界面读）。
     public var ledgerRecordsSnapshot: [IdentityRecord] { ledgerRecords }
 
+    /// 只记归属、不产生任何输入事件：分隔符被拖动后重算分区用它。
+    /// 拖拽是"改分区"的一种实现手段，不是唯一一种——把边界挪了，归属自然跟着变，
+    /// 这种时候不该再去搬别人的图标。
+    public func recordZoneOnly(itemID: String, zone: MenuBarZone) {
+        layout.move(itemID: itemID, to: zone, position: nil)
+        try? journal.writeCommitted(layout)
+    }
+
     // MARK: - 点击转发（报告 A3/A8：面板与搜索结果里的点击）
 
     /// 代点一个图标。不改布局、不写 journal：它不产生状态变更，失败也不该留下任何"半成品"。

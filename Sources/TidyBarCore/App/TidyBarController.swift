@@ -84,6 +84,68 @@ public final class TidyBarController {
         return recovery
     }
 
+    /// 分隔符（我们自己的图标）的中心 x。没有它们时退化成"按现有分区找邻居"。
+    /// 分隔符自身的图标 id：重算归属时必须跳过，否则会把边界自己"收起来"
+    public var dividerIDs: Set<String> = []
+    public var dividerCenters: (left: CGFloat?, right: CGFloat?) = (nil, nil) {
+        didSet { installTargetProvider() }
+    }
+
+    private var targetProviderInstalled = false
+    private func installTargetProviderOnce() {
+        guard !targetProviderInstalled else { return }
+        targetProviderInstalled = true
+        installTargetProvider()
+    }
+
+    /// 给引擎装上"合法落点"的来源。
+    ///
+    /// 这是"接管模式下从菜单改分区静默不生效"的正面修法：引擎要的从来不是一个像素数，
+    /// 而是一个**踩在邻居槽位上**的坐标（findings/02：拖进空隙系统不报错也不动）。
+    /// 有分隔符时按分区边界找邻居；没有就按现有分区里的同伴找——两种都不许猜坐标。
+    private func installTargetProvider() {
+        engine.targetProvider = { [weak self] itemID, zone in
+            guard let self else { return nil }
+            let ordered = MenuBarEnumeration.sortedLeftToRight(self.items)
+            let edges = self.dividerCenters.left != nil && self.dividerCenters.right != nil
+                ? self.dividerCenters
+                : self.inferredEdges(ordered: ordered, zone: zone)
+            if let x = DividerGeometry.landingX(
+                for: itemID, to: zone, ordered: ordered,
+                leftEdge: edges.left, rightEdge: edges.right
+            ) { return x }
+            // 分隔符还没摆出来时，退到"按当前分区归属找邻居"
+            let peers = self.items.filter { $0.id != itemID && self.engine.layout.zone(of: $0.id) == zone }
+            guard !peers.isEmpty else { return nil }
+            return DividerGeometry.landingX(
+                for: itemID, to: zone, ordered: ordered,
+                leftEdge: peers.map { $0.frame.midX }.min(), rightEdge: peers.map { $0.frame.midX }.max()
+            )
+        }
+    }
+
+    /// 只有一条分隔符时，另一侧边界只能当作无限远（用极值表达），避免把整条菜单栏判成同一个区。
+    private func inferredEdges(ordered: [ManagedItem], zone: MenuBarZone) -> (left: CGFloat?, right: CGFloat?) {
+        switch zone {
+        case .visible: return (dividerCenters.right, dividerCenters.right)
+        case .hidden: return (dividerCenters.left ?? -.greatestFiniteMagnitude, dividerCenters.right ?? .greatestFiniteMagnitude)
+        case .alwaysHidden: return (dividerCenters.left, dividerCenters.left)
+        }
+    }
+
+    /// 把"分区归属"整体按分隔符重算（用户拖完分隔符后调用）。
+    public func realignToDividers() {
+        guard dividerCenters.left != nil, dividerCenters.right != nil else { return }
+        let edges = [dividerCenters.left!, dividerCenters.right!].sorted()
+        for item in items where !item.isSystemOwned && !dividerIDs.contains(item.id) {
+            let zone = DividerGeometry.zone(forX: item.frame.midX, leftEdge: edges.first, rightEdge: edges.last)
+            if engine.layout.zone(of: item.id) != zone {
+                engine.recordZoneOnly(itemID: item.id, zone: zone)
+            }
+        }
+        publish()
+    }
+
     /// 把上次没做完的变更真的再做一次。
     ///
     /// 降级模式下故意什么都不做：那时布局只决定自有面板里显示谁，不动系统菜单栏，
@@ -123,6 +185,7 @@ public final class TidyBarController {
     public func applyScan(_ scanned: [ManagedItem]) {
         let known = Set(items.map(\.id))
         items = scanned
+        installTargetProviderOnce()
         engine.fold(items: scanned, newItemZone: settings.newItemZone)
         // A7「先问我」：默认策略照样先落一个确定的分区（不能让新图标悬着，
         // 否则它到底显不显示取决于 UI 有没有画那条问题），但把选择权挂出来等用户回答。

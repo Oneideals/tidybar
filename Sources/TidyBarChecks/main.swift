@@ -40,6 +40,7 @@ let suites: [TestSuite] = [
     TestSuite("ResidualPairing", ResidualPairingTests.testCases),
     TestSuite("IdentityLedger", IdentityLedgerTests.testCases + LedgerAcrossLaunchTests.testCases),
     TestSuite("SettingsEvolution", SettingsEvolutionTests.testCases),
+    TestSuite("DividerGeometry", DividerGeometryTests.testCases),
     // 行为层
     TestSuite("RevealStateMachine", RevealStateMachineTests.testCases + RevealStateMachineTests.idleTimerContractCases),
     TestSuite("EventEngine", EventEngineThrottleTests.testCases),
