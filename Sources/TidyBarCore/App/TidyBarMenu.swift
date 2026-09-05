@@ -148,6 +148,40 @@ enum TidyBarMenuBuilder {
         root.submenu = submenu
         return root
     }
+
+    static func profilesMenu(
+        controller: TidyBarController,
+        target: AnyObject,
+        applySelector: Selector,
+        saveSelector: Selector
+    ) -> NSMenuItem {
+        let root = NSMenuItem(title: "布局档案（C2）", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "布局档案")
+        submenu.autoenablesItems = false
+
+        let profiles = controller.listProfiles()
+        if profiles.isEmpty {
+            let empty = NSMenuItem(title: "暂无保存的档案", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+        } else {
+            for name in profiles {
+                let item = NSMenuItem(title: name, action: applySelector, keyEquivalent: "")
+                item.target = target
+                item.representedObject = name
+                if controller.settings.activeProfileName == name {
+                    item.state = .on
+                }
+                submenu.addItem(item)
+            }
+        }
+        submenu.addItem(.separator())
+        let saveItem = NSMenuItem(title: "将当前布局另存为档案…", action: saveSelector, keyEquivalent: "")
+        saveItem.target = target
+        submenu.addItem(saveItem)
+        root.submenu = submenu
+        return root
+    }
 }
 
 /// 菜单项携带的分配请求（representedObject 的载体，避免把 id/分区拆成两个字符串字段）

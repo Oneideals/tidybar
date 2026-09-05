@@ -189,3 +189,23 @@ extension RuleEngineTests {
         ]
     }
 }
+
+struct LiveSystemContextProviderTests {
+    func liveContextReturnsValidStructure() throws {
+        let provider = LiveSystemContextProvider()
+        let ctx = provider.currentContext()
+        if let level = ctx.batteryLevel {
+            expect(level >= 0.0 && level <= 1.0, "电量比例应在 0 到 1 之间")
+        }
+        expect(ctx.now.timeIntervalSinceNow < 2.0)
+    }
+}
+
+extension LiveSystemContextProviderTests {
+    static var testCases: [TestCase] {
+        let suite = LiveSystemContextProviderTests()
+        return [
+            TestCase("liveContextReturnsValidStructure", suite.liveContextReturnsValidStructure),
+        ]
+    }
+}

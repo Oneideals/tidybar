@@ -186,7 +186,8 @@ struct TidyBarControllerTests {
         settings: AppSettings = AppSettings(),
         mover: MenuBarMoving? = UnverifiedMenuBarMover(),
         store: FakeSettingsStore = FakeSettingsStore(),
-        ids: [String] = ["com.test.a", "com.test.b"]
+        ids: [String] = ["com.test.a", "com.test.b"],
+        contextProvider: SystemContextProviding = LiveSystemContextProvider()
     ) -> (TidyBarController, FakeMenuBarReader) {
         let reader = FakeMenuBarReader(ids: ids)
         let journal = LayoutJournal(directory: TestPaths.journalDirectory("controller"))
@@ -201,7 +202,8 @@ struct TidyBarControllerTests {
             engine: engine,
             reveal: RevealStateMachine(rehideDelay: settings.rehideDelay),
             settings: resolved,
-            store: store
+            store: store,
+            contextProvider: contextProvider
         )
         controller.start(now: TestDates.onWeekday())
         return (controller, reader)
@@ -260,6 +262,31 @@ struct TidyBarControllerTests {
         controller.applyProfile(named: "录屏干净版")
         expect(controller.snapshot.layout.zone(of: "com.test.a") == .alwaysHidden)
         expect(store.stored?.activeProfileName == "录屏干净版")
+    }
+
+    func profileListAndDelete() throws {
+        let store = FakeSettingsStore()
+        let (controller, _) = makeController(store: store)
+        controller.saveProfile(named: "工作")
+        controller.saveProfile(named: "家庭")
+        expect(controller.listProfiles() == ["家庭", "工作"])
+        controller.deleteProfile(named: "家庭")
+        expect(controller.listProfiles() == ["工作"])
+    }
+
+    func rulesEvaluatedWithCurrentContext() throws {
+        var settings = AppSettings()
+        settings.rules = [DisplayRule(name: "专注模式隐藏", conditions: [.focusModeActive], actions: [.hide("com.test.a")])]
+        struct MockProvider: SystemContextProviding {
+            func currentContext() -> SystemContext {
+                SystemContext(batteryLevel: nil, isCharging: false, connectedWiFiSSID: nil, activeFocusMode: "工作", frontmostAppBundleID: nil)
+            }
+        }
+        let (controller, _) = makeController(settings: settings, contextProvider: MockProvider())
+        _ = controller.move("com.test.a", to: .visible)
+        let batch = controller.evaluateRulesWithCurrentContext()
+        expect(batch.changes.count == 1)
+        expect(controller.snapshot.layout.zone(of: "com.test.a") == .hidden)
     }
 
     func rulesAreAppliedThroughController() throws {
@@ -349,6 +376,8 @@ extension TidyBarControllerTests {
             TestCase("searchRanksByMatchQuality", suite.searchRanksByMatchQuality),
             TestCase("demoModeLeavesSystemItemsAlone", suite.demoModeLeavesSystemItemsAlone),
             TestCase("profileSaveAndApply", suite.profileSaveAndApply),
+            TestCase("profileListAndDelete", suite.profileListAndDelete),
+            TestCase("rulesEvaluatedWithCurrentContext", suite.rulesEvaluatedWithCurrentContext),
             TestCase("rulesAreAppliedThroughController", suite.rulesAreAppliedThroughController),
             TestCase("rulesCanBeDisabledGlobally", suite.rulesCanBeDisabledGlobally),
             TestCase("settingsUpdatesArePersistedAndSanitized", suite.settingsUpdatesArePersistedAndSanitized),

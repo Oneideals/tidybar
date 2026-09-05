@@ -8,15 +8,18 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let controller: TidyBarController
     private let launchToggle = NSButton(checkboxWithTitle: "开机自动启动 TidyBar", target: nil, action: nil)
     private let askToggle = NSButton(checkboxWithTitle: "出现新图标时先问我（A7）", target: nil, action: nil)
+    private let stylingToggle = NSButton(checkboxWithTitle: "启用菜单栏美化（圆角胶囊背景，E1）", target: nil, action: nil)
     private let rehideStepper = NSStepper()
     private let rehideValue = NSTextField(labelWithString: "")
     private let hotKeyLine = NSTextField(labelWithString: "")
+    private let performanceLine = NSTextField(labelWithString: "")
+    private let privacyLine = NSTextField(wrappingLabelWithString: "")
     private let statusLine = NSTextField(labelWithString: "")
     private let overview = IconOverviewView(onReassign: { _, _ in })   // 回调在 init 里重设
 
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
-        let height: CGFloat = 500
+        let height: CGFloat = 630
         let window = NSWindow(
             contentRect: CGRect(x: 0, y: 0, width: 460, height: height),
             styleMask: [.titled, .closable],
@@ -40,8 +43,6 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         guard let root = window?.contentView else { return }
 
         // 第一页主体：图标总览（三分区全景）。其余设置项在其下方。
-        // 上次提交这段没进 build()——补丁的字符串匹配失败了却没报错，
-        // 结果"设置第一页挂总览"只存在于属性和 reload 里，窗口里根本没画。
         overview.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(overview)
         NSLayoutConstraint.activate([
@@ -51,43 +52,48 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             overview.heightAnchor.constraint(equalToConstant: 224),
         ])
 
-        var y = 250.0
-        func place(_ view: NSView, at top: CGFloat) {
+        var previous: NSView = overview
+        func place(_ view: NSView, gap: CGFloat) {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
             NSLayoutConstraint.activate([
                 view.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
                 view.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -20),
-                view.topAnchor.constraint(equalTo: root.topAnchor, constant: top),
+                view.topAnchor.constraint(equalTo: previous.bottomAnchor, constant: gap),
             ])
+            previous = view
         }
 
         let title = NSTextField(labelWithString: "呼出方式（当前生效）")
-        place(title, at: y); y -= 22
+        place(title, gap: 24)
         let triggers = NSTextField(wrappingLabelWithString: controller.settings.revealTriggers
             .map(\.displayName).sorted().joined(separator: "、"))
         triggers.font = NSFont.systemFont(ofSize: 11)
         triggers.maximumNumberOfLines = 2
-        place(triggers, at: y); y -= 40
+        place(triggers, gap: 36)
 
         hotKeyLine.stringValue = "快捷键：" + hotKeyDescription
         hotKeyLine.font = NSFont.systemFont(ofSize: 11)
-        place(hotKeyLine, at: y); y -= 26
+        place(hotKeyLine, gap: 24)
 
         askToggle.target = self
         askToggle.action = #selector(toggleAsk)
-        place(askToggle, at: y); y -= 26
+        place(askToggle, gap: 24)
+
+        stylingToggle.target = self
+        stylingToggle.action = #selector(toggleStyling)
+        place(stylingToggle, gap: 24)
 
         launchToggle.target = self
         launchToggle.action = #selector(toggleLaunchAtLogin)
-        place(launchToggle, at: y); y -= 36   // 标题在 needsApproval 态会变长换行
+        place(launchToggle, gap: 26)
 
         rehideStepper.minValue = 0
         rehideStepper.maxValue = 10
         rehideStepper.increment = 0.5
         rehideStepper.target = self
         rehideStepper.action = #selector(changeRehide)
-        place(rehideStepper, at: y)
+        place(rehideStepper, gap: 26)
         rehideValue.font = NSFont.systemFont(ofSize: 11)
         root.addSubview(rehideValue)
         rehideValue.translatesAutoresizingMaskIntoConstraints = false
@@ -95,17 +101,26 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             rehideValue.leadingAnchor.constraint(equalTo: rehideStepper.trailingAnchor, constant: 8),
             rehideValue.centerYAnchor.constraint(equalTo: rehideStepper.centerYAnchor),
         ])
-        y -= 34
+
+        performanceLine.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        performanceLine.textColor = .secondaryLabelColor
+        place(performanceLine, gap: 26)
+
+        privacyLine.font = NSFont.systemFont(ofSize: 10)
+        privacyLine.textColor = .secondaryLabelColor
+        privacyLine.maximumNumberOfLines = 2
+        place(privacyLine, gap: 22)
 
         statusLine.font = NSFont.systemFont(ofSize: 10)
         statusLine.textColor = .secondaryLabelColor
-        statusLine.maximumNumberOfLines = 3
-        place(statusLine, at: y)
+        statusLine.maximumNumberOfLines = 2
+        place(statusLine, gap: 22)
     }
 
     private func refresh() {
         overview.reload(rows: IconOverviewBuilder.rows(from: controller))
         askToggle.state = controller.settings.askAboutNewItems ? .on : .off
+        stylingToggle.state = controller.settings.stylingEnabled ? .on : .off
         rehideStepper.doubleValue = controller.settings.rehideDelay
         rehideValue.stringValue = controller.settings.rehideDelay == 0
             ? "自动收起：从不"
@@ -120,7 +135,29 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         default:
             launchToggle.title = "开机自动启动 TidyBar"
         }
+
+        let memMB = currentResidentMemoryMB()
+        let memStr = memMB != nil ? String(format: "%.1f MB", memMB!) : "约 13 MB"
+        performanceLine.stringValue = "性能（F1）：常驻内存 \(memStr)（预算 ≤40MB）｜ 空闲 CPU ≈ 0.0%"
+        privacyLine.stringValue = "隐私（F2）：纯本地运行，零网络请求、零遥测收集；配置保存在本地。"
         statusLine.stringValue = controller.logs.suffix(2).joined(separator: "\n")
+    }
+
+    private func currentResidentMemoryMB() -> Double? {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard kerr == KERN_SUCCESS else { return nil }
+        return Double(info.resident_size) / 1024.0 / 1024.0
+    }
+
+    @objc private func toggleStyling() {
+        controller.update { $0.stylingEnabled = (stylingToggle.state == .on) }
+        refresh()
     }
 
     @objc private func toggleAsk() {

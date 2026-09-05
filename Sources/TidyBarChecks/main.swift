@@ -49,6 +49,7 @@ let suites: [TestSuite] = [
     // 规则层
     TestSuite("RuleCondition", RuleConditionTests.testCases),
     TestSuite("RuleEngine", RuleEngineTests.testCases),
+    TestSuite("LiveSystemContext", LiveSystemContextProviderTests.testCases),
     // 支撑层
     TestSuite("PanelGeometry", PanelGeometryTests.testCases),
     TestSuite("ItemSearch", ItemSearchTests.testCases),

@@ -26,6 +26,7 @@ public final class TidyBarController {
     private let reveal: RevealStateMachine
     private let ruleEngine: RuleEngine
     private let store: SettingsStoring
+    private let contextProvider: SystemContextProviding
     private var items: [ManagedItem] = []
 
     public init(
@@ -33,13 +34,15 @@ public final class TidyBarController {
         reveal: RevealStateMachine,
         settings: AppSettings,
         store: SettingsStoring,
-        ruleEngine: RuleEngine = RuleEngine()
+        ruleEngine: RuleEngine = RuleEngine(),
+        contextProvider: SystemContextProviding = LiveSystemContextProvider()
     ) {
         self.engine = engine
         self.reveal = reveal
         self.settings = settings.sanitized()
         self.store = store
         self.ruleEngine = ruleEngine
+        self.contextProvider = contextProvider
     }
 
     public var snapshot: Snapshot {
@@ -341,6 +344,12 @@ public final class TidyBarController {
         return batch
     }
 
+    /// 使用当前真实环境上下文自动求值并落地规则
+    @discardableResult
+    public func evaluateRulesWithCurrentContext(isScreenShareActive: Bool = false, at date: Date = Date()) -> RuleEngine.Batch {
+        evaluateRules(context: contextProvider.currentContext(), isScreenShareActive: isScreenShareActive, at: date)
+    }
+
     // MARK: - 设置
 
     public func update(_ mutate: (inout AppSettings) -> Void) {
@@ -348,6 +357,11 @@ public final class TidyBarController {
         settings = settings.sanitized()
         store.save(settings)
         publish()
+    }
+
+    /// 所有已保存的布局档案名称
+    public func listProfiles() -> [String] {
+        Array(settings.profiles.keys).sorted()
     }
 
     /// 应用某个布局档案（报告 C2）
@@ -367,6 +381,16 @@ public final class TidyBarController {
         update {
             $0.profiles[name] = engine.layout
             $0.activeProfileName = name
+        }
+    }
+
+    /// 删除某个布局档案
+    public func deleteProfile(named name: String) {
+        update {
+            $0.profiles.removeValue(forKey: name)
+            if $0.activeProfileName == name {
+                $0.activeProfileName = nil
+            }
         }
     }
 

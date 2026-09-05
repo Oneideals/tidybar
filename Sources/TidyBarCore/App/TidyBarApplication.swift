@@ -18,6 +18,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var hotKey: GlobalHotKey?
     private var hotKeyNote = "未启用"
     private var settingsWindow: TidyBarSettingsWindowController?
+    private var ruleEditor: RuleEditorWindowController?
+    private let stylingController = MenuBarStylingController()
     private var wizard: FirstRunWizardController?
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var rescanObservers: [NSObjectProtocol] = []
@@ -166,6 +168,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         barController.onSnapshot = { [weak self, weak barController, weak panel] _ in
             guard let self, let barController, let panel else { return }
             self.syncPanel(barController: barController, panel: panel)
+            self.stylingController.update(enabled: barController.settings.stylingEnabled, screen: self.services.screens.primaryScreen)
             // 每次交互都可能续期，收起点跟着重算
             self.scheduleAutoConceal(barController: barController, panel: panel)
         }
@@ -177,6 +180,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 空闲 CPU 超预算的头号嫌疑就是它，而不是什么深奥的系统行为。
         // 现在收起状态下**没有任何周期任务**，展开时才挂表，且挂的是"到点即收"的那一条。
         scheduleAutoConceal(barController: barController, panel: panel)
+        stylingController.update(enabled: barController.settings.stylingEnabled, screen: services.screens.primaryScreen)
 
         statusItem = makeStatusItem(controller: barController)
         presentWizardIfNeeded(barController: barController)
@@ -366,6 +370,15 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             )
         )
         menu.addItem(
+            TidyBarMenuBuilder.profilesMenu(
+                controller: barController,
+                target: self,
+                applySelector: #selector(applyProfileFromMenu(_:)),
+                saveSelector: #selector(saveProfilePrompt)
+            )
+        )
+        menu.addItem(withTitle: "规则编辑器…", action: #selector(openRuleEditor), keyEquivalent: "")
+        menu.addItem(
             TidyBarMenuBuilder.firstRunGuide(
                 accessibilityGranted: services.accessibility.isTrusted,
                 target: self,
@@ -509,6 +522,46 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     @objc private func toggleDemoMode() {
         controller?.toggleDemoMode()
+    }
+
+    @objc private func applyProfileFromMenu(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String, let controller else { return }
+        controller.applyProfile(named: name)
+        fprint("已切换到布局档案「\(name)」")
+    }
+
+    @objc private func saveProfilePrompt() {
+        guard let controller else { return }
+        let alert = NSAlert()
+        alert.messageText = "另存为布局档案"
+        alert.informativeText = "请输入新布局档案的名称："
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        input.placeholderString = "例如：工作模式"
+        alert.accessoryView = input
+        if alert.runModal() == .alertFirstButtonReturn {
+            let raw = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = raw.isEmpty ? "未命名档案" : raw
+            controller.saveProfile(named: name)
+            fprint("已保存布局档案「\(name)」")
+        }
+    }
+
+    @objc private func openRuleEditor() {
+        guard let controller else { return }
+        let editor = RuleEditorWindowController(controller: controller, editing: nil) { newRule in
+            controller.update {
+                $0.rules.append(newRule)
+            }
+            fprint("已添加新规则「\(newRule.name)」")
+            controller.evaluateRulesWithCurrentContext()
+        }
+        self.ruleEditor = editor
+        editor.showWindow(self)
+        editor.window?.makeKeyAndOrderFront(self)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func reportStartup(barController: TidyBarController) {

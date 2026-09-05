@@ -1,9 +1,7 @@
 import AppKit
 
 /// 图标搜索面板（报告 A8）：键入名称 → 定位 → 激活。
-///
-/// 只做"输入 + 结果 + 激活"三件事，键盘上下键选择尚未实现（当前靠回车取第一条或鼠标点选），
-/// 这条限制如实记在 findings 里，不当成已完成。
+/// 支持键盘 ↑/↓ 移动选中项、↵ 回车激活、⎋ Esc 退出。
 public final class TidyBarSearchPanel: NSPanel {
     public init() {
         super.init(
@@ -161,6 +159,23 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     public func controlTextDidChange(_ notification: Notification) {
         selection = 0        // 结果集换了，选中项必须回到第一条，否则回车会激活上一次选中的那一项
         refresh()
+    }
+
+    public func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.moveUp(_:)) {
+            moveSelection(-1)
+            return true
+        } else if commandSelector == #selector(NSResponder.moveDown(_:)) {
+            moveSelection(1)
+            return true
+        } else if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            submit()
+            return true
+        } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            dismiss()
+            return true
+        }
+        return false
     }
 
     /// 当前选中项下标。键盘 ↑/↓ 改它，回车取它。
