@@ -1,6 +1,6 @@
 import AppKit
 
-/// 设置窗口（M1 缺失的一整块 UI 的最小可用版）。
+/// 设置窗口（对标 Bartender 专业三行菜单栏托盘与多标签页管理）。
 ///
 /// 刻意做得"直白"：每一项都是**读系统或读状态**再显示，不缓存自己算出来的假状态——
 /// 开机自启尤其如此，用户在系统设置里手动改过之后，我们这里必须跟着变。
@@ -20,8 +20,8 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 560, height: 460),
-            styleMask: [.titled, .closable],
+            contentRect: CGRect(x: 0, y: 0, width: 760, height: 530),
+            styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
@@ -45,23 +45,42 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         tabView.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(tabView)
         NSLayoutConstraint.activate([
-            tabView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            tabView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            tabView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            tabView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
             tabView.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
-            tabView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            tabView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
         ])
 
-        // Tab 1: 图标整理（Bartender 风格三行泳道）
+        // Tab 1: 图标整理（Bartender 风格三行菜单栏托盘）
         let tab1 = NSTabViewItem(identifier: "icons")
         tab1.label = "图标整理"
         let tab1View = NSView()
+
+        let titleLabel = NSTextField(labelWithString: "拖拽图标自定义菜单栏布局")
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        tab1View.addSubview(titleLabel)
+
+        let subtitleLabel = NSTextField(labelWithString: "将图标在三个状态托盘间自由拖拽，松手即时生效并同步落地配置。")
+        subtitleLabel.font = NSFont.systemFont(ofSize: 11)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        tab1View.addSubview(subtitleLabel)
+
         overview.translatesAutoresizingMaskIntoConstraints = false
         tab1View.addSubview(overview)
+
         NSLayoutConstraint.activate([
-            overview.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor),
-            overview.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor),
-            overview.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 6),
-            overview.bottomAnchor.constraint(equalTo: tab1View.bottomAnchor, constant: -6),
+            titleLabel.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
+            titleLabel.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 6),
+
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+            subtitleLabel.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 6),
+
+            overview.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 4),
+            overview.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor, constant: -4),
+            overview.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 10),
+            overview.bottomAnchor.constraint(lessThanOrEqualTo: tab1View.bottomAnchor, constant: -6),
         ])
         tab1.view = tab1View
         tabView.addTabViewItem(tab1)
@@ -258,7 +277,8 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     }
 }
 
-/// 首启向导（B1）：三步、每步可跳过，全程不挡路。
+// MARK: - 首启向导（B1）：三步、每步可跳过，全程不挡路。
+
 public final class FirstRunWizardController: NSWindowController {
     private let controller: TidyBarController
     private let onFinish: () -> Void
@@ -289,7 +309,7 @@ public final class FirstRunWizardController: NSWindowController {
         self.controller = controller
         self.onFinish = onFinish
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 460, height: 430),
+            contentRect: CGRect(x: 0, y: 0, width: 500, height: 450),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false

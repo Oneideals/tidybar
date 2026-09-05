@@ -2,13 +2,15 @@ import AppKit
 
 private let iconPasteboardType = NSPasteboard.PasteboardType("com.tidybar.icon-id")
 
-/// 图标总览：三行图标泳道（Bartender 风格，设置首页与首启向导共用）。
+/// 图标总览：对标 Bartender 的真实三行菜单栏托盘（设置首页与首启向导共用）。
 ///
-/// 核心交互设计：
-/// 1. 对应三种状态的三行泳道：显示区（常驻）、隐藏区（收纳）、始终隐藏区；
-/// 2. 图标以圆角胶囊卡片（Chip）横向陈列；
-/// 3. 支持在不同泳道之间拖拽移动（Drag and Drop），拖入即自动重分配并更新台账；
-/// 4. 辅助支持右键/点击菜单直接切换分区，兼顾无障碍与操作效率。
+/// 核心架构与设计规范：
+/// 1. 严格三行托盘：对应「显示区」「隐藏区」「始终隐藏区」；
+/// 2. 纯正菜单栏拟物托盘（Lane Shelf）：高度与质感对标 macOS 状态栏，自适应暗色/浅色深邃半透明底色；
+/// 3. 真实图标单元（Icon Cell）：34x34pt 方形单元，显示真实高分辨率 App 图标或矢量微标，无冗余宽文本条；
+/// 4. 自适应优雅折行：托盘容纳多图标时（如 28 项隐藏区），自动折为双行，所有图标一览无余，杜绝横向滚动截断；
+/// 5. 原生拖放（Drag & Drop）与快捷菜单：支持拖拽跨行吸附投递，同时支持单击/右键一键移动；
+/// 6. 实时悬停检查器（Inspector）：悬停任意图标即时展示 App 名、Bundle ID 与分区状态。
 public final class IconOverviewView: NSView {
     public struct Row: Sendable, Equatable {
         public let item: ManagedItem
@@ -27,39 +29,112 @@ public final class IconOverviewView: NSView {
     public var onZoneChanged: (() -> Void)?
 
     private var rows: [Row] = []
-    private let stack = NSStackView()
+    private let lanesStack = NSStackView()
     private var lanes: [MenuBarZone: LaneView] = [:]
+    private let inspectorCard = NSView()
+    private let inspectorIconView = NSImageView()
+    private let inspectorTextLabel = NSTextField(labelWithString: "")
 
     public init(onReassign: @escaping (String, MenuBarZone) -> Void) {
         self.onReassign = onReassign
-        super.init(frame: CGRect(x: 0, y: 0, width: 500, height: 360))
+        super.init(frame: CGRect(x: 0, y: 0, width: 720, height: 380))
         setup()
     }
 
     required init?(coder: NSCoder) { fatalError("不用 nib 加载") }
 
     private func setup() {
-        stack.orientation = .vertical
-        stack.alignment = .width
-        stack.distribution = .fillEqually
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
-        ])
+        lanesStack.orientation = .vertical
+        lanesStack.alignment = .width
+        lanesStack.distribution = .gravityAreas
+        lanesStack.spacing = 14
+        lanesStack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(lanesStack)
 
         for zone in [MenuBarZone.visible, .hidden, .alwaysHidden] {
-            let lane = LaneView(zone: zone) { [weak self] itemID, targetZone in
-                self?.onReassign(itemID, targetZone)
-                self?.onZoneChanged?()
-            }
+            let lane = LaneView(
+                zone: zone,
+                onMoveItem: { [weak self] itemID, targetZone in
+                    self?.onReassign(itemID, targetZone)
+                    self?.onZoneChanged?()
+                },
+                onHoverItem: { [weak self] item, itemZone in
+                    self?.updateInspector(item: item, zone: itemZone)
+                }
+            )
             lanes[zone] = lane
-            stack.addArrangedSubview(lane)
+            lanesStack.addArrangedSubview(lane)
+        }
+
+        // 底部悬停检查器与操作指南
+        setupInspectorCard()
+
+        NSLayoutConstraint.activate([
+            lanesStack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            lanesStack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            lanesStack.topAnchor.constraint(equalTo: topAnchor),
+
+            inspectorCard.leadingAnchor.constraint(equalTo: leadingAnchor),
+            inspectorCard.trailingAnchor.constraint(equalTo: trailingAnchor),
+            inspectorCard.topAnchor.constraint(equalTo: lanesStack.bottomAnchor, constant: 14),
+            inspectorCard.heightAnchor.constraint(equalToConstant: 34),
+            inspectorCard.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+        ])
+    }
+
+    private func setupInspectorCard() {
+        inspectorCard.wantsLayer = true
+        inspectorCard.layer?.cornerRadius = 8
+        inspectorCard.layer?.borderWidth = 1
+        inspectorCard.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(inspectorCard)
+
+        inspectorIconView.translatesAutoresizingMaskIntoConstraints = false
+        inspectorIconView.imageScaling = .scaleProportionallyUpOrDown
+        inspectorCard.addSubview(inspectorIconView)
+
+        inspectorTextLabel.font = NSFont.systemFont(ofSize: 11)
+        inspectorTextLabel.textColor = .secondaryLabelColor
+        inspectorTextLabel.lineBreakMode = .byTruncatingTail
+        inspectorTextLabel.translatesAutoresizingMaskIntoConstraints = false
+        inspectorCard.addSubview(inspectorTextLabel)
+
+        NSLayoutConstraint.activate([
+            inspectorIconView.leadingAnchor.constraint(equalTo: inspectorCard.leadingAnchor, constant: 10),
+            inspectorIconView.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
+            inspectorIconView.widthAnchor.constraint(equalToConstant: 18),
+            inspectorIconView.heightAnchor.constraint(equalToConstant: 18),
+
+            inspectorTextLabel.leadingAnchor.constraint(equalTo: inspectorIconView.trailingAnchor, constant: 8),
+            inspectorTextLabel.trailingAnchor.constraint(equalTo: inspectorCard.trailingAnchor, constant: -10),
+            inspectorTextLabel.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
+        ])
+
+        updateInspector(item: nil, zone: nil)
+    }
+
+    private func updateInspector(item: ManagedItem?, zone: MenuBarZone?) {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        inspectorCard.layer?.backgroundColor = isDark
+            ? NSColor.white.withAlphaComponent(0.04).cgColor
+            : NSColor.black.withAlphaComponent(0.03).cgColor
+        inspectorCard.layer?.borderColor = isDark
+            ? NSColor.white.withAlphaComponent(0.08).cgColor
+            : NSColor.black.withAlphaComponent(0.08).cgColor
+
+        if let item = item, let zone = zone {
+            let appName = item.title.isEmpty ? (item.ownerBundleID ?? "未知应用") : item.title
+            let bundle = item.ownerBundleID ?? "未知来源"
+            let posHint = item.isPositionalIdentity ? " · [位置匹配]" : ""
+            inspectorIconView.image = IconImageResolver.resolve(for: item)
+            inspectorIconView.isHidden = false
+            inspectorTextLabel.stringValue = "当前图标：\(appName)（\(bundle)）\(posHint) ｜ 分区：\(zone.displayLabel) ｜ 拖拽或单击移至其他托盘"
+            inspectorTextLabel.textColor = .labelColor
+        } else {
+            inspectorIconView.image = NSImage(systemSymbolName: "hand.draw", accessibilityDescription: "提示")
+            inspectorIconView.isHidden = false
+            inspectorTextLabel.stringValue = "💡 提示：按住图标直接跨托盘拖拽即可调整状态；也可直接单击或右键图标调出快捷移动菜单。"
+            inspectorTextLabel.textColor = .secondaryLabelColor
         }
     }
 
@@ -70,22 +145,31 @@ public final class IconOverviewView: NSView {
             let members = rows.filter { $0.zone == zone }
             lanes[zone]?.reload(rows: members)
         }
+        updateInspector(item: nil, zone: nil)
     }
 }
 
-/// 单个泳道视图（包含标题栏和可拖放卡片槽）
+// MARK: - 单个泳道视图（包含标题栏和真实菜单栏托盘）
+
 private final class LaneView: NSView {
     let zone: MenuBarZone
     let onMoveItem: (String, MenuBarZone) -> Void
+    let onHoverItem: (ManagedItem?, MenuBarZone) -> Void
 
     private let titleLabel = NSTextField(labelWithString: "")
-    private let countLabel = NSTextField(labelWithString: "")
-    private let dropContainer: LaneDropContainerView
+    private let hintLabel = NSTextField(labelWithString: "")
+    private let countBadge = NSTextField(labelWithString: "")
+    private let shelf: LaneShelfView
 
-    init(zone: MenuBarZone, onMoveItem: @escaping (String, MenuBarZone) -> Void) {
+    init(
+        zone: MenuBarZone,
+        onMoveItem: @escaping (String, MenuBarZone) -> Void,
+        onHoverItem: @escaping (ManagedItem?, MenuBarZone) -> Void
+    ) {
         self.zone = zone
         self.onMoveItem = onMoveItem
-        self.dropContainer = LaneDropContainerView(zone: zone, onDrop: onMoveItem)
+        self.onHoverItem = onHoverItem
+        self.shelf = LaneShelfView(zone: zone, onDrop: onMoveItem, onHover: onHoverItem)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         setup()
@@ -98,84 +182,105 @@ private final class LaneView: NSView {
         header.translatesAutoresizingMaskIntoConstraints = false
         addSubview(header)
 
-        let badge: String
+        let titleText: String
         let color: NSColor
-        let hint: String
+        let hintText: String
         switch zone {
         case .visible:
-            badge = "🟢 显示区"
+            titleText = "🟢 显示区 (Shown)"
             color = .systemGreen
-            hint = "始终在菜单栏可见"
+            hintText = "始终在菜单栏常驻可见"
         case .hidden:
-            badge = "🟠 隐藏区"
+            titleText = "🟠 隐藏区 (Hidden)"
             color = .systemOrange
-            hint = "收纳在抽屉面板，点击 ☰ 呼出"
+            hintText = "默认收纳折叠，点击 ☰ 呼出"
         case .alwaysHidden:
-            badge = "⚪️ 始终隐藏"
+            titleText = "⚪️ 始终隐藏 (Always Hidden)"
             color = .systemGray
-            hint = "完全不展示"
+            hintText = "完全隐藏，展开抽屉中亦不显示"
         }
 
-        titleLabel.stringValue = "\(badge) · \(hint)"
-        titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        titleLabel.stringValue = titleText
+        titleLabel.font = NSFont.systemFont(ofSize: 12, weight: .bold)
         titleLabel.textColor = color
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(titleLabel)
 
-        countLabel.font = NSFont.systemFont(ofSize: 11)
-        countLabel.textColor = .secondaryLabelColor
-        countLabel.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(countLabel)
+        hintLabel.stringValue = "—  \(hintText)"
+        hintLabel.font = NSFont.systemFont(ofSize: 11)
+        hintLabel.textColor = .secondaryLabelColor
+        hintLabel.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(hintLabel)
+
+        countBadge.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        countBadge.textColor = .tertiaryLabelColor
+        countBadge.alignment = .right
+        countBadge.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(countBadge)
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor),
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: 18),
+            header.heightAnchor.constraint(equalToConstant: 22),
 
             titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 4),
             titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
-            countLabel.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -4),
-            countLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            hintLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 8),
+            hintLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
+            countBadge.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -4),
+            countBadge.centerYAnchor.constraint(equalTo: header.centerYAnchor),
         ])
 
-        dropContainer.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(dropContainer)
+        shelf.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(shelf)
 
         NSLayoutConstraint.activate([
-            dropContainer.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
-            dropContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
-            dropContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            dropContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+            shelf.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 5),
+            shelf.leadingAnchor.constraint(equalTo: leadingAnchor),
+            shelf.trailingAnchor.constraint(equalTo: trailingAnchor),
+            shelf.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
     func reload(rows: [IconOverviewView.Row]) {
-        countLabel.stringValue = "\(rows.count) 项"
-        dropContainer.reload(rows: rows)
+        countBadge.stringValue = "\(rows.count) 项"
+        shelf.reload(rows: rows)
     }
 }
 
-/// 支持拖拽落点的卡片容器槽
-private final class LaneDropContainerView: NSView {
+// MARK: - 拟物菜单栏托盘（LaneShelfView）
+
+private final class LaneShelfView: NSView {
+    override var isFlipped: Bool { true }
+
     let zone: MenuBarZone
     let onDrop: (String, MenuBarZone) -> Void
+    let onHover: (ManagedItem?, MenuBarZone) -> Void
 
-    private let scrollView = NSScrollView()
-    private let stack = NSStackView()
-    private let emptyLabel = NSTextField(labelWithString: "拖放图标到此处…")
+    private var itemCells: [DraggableIconCellView] = []
+    private let emptyLabel = NSTextField(labelWithString: "")
     private var isHighlighted = false {
         didSet { needsDisplay = true }
     }
 
-    init(zone: MenuBarZone, onDrop: @escaping (String, MenuBarZone) -> Void) {
+    private var shelfHeightConstraint: NSLayoutConstraint?
+
+    init(
+        zone: MenuBarZone,
+        onDrop: @escaping (String, MenuBarZone) -> Void,
+        onHover: @escaping (ManagedItem?, MenuBarZone) -> Void
+    ) {
         self.zone = zone
         self.onDrop = onDrop
+        self.onHover = onHover
         super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 8
-        layer?.borderWidth = 1.0
+        layer?.cornerRadius = 10
+        layer?.masksToBounds = true
 
         registerForDraggedTypes([iconPasteboardType])
         setup()
@@ -184,31 +289,28 @@ private final class LaneDropContainerView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func setup() {
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = true
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(scrollView)
-
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.documentView = stack
-
+        let emptyHint: String
+        switch zone {
+        case .visible:
+            emptyHint = "暂无图标（拖拽图标到此处设为常驻可见）"
+        case .hidden:
+            emptyHint = "暂无图标（拖拽图标到此处收进隐藏抽屉）"
+        case .alwaysHidden:
+            emptyHint = "暂无图标（拖拽图标到此处彻底隐藏）"
+        }
+        emptyLabel.stringValue = emptyHint
         emptyLabel.font = NSFont.systemFont(ofSize: 11)
         emptyLabel.textColor = .tertiaryLabelColor
+        emptyLabel.alignment = .center
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(emptyLabel)
 
-        NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+        let hConstraint = heightAnchor.constraint(equalToConstant: 48)
+        hConstraint.priority = .defaultHigh
+        hConstraint.isActive = true
+        self.shelfHeightConstraint = hConstraint
 
+        NSLayoutConstraint.activate([
             emptyLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -216,29 +318,93 @@ private final class LaneDropContainerView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let bg = NSColor.controlBackgroundColor.withAlphaComponent(0.4)
-        bg.setFill()
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
+
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
+
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let bgColor = isDark
+            ? NSColor(calibratedWhite: 0.15, alpha: 0.85)
+            : NSColor(calibratedWhite: 0.94, alpha: 0.85)
+        bgColor.setFill()
         path.fill()
 
         if isHighlighted {
             NSColor.controlAccentColor.setStroke()
-            path.lineWidth = 2
+            path.lineWidth = 2.5
             path.stroke()
         } else {
-            NSColor.separatorColor.withAlphaComponent(0.3).setStroke()
-            path.lineWidth = 1
+            let borderColor = isDark
+                ? NSColor(calibratedWhite: 0.28, alpha: 0.5)
+                : NSColor(calibratedWhite: 0.82, alpha: 0.8)
+            borderColor.setStroke()
+            path.lineWidth = 1.0
             path.stroke()
         }
     }
 
     func reload(rows: [IconOverviewView.Row]) {
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        itemCells.forEach { $0.removeFromSuperview() }
+        itemCells.removeAll()
+
         emptyLabel.isHidden = !rows.isEmpty
-        for row in rows.sorted(by: { $0.item.title < $1.item.title }) {
-            let chip = DraggableIconChipView(row: row, onMoveItem: onDrop)
-            stack.addArrangedSubview(chip)
+
+        let sorted = rows.sorted { $0.item.title.localizedCaseInsensitiveCompare($1.item.title) == .orderedAscending }
+        for row in sorted {
+            let cell = DraggableIconCellView(
+                row: row,
+                onMoveItem: onDrop,
+                onHover: { [weak self] item in
+                    guard let self = self else { return }
+                    self.onHover(item, self.zone)
+                }
+            )
+            addSubview(cell)
+            itemCells.append(cell)
         }
+
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+
+    override func layout() {
+        super.layout()
+
+        let availableWidth = bounds.width - 24 // 左右留 12pt 内边距
+        let itemSize: CGFloat = 34
+        let spacing: CGFloat = 6
+        let topInset: CGFloat = 7
+        let bottomInset: CGFloat = 7
+
+        guard availableWidth > itemSize else { return }
+
+        let itemsPerRow = max(1, Int((availableWidth + spacing) / (itemSize + spacing)))
+
+        var currentX: CGFloat = 12
+        var currentY: CGFloat = topInset
+
+        for (index, cell) in itemCells.enumerated() {
+            if index > 0 && index % itemsPerRow == 0 {
+                currentX = 12
+                currentY += itemSize + spacing
+            }
+            cell.frame = CGRect(x: currentX, y: currentY, width: itemSize, height: itemSize)
+            currentX += itemSize + spacing
+        }
+
+        let rowsCount = itemCells.isEmpty ? 1 : Int(ceil(Double(itemCells.count) / Double(itemsPerRow)))
+        let desiredHeight = itemCells.isEmpty
+            ? 48
+            : (CGFloat(rowsCount) * itemSize + CGFloat(max(0, rowsCount - 1)) * spacing + topInset + bottomInset)
+
+        if shelfHeightConstraint?.constant != desiredHeight {
+            shelfHeightConstraint?.constant = desiredHeight
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let h = shelfHeightConstraint?.constant ?? 48
+        return NSSize(width: NSView.noIntrinsicMetric, height: h)
     }
 
     // MARK: - Drag & Drop Destination
@@ -269,24 +435,30 @@ private final class LaneDropContainerView: NSView {
     }
 }
 
-/// 可拖动的图标胶囊卡片（Chip）
-private final class DraggableIconChipView: NSView, NSDraggingSource {
+// MARK: - 精致纯图标单元（DraggableIconCellView）
+
+private final class DraggableIconCellView: NSView, NSDraggingSource {
     let row: IconOverviewView.Row
     let onMoveItem: (String, MenuBarZone) -> Void
+    let onHover: (ManagedItem?) -> Void
 
-    private var isPressed = false
+    private var isHovered = false { didSet { needsDisplay = true } }
+    private var isPressed = false { didSet { needsDisplay = true } }
     private let iconImageView = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "")
+    private var trackingArea: NSTrackingArea?
 
-    init(row: IconOverviewView.Row, onMoveItem: @escaping (String, MenuBarZone) -> Void) {
+    init(
+        row: IconOverviewView.Row,
+        onMoveItem: @escaping (String, MenuBarZone) -> Void,
+        onHover: @escaping (ManagedItem?) -> Void
+    ) {
         self.row = row
         self.onMoveItem = onMoveItem
-        super.init(frame: CGRect(x: 0, y: 0, width: 90, height: 32))
-        translatesAutoresizingMaskIntoConstraints = false
+        self.onHover = onHover
+        super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 6
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
+        layer?.masksToBounds = true
         setup()
     }
 
@@ -294,81 +466,79 @@ private final class DraggableIconChipView: NSView, NSDraggingSource {
 
     private func setup() {
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        iconImageView.imageScaling = .scaleProportionallyUpOrDown
+        iconImageView.image = IconImageResolver.resolve(for: row.item)
         addSubview(iconImageView)
 
-        // 尝试读取真实 App 图标或首字母占位
-        let icon = resolveIcon(for: row.item)
-        iconImageView.image = icon
-
-        titleLabel.stringValue = row.item.title.isEmpty ? (row.item.ownerBundleID ?? "图标") : row.item.title
-        titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        titleLabel.textColor = .labelColor
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(titleLabel)
-
-        var tooltipText = "\(row.item.title) (\(row.item.ownerBundleID ?? "系统"))"
+        let displayName = row.item.title.isEmpty ? (row.item.ownerBundleID ?? "图标") : row.item.title
+        var tip = "\(displayName)\n来源：\(row.item.ownerBundleID ?? "系统")\n分区：\(row.zone.displayLabel)"
         if row.isPositionalIdentity {
-            tooltipText += " [按位置认领]"
+            tip += "\n[按位置认领：名称随未读或标题变化]"
         }
-        toolTip = tooltipText
+        toolTip = tip
 
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 30),
-
-            iconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            iconImageView.centerXAnchor.constraint(equalTo: centerXAnchor),
             iconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 18),
-            iconImageView.heightAnchor.constraint(equalToConstant: 18),
-
-            titleLabel.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 6),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconImageView.widthAnchor.constraint(equalToConstant: 22),
+            iconImageView.heightAnchor.constraint(equalToConstant: 22),
         ])
     }
 
-    private func resolveIcon(for item: ManagedItem) -> NSImage {
-        if let bundleID = item.ownerBundleID,
-           let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            return NSWorkspace.shared.icon(forFile: appURL.path)
-        }
-        // 首字母占位图
-        let image = NSImage(size: NSSize(width: 18, height: 18))
-        image.lockFocus()
-        NSColor.secondaryLabelColor.withAlphaComponent(0.25).setFill()
-        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 18, height: 18), xRadius: 4, yRadius: 4).fill()
-        let letter = String(item.title.prefix(1)).uppercased()
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10, weight: .bold),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        let str = NSAttributedString(string: letter.isEmpty ? "•" : letter, attributes: attrs)
-        let s = str.size()
-        str.draw(at: NSPoint(x: (18 - s.width) / 2, y: (18 - s.height) / 2))
-        image.unlockFocus()
-        return image
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        onHover(row.item)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        onHover(nil)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let bg = isPressed
-            ? NSColor.selectedControlColor.withAlphaComponent(0.2)
-            : NSColor.controlColor.withAlphaComponent(0.85)
-        bg.setFill()
-        let path = NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6)
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+
+        let bgColor: NSColor
+        if isPressed {
+            bgColor = NSColor.controlAccentColor.withAlphaComponent(0.35)
+        } else if isHovered {
+            bgColor = NSColor.labelColor.withAlphaComponent(0.14)
+        } else {
+            bgColor = NSColor.labelColor.withAlphaComponent(0.04)
+        }
+        bgColor.setFill()
         path.fill()
+
+        let strokeColor = isHovered
+            ? NSColor.separatorColor.withAlphaComponent(0.4)
+            : NSColor.separatorColor.withAlphaComponent(0.1)
+        strokeColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
     }
 
     // MARK: - Mouse & Dragging Source
 
     override func mouseDown(with event: NSEvent) {
         isPressed = true
-        needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
         isPressed = false
-        needsDisplay = true
         if event.clickCount == 1 {
             showActionMenu(with: event)
         }
@@ -400,7 +570,6 @@ private final class DraggableIconChipView: NSView, NSDraggingSource {
         item.setDraggingFrame(bounds, contents: snapshot)
         beginDraggingSession(with: [item], event: event, source: self)
         isPressed = false
-        needsDisplay = true
     }
 
     private func iconPasteboardTypeWriter(id: String) -> NSPasteboardItem {
@@ -420,12 +589,73 @@ private final class DraggableIconChipView: NSView, NSDraggingSource {
     }
 
     // MARK: - NSDraggingSource
+
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         .move
     }
 }
 
-/// 总览的组装器：从控制器拿快照并转成行。
+// MARK: - 真实 App 图标解析器
+
+private enum IconImageResolver {
+    static func resolve(for item: ManagedItem) -> NSImage {
+        // 1. 尝试从 ownerBundleID 获取真实应用高清图标
+        if let bundleID = item.ownerBundleID, !bundleID.isEmpty {
+            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                return NSWorkspace.shared.icon(forFile: appURL.path)
+            }
+        }
+
+        // 2. 常见系统项的 SF Symbol 映射
+        let lowerTitle = item.title.lowercased()
+        let lowerOwner = (item.ownerBundleID ?? "").lowercased()
+        let combined = lowerTitle + " " + lowerOwner
+
+        let symbolName: String?
+        if combined.contains("wifi") || combined.contains("airport") {
+            symbolName = "wifi"
+        } else if combined.contains("battery") || combined.contains("power") {
+            symbolName = "battery.100"
+        } else if combined.contains("sound") || combined.contains("volume") {
+            symbolName = "speaker.wave.3"
+        } else if combined.contains("bluetooth") {
+            symbolName = "bonjour"
+        } else if combined.contains("clock") || combined.contains("time") {
+            symbolName = "clock"
+        } else if combined.contains("search") || combined.contains("spotlight") {
+            symbolName = "magnifyingglass"
+        } else if combined.contains("control") {
+            symbolName = "switch.2"
+        } else if combined.contains("weather") {
+            symbolName = "cloud.sun"
+        } else {
+            symbolName = nil
+        }
+
+        if let symbolName, let symImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: item.title) {
+            return symImage
+        }
+
+        // 3. 拟物首字母徽标
+        let image = NSImage(size: NSSize(width: 24, height: 24))
+        image.lockFocus()
+        NSColor.labelColor.withAlphaComponent(0.12).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 1, y: 1, width: 22, height: 22), xRadius: 5, yRadius: 5).fill()
+        let letter = String(item.title.prefix(2)).uppercased()
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let str = NSAttributedString(string: letter.isEmpty ? "•" : letter, attributes: attrs)
+        let s = str.size()
+        str.draw(at: NSPoint(x: (24 - s.width) / 2, y: (24 - s.height) / 2))
+        image.unlockFocus()
+        return image
+    }
+}
+
+// MARK: - 总览的组装器
+
 public enum IconOverviewBuilder {
     public static func rows(from controller: TidyBarController) -> [IconOverviewView.Row] {
         let snapshot = controller.snapshot
