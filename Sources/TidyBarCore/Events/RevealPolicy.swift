@@ -13,6 +13,17 @@ public enum RevealTrigger: String, Codable, CaseIterable, Sendable {
     /// 全局快捷键
     case hotkey
 
+    /// 给人看的名字（设置窗口列当前生效项用）
+    public var displayName: String {
+        switch self {
+        case .dividerClick: return "点分隔符"
+        case .hover: return "悬停"
+        case .emptyBarClick: return "点菜单栏空白处"
+        case .scrollOrSwipe: return "滚动/横滑"
+        case .hotkey: return "快捷键"
+        }
+    }
+
     /// 泛用户默认：只开点击与快捷键，避免悬停误触发造成的「图标乱跳」观感
     public static var beginnerDefaults: Set<RevealTrigger> { [.dividerClick, .hotkey] }
 }

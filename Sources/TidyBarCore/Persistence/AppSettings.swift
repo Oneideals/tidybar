@@ -27,6 +27,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var activeProfileName: String?
     /// 用户自定义规则
     public var rules: [DisplayRule]
+    /// 新图标策略（报告 A7）里的"先问我"。开新字段必须同步下面的 `init(from:)`。
+    public var askAboutNewItems: Bool
+    /// 首启向导是否已完成/被跳过（B1）。以前不敢存，就是因为合成 Codable 会让老文件解码失败。
+    public var hasCompletedFirstRunGuide: Bool
 
     public init(
         revealTriggers: Set<RevealTrigger> = RevealTrigger.beginnerDefaults,
@@ -39,7 +43,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         autoRecoverPendingIntent: Bool = true,
         profiles: [String: MenuBarLayout] = [:],
         activeProfileName: String? = nil,
-        rules: [DisplayRule] = []
+        rules: [DisplayRule] = [],
+        askAboutNewItems: Bool = false,
+        hasCompletedFirstRunGuide: Bool = false
     ) {
         self.revealTriggers = revealTriggers
         self.rehideDelay = rehideDelay
@@ -52,6 +58,41 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.profiles = profiles
         self.activeProfileName = activeProfileName
         self.rules = rules
+        self.askAboutNewItems = askAboutNewItems
+        self.hasCompletedFirstRunGuide = hasCompletedFirstRunGuide
+    }
+
+    /// 逐字段 `decodeIfPresent`。
+    ///
+    /// 为什么要手写：合成解码遇到**缺字段**会整份失败，而 `load()` 外面套的是 `try?`——
+    /// 结果是"升级到带新字段的版本 ⇒ 老用户全部设置被静默重置成默认值"，
+    /// 症状还是"我没动过设置，它自己变回去了"，最难归因的一类。
+    /// 有了这个 init，加字段就是安全的；新增字段请同时给默认值并在此登记。
+    enum CodingKeys: String, CodingKey {
+        case revealTriggers, rehideDelay, newItemZone, itemSpacing, stylingEnabled
+        case rulesEnabled, followMenuBarColorEnabled, autoRecoverPendingIntent
+        case profiles, activeProfileName, rules, askAboutNewItems, hasCompletedFirstRunGuide
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AppSettings()
+        revealTriggers = try c.decodeIfPresent(Set<RevealTrigger>.self, forKey: .revealTriggers)
+            ?? defaults.revealTriggers
+        rehideDelay = try c.decodeIfPresent(TimeInterval.self, forKey: .rehideDelay) ?? defaults.rehideDelay
+        newItemZone = try c.decodeIfPresent(MenuBarZone.self, forKey: .newItemZone) ?? defaults.newItemZone
+        itemSpacing = try c.decodeIfPresent(CGFloat.self, forKey: .itemSpacing) ?? defaults.itemSpacing
+        stylingEnabled = try c.decodeIfPresent(Bool.self, forKey: .stylingEnabled) ?? defaults.stylingEnabled
+        rulesEnabled = try c.decodeIfPresent(Bool.self, forKey: .rulesEnabled) ?? defaults.rulesEnabled
+        followMenuBarColorEnabled = try c.decodeIfPresent(Bool.self, forKey: .followMenuBarColorEnabled)
+            ?? defaults.followMenuBarColorEnabled
+        autoRecoverPendingIntent = try c.decodeIfPresent(Bool.self, forKey: .autoRecoverPendingIntent)
+            ?? defaults.autoRecoverPendingIntent
+        profiles = try c.decodeIfPresent([String: MenuBarLayout].self, forKey: .profiles) ?? defaults.profiles
+        activeProfileName = try c.decodeIfPresent(String.self, forKey: .activeProfileName)
+        rules = try c.decodeIfPresent([DisplayRule].self, forKey: .rules) ?? defaults.rules
+        askAboutNewItems = try c.decodeIfPresent(Bool.self, forKey: .askAboutNewItems) ?? false
+        hasCompletedFirstRunGuide = try c.decodeIfPresent(Bool.self, forKey: .hasCompletedFirstRunGuide) ?? false
     }
 
     /// 校验并夹紧非法值，避免旧版本或手工改 plist 造成的坏数据把工具搞崩
@@ -80,11 +121,21 @@ public final class UserDefaultsSettingsStore: SettingsStoring {
         self.defaults = defaults
     }
 
+    /// 上一次 `load()` 是否走了"读不出来 → 退回默认值"的路径。
+    /// 有了显式解码这条本该极少触发；一旦触发就是真事故（用户会看到设置变默认值），
+    /// 所以必须留下可读痕迹，而不是安静地装作首次运行。
+    public private(set) var didFallBackToDefaults = false
+
     public func load() -> AppSettings {
-        guard let data = defaults.data(forKey: key),
-              let settings = try? decoder.decode(AppSettings.self, from: data) else {
+        guard let data = defaults.data(forKey: key) else {
+            didFallBackToDefaults = false
             return AppSettings()
         }
+        guard let settings = try? decoder.decode(AppSettings.self, from: data) else {
+            didFallBackToDefaults = true
+            return AppSettings()
+        }
+        didFallBackToDefaults = false
         return settings.sanitized()
     }
 

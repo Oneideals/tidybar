@@ -121,6 +121,17 @@ public final class TidyBarPanelController: NSObject {
         didSet { panelView.onClick = onItemClick }
     }
 
+    /// 内存压力时调用：位图全部丢弃，下次呼出面板按需重抓。
+    /// 缓存自己实现了 `removeAll`，但**没人调它**就等于没有上限——
+    /// "20MB 以内"这件事必须由一条真实的清理路径来保证。
+    public func purgeBitmaps() {
+        bitmaps.purge()
+        panelView.images = [:]
+    }
+
+    /// 当前位图缓存占用（字节），供性能面板与用例断言。
+    public var bitmapCacheBytes: Int { bitmaps.currentBytes }
+
     /// 给面板加一行反馈文字（代点失败原因等）。
     public func setActivationNotice(_ text: String?) {
         panelView.notice = text

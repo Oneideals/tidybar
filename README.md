@@ -5,7 +5,8 @@
 原生 Swift 开发的菜单栏图标整理工具，对标 Bartender / Ice，主打**低占用**与**在 macOS Tahoe 上的可靠性**。产品决策与完整功能清单见 [docs/软件开发计划.md](docs/软件开发计划.md)。
 
 当前进度：**M0 技术验证 4/4 通过 + 真实菜单栏闸门全绿，已进入 M1**（P0 功能面）。
-已完成 M1-1 [点击转发](docs/findings/06-click-forwarding.md) 与 M1-2 [面板真实缩略图](docs/findings/07-icon-bitmaps.md)。
+已完成 M1-1 [点击转发](docs/findings/06-click-forwarding.md)、M1-2 [面板真实缩略图](docs/findings/07-icon-bitmaps.md)、
+[跨启动身份台账](docs/design/跨启动身份台账.md)，以及设置窗口 / 首启向导 / 全局热键（Carbon）/ 开机自启 / 新图标问答 / 内存压力清理。
 
 ## 当前状态
 

@@ -29,7 +29,9 @@ let package = Package(
         // 全部逻辑放在库里，公开接口即测试面
         .target(
             name: "TidyBarCore",
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            // 全局热键要 Carbon 才能吞掉组合键（见 Events/GlobalHotKey.swift 的注释）
+            linkerSettings: [.linkedFramework("Carbon")]
         ),
         // M0 实验品：造我们自己的图标（拖拽验证专用，绝不拿用户 App 的图标试手）
         .executableTarget(

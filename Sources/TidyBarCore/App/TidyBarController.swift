@@ -54,7 +54,16 @@ public final class TidyBarController {
     /// 当前接管能力（完整模式 / 收纳面板降级），供 UI 与诊断展示
     public var capability: LayoutEngine.Capability { engine.capability }
     /// 降级原因；nil 表示未降级
-    public var capabilityReason: String? { engine.capabilityReason }
+    public var capabilityReason: String? { engine.capabilityReason}
+
+    /// 一行现状说明，设置窗口与首启向导都读它——两处各写一份迟早会说不一致。
+    public var layoutEngineAllowsTakeoverDescription: String {
+        var line = "模式：\(capability.displayName)"
+        if !engine.ledgerRecordsSnapshot.isEmpty {
+            line += "｜台账已记住 \(engine.ledgerRecordsSnapshot.count) 项分配"
+        }
+        return line
+    }
 
     // MARK: - 启动
 
@@ -112,9 +121,57 @@ public final class TidyBarController {
 
     /// 落地一次后台扫描的结果（调用方负责在主线程回调）
     public func applyScan(_ scanned: [ManagedItem]) {
+        let known = Set(items.map(\.id))
         items = scanned
         engine.fold(items: scanned, newItemZone: settings.newItemZone)
+        // A7「先问我」：默认策略照样先落一个确定的分区（不能让新图标悬着，
+        // 否则它到底显不显示取决于 UI 有没有画那条问题），但把选择权挂出来等用户回答。
+        if settings.askAboutNewItems {
+            for fresh in scanned where !known.contains(fresh.id) && !fresh.isSystemOwned {
+                if !pendingNewItems.contains(where: { $0.id == fresh.id }) {
+                    pendingNewItems.append(fresh)
+                }
+            }
+            // 队列也要收敛：用户直接在那个 App 里退出时，问题不能一直挂着
+            let live = Set(scanned.map(\.id))
+            pendingNewItems.removeAll { !live.contains($0.id) }
+        } else if !pendingNewItems.isEmpty {
+            pendingNewItems.removeAll()
+        }
         publish()
+    }
+
+    /// 等待用户回答"这个新图标要不要收起来"（报告 A7）。
+    public private(set) var pendingNewItems: [ManagedItem] = []
+
+    /// 热键注册失败时把 `.hotkey` 从生效呼出集合里摘掉。
+    ///
+    /// 为什么需要这一步：`beginnerDefaults` 里本来就写着 `.hotkey`，
+    /// 而注册可能因权限不足失败——那时用户按 ⌥Space 不会有半点反应，
+    /// 却在设置里看到"快捷键已启用"。宁可少一种呼出方式，也不能挂一条假的路。
+    public func retireHotKeyTrigger(reason: String) {
+        guard settings.revealTriggers.contains(.hotkey) else { return }
+        update { $0.revealTriggers.remove(.hotkey) }
+        record("快捷键呼出不可用，已从生效集合摘除：\(reason)")
+    }
+
+    /// 热键注册成功后的确认记录（用户看得见"当前绑定的是哪个组合键"）。
+    public func confirmHotKeyTrigger() {
+        if !settings.revealTriggers.contains(.hotkey) {
+            update { $0.revealTriggers.insert(.hotkey) }
+        }
+        record("快捷键呼出已就绪")
+    }
+
+    /// 回答一条新图标策略：落到用户选的分区并钉成"用户决定"。
+    /// 没真的生效时问题必须留在队列里——"答过了却什么都没变"是最难自证的坑。
+    @discardableResult
+    public func answerNewItem(_ itemID: String, zone: MenuBarZone) -> Bool {
+        guard move(itemID, to: zone) else { return false }
+        pendingNewItems.removeAll { $0.id == itemID }
+        record("新图标 " + itemID + " 已按你的选择归入" + TidyBarController.zoneLabel(zone))
+        publish()
+        return true
     }
 
     // MARK: - 显隐
@@ -162,13 +219,47 @@ public final class TidyBarController {
     // MARK: - 布局操作
 
     /// 用户拖拽/规则触发最终都走这里；targetX 缺失即视为降级模式（只在内存生效）
-    public func move(_ itemID: String, to zone: MenuBarZone, targetX: CGFloat? = nil, position: Int? = nil, at date: Date = Date()) {
+    /// 一次布局变更是谁的意思。台账据此决定"永不修剪"保护该不该生效。
+    public enum ChangeOrigin: Sendable {
+        /// 用户亲手点的（菜单、面板、搜索结果、新图标问答）
+        case user
+        /// 规则引擎推出来的
+        case rule
+    }
+
+    public func move(
+        _ itemID: String,
+        to zone: MenuBarZone,
+        targetX: CGFloat? = nil,
+        position: Int? = nil,
+        origin: ChangeOrigin = .user,
+        at date: Date = Date()
+    ) -> Bool {
         do {
             try engine.apply(itemID: itemID, to: zone, targetX: targetX, targetPosition: position)
+        } catch let error as LayoutEngine.EngineError {
+            // "没有合法落点"要和别的失败分开说：前者是接管模式下还缺分隔符/坐标（A2 没做），
+            // 混进一句"布局变更未生效"就等于让用户自己猜为什么没动。
+            if case .noMovementCapability = error {
+                record("改分区未生效：接管模式下需要一个合法落点（分隔符尚未实现）")
+            } else {
+                record("布局变更未生效：\(error)")
+            }
+            publish()
+            return false
         } catch {
             record("布局变更未生效：\(error)")
+            publish()
+            return false
+        }
+        // 只有用户亲手决定的才钉住。规则改动也会走这个 move——早先注释写的是
+        // "规则不走这条路"，那是错的：真走。若不区分来源，规则就会把用户的图标
+        // 一个个钉成"用户决定"，免修剪保护于是变成一堆误钉。
+        if origin == .user {
+            engine.pinAsUser(itemID: itemID)
         }
         publish()
+        return true
     }
 
     /// 规则批次落地
@@ -182,7 +273,7 @@ public final class TidyBarController {
             isScreenShareActive: isScreenShareActive
         )
         for change in batch.changes {
-            move(change.itemID, to: change.to, at: date)
+            move(change.itemID, to: change.to, origin: .rule, at: date)
         }
         return batch
     }

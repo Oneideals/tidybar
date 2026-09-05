@@ -325,6 +325,21 @@ public final class LayoutEngine {
         layout.move(itemID: itemID, to: zone, position: nil)
     }
 
+    /// 标记某项目前这条分配是**用户亲手做的**，不是规则推的。
+    ///
+    /// 为什么必须单独有一步：台账的清理规则是"用户钉住的永不删"，
+    /// 而实现里所有记录都以 `.inferred` 落盘 ⇒ 那条保护形同虚设，
+    /// 一个月没打开的 App 就能把用户的收纳设置清掉。
+    public func pinAsUser(itemID: String) {
+        guard ledgerStore != nil,
+              let index = ledgerRecords.firstIndex(where: { $0.aliases.contains(itemID) }) else { return }
+        ledgerRecords[index].pinnedBy = .user
+        try? ledgerStore?.save(ledgerRecords)
+    }
+
+    /// 台账快照（诊断与设置界面读）。
+    public var ledgerRecordsSnapshot: [IdentityRecord] { ledgerRecords }
+
     // MARK: - 点击转发（报告 A3/A8：面板与搜索结果里的点击）
 
     /// 代点一个图标。不改布局、不写 journal：它不产生状态变更，失败也不该留下任何"半成品"。

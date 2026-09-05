@@ -78,6 +78,38 @@ enum TidyBarMenuBuilder {
         return root
     }
 
+    /// 新图标问答（报告 A7「先问我」）。列在菜单里而不是弹窗：
+    /// 弹窗会在用户正在做别的事时抢焦点，而这件事并不紧急。
+    static func newItemQuestions(
+        controller: TidyBarController,
+        target: AnyObject,
+        answerSelector: Selector,
+        limit: Int = 6
+    ) -> NSMenuItem {
+        let root = NSMenuItem(title: "新图标待确认 (\(controller.pendingNewItems.count))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "新图标待确认")
+        submenu.autoenablesItems = false
+        for item in controller.pendingNewItems.prefix(limit) {
+            for zone in [MenuBarZone.visible, .hidden, .alwaysHidden] {
+                let entry = NSMenuItem(
+                    title: "\(item.title) → \(TidyBarController.zoneLabel(zone))",
+                    action: answerSelector,
+                    keyEquivalent: ""
+                )
+                entry.target = target
+                entry.representedObject = ZoneAssignmentRequest(itemID: item.id, zone: zone)
+                submenu.addItem(entry)
+            }
+        }
+        if controller.pendingNewItems.count > limit {
+            let more = NSMenuItem(title: "…另有 \(controller.pendingNewItems.count - limit) 项", action: nil, keyEquivalent: "")
+            more.isEnabled = false
+            submenu.addItem(more)
+        }
+        root.submenu = submenu
+        return root
+    }
+
     /// 首启引导（报告 B1）。每步都能跳过，绝不把人堵在向导里。
     static func firstRunGuide(
         accessibilityGranted: Bool,

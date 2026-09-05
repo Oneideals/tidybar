@@ -12,6 +12,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     /// 注销/关机/launchd 回收发来的信号不保证会走 applicationWillTerminate，显式挂信号源
     private var shutdown: GracefulShutdown?
     private var isExiting = false
+    private var hotKey: GlobalHotKey?
+    private var hotKeyNote = "未启用"
+    private var settingsWindow: TidyBarSettingsWindowController?
+    private var wizard: FirstRunWizardController?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     private let enumerator = BackgroundEnumerator()
 
     private let settingsStore: SettingsStoring
@@ -104,6 +109,33 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         events.start()
         self.eventEngine = events
 
+        let hotKey = GlobalHotKey { [weak self, weak barController] in
+            guard let self, let barController else { return }
+            barController.handle(event: .init(trigger: .hotkey, location: NSEvent.mouseLocation))
+            self.syncPanel(barController: barController, panel: panel)
+        }
+        if hotKey.register() {
+            hotKeyNote = "⌥Space（已注册）"
+            barController.confirmHotKeyTrigger()
+        } else {
+            hotKeyNote = "不可用：" + (hotKey.failureReason ?? "未知原因")
+            barController.retireHotKeyTrigger(reason: hotKey.failureReason ?? "注册失败")
+        }
+        self.hotKey = hotKey
+
+        // 内存压力时清掉位图缓存。缓存自己实现了 `purge`，但**从来没人调用它**，
+        // 那"≤20MB"就只是单测里成立的一句声明。这里用 GCD 压力源：
+        // 本 SDK 并没有 `NSApplication.didReceiveMemoryWarningNotification` 这个通知名（编译即报错），
+        // 而 dispatch 源能在 warning/critical 真实级别上触发。
+        let pressure = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: .main
+        )
+        pressure.setEventHandler { [weak panel] in
+            panel?.purgeBitmaps()
+        }
+        pressure.resume()
+        memoryPressureSource = pressure
+
         // 面板绘制与收起排表都由**快照**驱动，而不是散落在各个调用点上。
         // 教训：先前把 scheduleAutoConceal 挂在事件回调里，自检一绕开事件直接 handle()
         // 就出现"展得开、再也收不回"——挂表时机绑在调用点上必然漏，绑在状态上不会。
@@ -123,6 +155,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         scheduleAutoConceal(barController: barController, panel: panel)
 
         statusItem = makeStatusItem(controller: barController)
+        presentWizardIfNeeded(barController: barController)
         barController.start(scansSynchronously: false)
 
         // 冷启动全量枚举实测 ≈2.6s：同步做会击穿「启动到接管 2s」预算，
@@ -154,6 +187,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     /// 按"剩余可见时间"挂一次性收起表；不需要收起时**不挂任何表**。
     private func scheduleAutoConceal(barController: TidyBarController, panel: TidyBarPanelController?) {
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
         tickTimer?.invalidate()
         tickTimer = nil
         guard let remaining = barController.remainingRevealTime else { return }
@@ -273,6 +308,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 分区分配先走菜单：跨区拖拽要等接管闸门开放，而"把某个图标收进隐藏区"
         // 这个意图本身不依赖拖拽，不必让它陪着闸门一起等着。
         menu.addItem(withTitle: "搜索图标…", action: #selector(presentSearch), keyEquivalent: "f")
+        menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        if !barController.pendingNewItems.isEmpty {
+            menu.addItem(TidyBarMenuBuilder.newItemQuestions(
+                controller: barController,
+                target: self,
+                answerSelector: #selector(answerNewItem(_:))
+            ))
+        }
         menu.addItem(
             TidyBarMenuBuilder.zoneAssignment(
                 controller: barController,
@@ -326,6 +369,32 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             exit((search.panel.isVisible && focused) ? 0 : 1)
         }
     }
+
+    @objc private func openSettings() {
+        if settingsWindow == nil {
+            settingsWindow = TidyBarSettingsWindowController(controller: barControllerProxy, hotKeyDescription: hotKeyNote)
+        }
+        settingsWindow?.showAgain()
+    }
+
+    @objc private func answerNewItem(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? ZoneAssignmentRequest, let controller else { return }
+        controller.answerNewItem(request.itemID, zone: request.zone)
+    }
+
+    /// 首启向导：三步、可跳过；完成状态是安全落地的（`AppSettings` 已改成逐字段解码）。
+    private func presentWizardIfNeeded(barController: TidyBarController) {
+        guard !barController.settings.hasCompletedFirstRunGuide, wizard == nil else { return }
+        let wizard = FirstRunWizardController(controller: barController) { [weak self, weak barController] in
+            barController?.update { $0.hasCompletedFirstRunGuide = true }
+            self?.wizard = nil
+        }
+        self.wizard = wizard
+        wizard.showWindow(nil)
+        wizard.window?.makeKeyAndOrderFront(nil)
+    }
+
+    private var barControllerProxy: TidyBarController { controller! }
 
     /// 分区分配：只改归属（布局意图），不搬动系统图标。
     @objc private func assignZone(_ sender: NSMenuItem) {
