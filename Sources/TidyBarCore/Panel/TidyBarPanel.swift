@@ -22,6 +22,7 @@ public final class TidyBarPanel: NSPanel {
         ignoresMouseEvents = false
         // 面板不显示在窗口切换器里
         isExcludedFromWindowsMenu = true
+        acceptsMouseMovedEvents = true
     }
 
     override public var canBecomeKey: Bool { true }
@@ -31,7 +32,10 @@ public final class TidyBarPanel: NSPanel {
 /// 面板内容：骨架阶段以占位方块呈现，真实图标位图在 M1 接入 NSStatusItem 截图后替换。
 public final class TidyBarPanelView: NSView {
     public var items: [ManagedItem] = [] {
-        didSet { needsDisplay = true }
+        didSet {
+            updateTrackingAreas()
+            needsDisplay = true
+        }
     }
     /// 一行操作反馈（例如"这个 App 不允许工具代点"）。空表示不显示。
     public var notice: String? {
@@ -42,6 +46,62 @@ public final class TidyBarPanelView: NSView {
         didSet { needsDisplay = true }
     }
     public var onClick: ((ManagedItem) -> Void)?
+
+    private var hoveredIndex: Int? {
+        didSet {
+            if oldValue != hoveredIndex {
+                needsDisplay = true
+                updateTooltip()
+            }
+        }
+    }
+    private var trackingArea: NSTrackingArea?
+
+    override public func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override public func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let metrics = PanelGeometry.Metrics()
+        var foundIndex: Int?
+        for (index, _) in items.enumerated() {
+            let origin = PanelGeometry.itemOrigin(in: bounds, index: index, metrics: metrics)
+            let rect = CGRect(x: origin.x, y: origin.y, width: metrics.itemSide, height: metrics.itemSide)
+            if rect.contains(point) {
+                foundIndex = index
+                break
+            }
+        }
+        if hoveredIndex != foundIndex {
+            hoveredIndex = foundIndex
+        }
+    }
+
+    override public func mouseExited(with event: NSEvent) {
+        hoveredIndex = nil
+    }
+
+    private func updateTooltip() {
+        guard let index = hoveredIndex, index < items.count else {
+            toolTip = nil
+            return
+        }
+        let item = items[index]
+        let name = item.title.isEmpty ? (item.ownerBundleID ?? "未命名图标") : item.title
+        toolTip = name
+    }
 
     override public func draw(_ dirtyRect: NSRect) {
         let metrics = PanelGeometry.Metrics()
@@ -69,18 +129,42 @@ public final class TidyBarPanelView: NSView {
         for (index, item) in items.enumerated() {
             let origin = PanelGeometry.itemOrigin(in: bounds, index: index, metrics: metrics)
             let rect = CGRect(x: origin.x, y: origin.y, width: metrics.itemSide, height: metrics.itemSide)
-            NSColor.secondaryLabelColor.withAlphaComponent(0.12).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
-            let inset = rect.insetBy(dx: 2.5, dy: 2.5)
-            if let image = images[item.id] {
-                // 1. 真实屏幕录制截图优先（如果有 ScreenCaptureKit 授权且已抓到）
-                NSGraphicsContext.current?.cgContext.draw(image, in: inset)
-            } else {
-                // 2. 真实 App 原生高清图标（从系统应用包读取，零授权秒开）
-                let appIcon = AppIconResolver.resolve(for: item)
-                appIcon.draw(in: inset)
+
+            // 1. 彻底去除默认描边与背景方框，仅在鼠标悬停时呈现轻柔半透明高亮
+            if hoveredIndex == index {
+                let hoverColor = NSColor.labelColor.withAlphaComponent(0.1)
+                hoverColor.setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
             }
+
+            // 2. 居中严整等比渲染（Aspect-Fit），彻底根治拉伸
+            let iconTargetSize: CGFloat = 20
+            let iconContainer = CGRect(
+                x: round(rect.midX - iconTargetSize / 2),
+                y: round(rect.midY - iconTargetSize / 2),
+                width: iconTargetSize,
+                height: iconTargetSize
+            )
+
+            // 读取真实高清应用原生图标与规范矢量符号
+            let appIcon = AppIconResolver.resolve(for: item)
+            let naturalSize = appIcon.size
+            let fitRect = Self.aspectFit(size: naturalSize, in: iconContainer)
+            appIcon.draw(in: fitRect)
         }
+    }
+
+    /// 计算等比自适应矩形（保证任意尺寸图标均居中且绝不产生纵横比变形）
+    public static func aspectFit(size: CGSize, in container: CGRect) -> CGRect {
+        guard size.width > 0, size.height > 0, container.width > 0, container.height > 0 else {
+            return container
+        }
+        let scale = min(container.width / size.width, container.height / size.height)
+        let w = round(size.width * scale)
+        let h = round(size.height * scale)
+        let x = round(container.midX - w / 2)
+        let y = round(container.midY - h / 2)
+        return CGRect(x: x, y: y, width: w, height: h)
     }
 
     override public func mouseDown(with event: NSEvent) {

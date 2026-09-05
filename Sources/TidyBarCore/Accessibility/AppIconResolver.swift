@@ -27,67 +27,73 @@ public enum AppIconResolver {
     }
 
     private static func resolveUncached(for item: ManagedItem) -> NSImage {
-        // 1. 优先从 ownerBundleID 获取真实应用高清原生图标
+        let lowerTitle = item.title.lowercased()
+        let lowerOwner = (item.ownerBundleID ?? "").lowercased()
+        let combined = lowerTitle + " " + lowerOwner
+
+        // 1. 系统级菜单栏项优先匹配原生 SF Symbol 智能映射
+        // 关键防护：com.apple.controlcenter 会解析到 ControlCenter.app，若先走 App 图标会导致时钟/声音/电池/WiFi全变成滑块图标
+        if item.isSystemOwned || lowerOwner.contains("controlcenter") || lowerOwner.contains("systemuiserver") || lowerOwner.contains("spotlight") || lowerOwner.contains("weather") {
+            let symbolName: String?
+            if combined.contains("wifi") || combined.contains("airport") || combined.contains("wi-fi") {
+                symbolName = "wifi"
+            } else if combined.contains("battery") || combined.contains("power") || combined.contains("电池") {
+                symbolName = "battery.100"
+            } else if combined.contains("sound") || combined.contains("volume") || combined.contains("声音") || combined.contains("音频") {
+                symbolName = "speaker.wave.3"
+            } else if combined.contains("bluetooth") || combined.contains("蓝牙") {
+                symbolName = "bonjour"
+            } else if combined.contains("clock") || combined.contains("time") || combined.contains("时钟") || combined.contains("星期") || combined.contains("年") {
+                symbolName = "clock"
+            } else if combined.contains("search") || combined.contains("spotlight") || combined.contains("搜索") {
+                symbolName = "magnifyingglass"
+            } else if combined.contains("shortcut") || combined.contains("快捷指令") {
+                symbolName = "square.2.layers.3d"
+            } else if combined.contains("input") || combined.contains("textinput") || combined.contains("输入法") {
+                symbolName = "keyboard"
+            } else if combined.contains("weather") || combined.contains("天气") {
+                symbolName = "cloud.sun"
+            } else if combined.contains("mic") || combined.contains("麦克风") || combined.contains("录屏") {
+                symbolName = "mic"
+            } else if combined.contains("control") || combined.contains("控制中心") {
+                symbolName = "switch.2"
+            } else {
+                symbolName = nil
+            }
+
+            if let symbolName, let symImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: item.title) {
+                return symImage
+            }
+        }
+
+        // 2. 真实 App 原生高清图标（从应用包精准读取，零授权秒开）
         if let bundleID = item.ownerBundleID, !bundleID.isEmpty {
             if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
                 return NSWorkspace.shared.icon(forFile: appURL.path)
             }
         }
 
-        // 2. 针对系统级菜单栏项目的原生 SF Symbol 智能映射
-        let lowerTitle = item.title.lowercased()
-        let lowerOwner = (item.ownerBundleID ?? "").lowercased()
-        let combined = lowerTitle + " " + lowerOwner
-
-        let symbolName: String?
-        if combined.contains("wifi") || combined.contains("airport") {
-            symbolName = "wifi"
-        } else if combined.contains("battery") || combined.contains("power") {
-            symbolName = "battery.100"
-        } else if combined.contains("sound") || combined.contains("volume") {
-            symbolName = "speaker.wave.3"
-        } else if combined.contains("bluetooth") {
-            symbolName = "bonjour"
-        } else if combined.contains("clock") || combined.contains("time") {
-            symbolName = "clock"
-        } else if combined.contains("search") || combined.contains("spotlight") {
-            symbolName = "magnifyingglass"
-        } else if combined.contains("control") {
-            symbolName = "switch.2"
-        } else if combined.contains("weather") {
-            symbolName = "cloud.sun"
+        // 3. 通用关键字 SF Symbol 匹配
+        let fallbackSymbol: String?
+        if combined.contains("terminal") || combined.contains("iterm") {
+            fallbackSymbol = "terminal"
+        } else if combined.contains("music") || combined.contains("音乐") {
+            fallbackSymbol = "music.note"
+        } else if combined.contains("code") {
+            fallbackSymbol = "chevron.left.forwardslash.chevron.right"
         } else {
-            symbolName = nil
+            fallbackSymbol = nil
         }
-
-        if let symbolName, let symImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: item.title) {
+        if let fallbackSymbol, let symImage = NSImage(systemSymbolName: fallbackSymbol, accessibilityDescription: item.title) {
             return symImage
         }
 
-        // 3. 兜底拟物双字符精致微标
-        let image = NSImage(size: NSSize(width: 28, height: 28))
-        image.lockFocus()
-        NSColor.labelColor.withAlphaComponent(0.12).setFill()
-        NSBezierPath(roundedRect: NSRect(x: 1, y: 1, width: 26, height: 26), xRadius: 6, yRadius: 6).fill()
-
-        let letter: String
-        if !item.title.isEmpty {
-            letter = String(item.title.prefix(2)).uppercased()
-        } else if let bID = item.ownerBundleID, let lastPart = bID.split(separator: ".").last {
-            letter = String(lastPart.prefix(2)).uppercased()
-        } else {
-            letter = "•"
+        // 4. 兜底纯净通用图标（不带生硬边框与方格，纯图标展示）
+        if let defaultSym = NSImage(systemSymbolName: "app.fill", accessibilityDescription: item.title) {
+            return defaultSym
         }
 
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .bold),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        let str = NSAttributedString(string: letter, attributes: attrs)
-        let s = str.size()
-        str.draw(at: NSPoint(x: (28 - s.width) / 2, y: (28 - s.height) / 2))
-        image.unlockFocus()
-        return image
+        return NSImage()
     }
 
     /// 清空缓存（在应用重扫或内存压力时调用）
