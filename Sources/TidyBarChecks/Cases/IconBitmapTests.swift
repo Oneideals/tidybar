@@ -172,3 +172,79 @@ extension IconBitmapTests {
         ]
     }
 }
+
+// MARK: - 位置指纹与标题漂移（把"没放回原位"和"别人自己改名"分开）
+
+struct PositionSignatureTests {
+    private func item(_ bundle: String, _ title: String, ordinal: Int) -> ManagedItem {
+        ManagedItem(
+            id: "\(bundle).\(title)",
+            ownerBundleID: bundle,
+            title: title,
+            frame: CGRect(x: CGFloat(ordinal) * 30, y: 1_188, width: 24, height: 24),
+            isSystemOwned: false,
+            identitySource: .axTitle,
+            ordinalInOwner: ordinal,
+            ownerItemCount: 2
+        )
+    }
+
+    /// 第三方把标题从"微信"改成"微信 3"（未读数写进标题）时，
+    /// 位置指纹必须不变——否则微信自己发条消息就能让"我们没复原"变成假失败。
+    func titleChangeDoesNotDisturbPositionSignature() throws {
+        let before = [item("com.tencent.xinwechat", "微信", ordinal: 0)]
+        let after = [item("com.tencent.xinwechat", "微信 (3)", ordinal: 0)]
+        expectEqual(MenuBarEnumeration.positionSignature(of: before),
+                    MenuBarEnumeration.positionSignature(of: after),
+                    "只改标题不该让顺序指纹变化")
+        expect(MenuBarEnumeration.positionSignature(of: before) != [before[0].id],
+               "位置指纹本来就不该等于含标题的 id")
+    }
+
+    /// 我们真的没放回原位时，指纹必须报出来——这是上一轮判据唯一该有的敏感度。
+    func realDisplacementIsDetected() throws {
+        let a = item("com.a", "A", ordinal: 0)
+        let b = item("com.b", "B", ordinal: 0)
+        expectEqual(MenuBarEnumeration.positionSignature(of: [a, b]),
+                    MenuBarEnumeration.positionSignature(of: [a, b]))
+        expect(MenuBarEnumeration.positionSignature(of: [a, b])
+               != MenuBarEnumeration.positionSignature(of: [b, a]),
+               "两个进程换了先后顺序却没被发现，判据就白加了")
+    }
+
+    func driftReportsRenamedSlots() throws {
+        let before = [
+            item("com.tencent.xinwechat", "微信", ordinal: 0),
+            item("com.apple.dock", "无关", ordinal: 0),
+        ]
+        let after = [
+            item("com.tencent.xinwechat", "微信 (9)", ordinal: 0),
+            item("com.apple.dock", "无关", ordinal: 0),
+        ]
+        let drift = MenuBarEnumeration.detectTitleDrift(before: before, after: after)
+        expectEqual(drift.count, 1)
+        expectEqual(drift.first?.ownerBundleID, "com.tencent.xinwechat")
+        expectEqual(drift.first?.before, "微信")
+        expectEqual(drift.first?.after, "微信 (9)")
+        expectEqual(MenuBarEnumeration.volatileTitleOwners(drift: drift), ["com.tencent.xinwechat"],
+                    "漂移过的进程必须被点名，好让设置界面把它的图标标成按位置认领")
+    }
+
+    /// 没有漂移时必须干净地返回空，而不是"读不到就当有问题"。
+    func noDriftWhenTitlesStable() throws {
+        let frame = [item("com.a", "A", ordinal: 0), item("com.a", "B", ordinal: 1)]
+        expect(MenuBarEnumeration.detectTitleDrift(before: frame, after: frame).isEmpty)
+    }
+}
+
+extension PositionSignatureTests {
+    static var testCases: [TestCase] {
+        let suite = PositionSignatureTests()
+        return [
+            TestCase("titleChangeDoesNotDisturbPositionSignature", suite.titleChangeDoesNotDisturbPositionSignature),
+            TestCase("realDisplacementIsDetected", suite.realDisplacementIsDetected),
+            TestCase("driftReportsRenamedSlots", suite.driftReportsRenamedSlots),
+            TestCase("noDriftWhenTitlesStable", suite.noDriftWhenTitlesStable),
+        ]
+    }
+}

@@ -482,6 +482,55 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
 // MARK: - 纯映射函数（可离线验证，不碰 AX）
 
 public enum MenuBarEnumeration {
+    /// 位置键：`归属进程 + 进程内序号`。
+    /// 序号会随我们挪动而变化、放回后又变回来，所以它对"是否回到原位"敏感；
+    /// 而第三方只改标题（微信把未读数写进标题）时它不动，所以对"别人改名"免疫。
+    public static func positionKey(_ item: ManagedItem) -> String {
+        let owner = item.ownerBundleID ?? "nil"
+        return owner + "[" + String(item.ordinalInOwner) + "]"
+    }
+
+    /// 顺序指纹序列。
+    ///
+    /// 为什么不能用 id 做"有没有放回原位"的比对：id 含标题，第三方自己改标题就会让 id 漂移，
+    /// 于是"别人改名"被算成"我们没复原"——上一轮就是这么误判的。
+    public static func positionSignature(of items: [ManagedItem]) -> [String] {
+        items.map(positionKey)
+    }
+
+    /// 同一位置键在两帧之间标题变了 → 该进程的标题不能当身份用。
+    /// 这是"标题漂移"的最小可观测形态：先能量出来、能报数，再谈换身份方案。
+    public struct TitleDrift: Equatable, Sendable {
+        public let ownerBundleID: String
+        public let ordinal: Int
+        public let before: String
+        public let after: String
+    }
+
+    public static func detectTitleDrift(before: [ManagedItem], after: [ManagedItem]) -> [TitleDrift] {
+        var keyed: [String: ManagedItem] = [:]
+        for item in before where keyed[positionKey(item)] == nil {
+            keyed[positionKey(item)] = item
+        }
+        var changes: [TitleDrift] = []
+        for item in after {
+            guard let old = keyed[positionKey(item)], old.title != item.title else { continue }
+            changes.append(TitleDrift(
+                ownerBundleID: item.ownerBundleID ?? "nil",
+                ordinal: item.ordinalInOwner,
+                before: old.title,
+                after: item.title
+            ))
+        }
+        return changes
+    }
+
+    /// 出现过漂移的进程：设置界面要把这些图标的归属标成"按位置认领、可能失准"，
+    /// 而不是继续假装它们的标题型 id 稳定。
+    public static func volatileTitleOwners(drift: [TitleDrift]) -> Set<String> {
+        Set(drift.map(\.ownerBundleID))
+    }
+
     /// children(of:) 的顺序在系统里可能变（App 重启、图标增删），
     /// 所以 id 只能用 owner+title，绝不能带序号。这里把这条约束写成可测函数。
     public static func stableID(ownerBundleID: String?, title: String) -> String {

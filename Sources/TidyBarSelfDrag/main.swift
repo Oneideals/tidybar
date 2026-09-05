@@ -78,7 +78,22 @@ func globalOrder() -> [ManagedItem] {
     MenuBarEnumeration.sortedLeftToRight(reader.discoverItems())
 }
 
-func snapshot(_ items: [ManagedItem]) -> [String] { items.map(\.id) }
+/// 复原比对用位置指纹（见 `MenuBarEnumeration.positionSignature` 的注释）。
+/// 上一轮就是拿 id 比对，把微信自己改未读数算成了"我们没放回原位"。
+func snapshot(_ items: [ManagedItem]) -> [String] { MenuBarEnumeration.positionSignature(of: items) }
+
+/// 标题漂移只报告、不判失败：那是别人的行为，不是我们的副作用。
+/// 但它必须被看见——标题型 id 会因此不稳定，分区归属可能跟着错位。
+func reportTitleDrift() {
+    let drift = MenuBarEnumeration.detectTitleDrift(before: opening, after: globalOrder())
+    if drift.isEmpty {
+        print("  ✓ 全程无第三方标题漂移（id 稳定）")
+        return
+    }
+    let owners = MenuBarEnumeration.volatileTitleOwners(drift: drift)
+    print("  ○ 检测到 \(drift.count) 处第三方自身改名，涉及 \(owners.count) 个进程：\(owners.sorted().joined(separator: ", "))")
+    print("    → 这些进程的标题不可作身份依据，设置界面须标注为按位置认领")
+}
 
 /// 单发模式：只代点一次，把结论与现场打全。
 /// 真机验证点击转发用它——配合 fixture 的事件日志，能拿到"确实被点了"的正面证据。
@@ -427,6 +442,7 @@ func pct(_ p: Double) -> Double {
 }
 print("  单次拖拽 p50=" + String(format: "%.0f", pct(0.5)) + "ms p95=" + String(format: "%.0f", pct(0.95)) + "ms")
 
+reportTitleDrift()
 let closing = snapshot(globalOrder())
 if closing == initialOrder {
     print("  ✓ 顺序与初始完全一致（\(closing.count) 项）")
