@@ -125,6 +125,12 @@ public final class TidyBarController {
         if reveal.reveal(by: event.trigger, at: date) { publish() }
     }
 
+    /// 自动收起还剩多久；`nil` 表示当前不需要任何定时器（未展开、不自动收起、演示模式）。
+    /// 存在的意义就是让装配层能问出"现在到底要不要挂表"，而不是无条件每 0.25 秒醒一次。
+    public var remainingRevealTime: TimeInterval? {
+        reveal.remainingRevealTime(at: Date())
+    }
+
     /// 定时器回调；返回是否发生了收起，供上层决定是否重绘
     @discardableResult
     public func tick(at date: Date = Date()) -> Bool {

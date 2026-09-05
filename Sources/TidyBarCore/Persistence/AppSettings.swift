@@ -110,4 +110,10 @@ public enum AppPaths {
     public static var dragGateFile: URL {
         supportDirectory().appendingPathComponent("drag-confirmed.json")
     }
+
+    /// 跨启动身份台账（用户的分配 ↔ 图标历史名称）。与设置、布局日志分开：
+    /// 三份文件的解码失败后果完全不同，不能共用一个 `try?` 回退。
+    public static var identityLedgerFile: URL {
+        supportDirectory().appendingPathComponent("identity-ledger.json")
+    }
 }

@@ -52,6 +52,12 @@ public final class LayoutEngine {
     /// 结果复核的等待窗口：抬起鼠标键后允许菜单栏用这么久把新位置落定。
     /// 真机依据：35 图标在栏时同步读一次帧经常还是旧位置；600ms 上限 + 60ms 步进，
     /// 落位一到就返回，所以正常操作不会因此变慢。
+    /// 台账可为 nil：离线测试与骨架装配不需要它，缺了也只是"跨重启的线索少一层"。
+    private let ledgerStore: IdentityLedgerStore?
+    private var ledgerRecords: [IdentityRecord]
+    private let clock: () -> Date
+    /// 最近一次台账匹配结论，供诊断与自检读取（歧义必须能被看见，不能默默吞掉）
+    public private(set) var lastLedgerResolution = LedgerResolution()
     private let verificationWindow: TimeInterval
     private let verificationInterval: TimeInterval
     private var lastOperationAt: Date = .distantPast
@@ -63,13 +69,18 @@ public final class LayoutEngine {
         sentinel: EventSentinel = EventSentinel(),
         maxReplayAttempts: Int = LayoutJournal.defaultMaxReplayAttempts,
         verificationWindow: TimeInterval = 0.6,
-        verificationInterval: TimeInterval = 0.06
+        verificationInterval: TimeInterval = 0.06,
+        ledger: IdentityLedgerStore? = nil,
+        clock: @escaping () -> Date = Date.init
     ) {
         self.layout = layout
         self.services = services
         self.journal = journal
         self.sentinel = sentinel
         self.maxReplayAttempts = max(1, maxReplayAttempts)
+        self.ledgerStore = ledger
+        self.ledgerRecords = ledger?.load() ?? []
+        self.clock = clock
         self.verificationWindow = max(0, verificationWindow)
         self.verificationInterval = max(0.005, verificationInterval)
         let dragCapable: Bool
@@ -114,6 +125,24 @@ public final class LayoutEngine {
         let known = layout.allItemIDs
         let freshIDs = Set(discovered.map(\.id))
 
+        // 第一层：台账。它记得"这个分配上次、上上次叫什么"，所以重启之后仍有线索；
+        // 只看现场两帧是不够的——重启后旧 id 早就不在布局里了。
+        let ledgerFound = IdentityLedger.resolve(
+            records: ledgerRecords,
+            observed: discovered,
+            staleIDs: known.subtracting(freshIDs)
+        )
+        var ledgerResolution = LedgerResolution()
+        ledgerResolution.renames = ledgerFound.renames.filter { adopted.zone(of: $0.from) != nil }
+        ledgerResolution.ambiguousOwners = ledgerFound.ambiguousOwners
+        ledgerResolution.aliasHits = ledgerFound.aliasHits
+        ledgerResolution.ordinalHits = ledgerFound.ordinalHits
+        ledgerResolution.titleHits = ledgerFound.titleHits
+        for move in ledgerResolution.renames {
+            adopted.rename(id: move.from, to: move.to)
+        }
+        lastLedgerResolution = ledgerResolution
+
         for owner in Set(discovered.compactMap(\.ownerBundleID)) {
             let stale = adopted.configuredIDs(ofOwner: owner).filter { !freshIDs.contains($0) }
             let fresh = discovered.filter { $0.ownerBundleID == owner && !known.contains($0.id) }
@@ -127,6 +156,37 @@ public final class LayoutEngine {
             adopted.rename(id: from, to: to)
         }
         layout = MenuBarLayout.folding(discovered: discovered.map(\.id), into: adopted, defaultZone: newItemZone)
+        syncLedger(observed: discovered)
+        try? ledgerStore?.save(ledgerRecords)
+    }
+
+    /// 把这一帧观测并回台账：已认识的刷新观测值（并把旧名留在别名里），
+    /// 不认识的先建一条 `inferred` 记录——只有用户在界面上明确分配过才算 `user`，
+    /// 现在还没有那个入口，所以不预先声称自己钉住了用户的意图。
+    private func syncLedger(observed: [ManagedItem]) {
+        let seen = Set(ledgerRecords.map(\.currentID))
+        for item in observed {
+            if let index = ledgerRecords.firstIndex(where: { $0.aliases.contains(item.id) }) {
+                IdentityLedger.applyUpdate(
+                    to: &ledgerRecords[index], now: clock(), observedItem: item,
+                    drifted: !seen.contains(item.id)
+                )
+                ledgerRecords[index].zoneRaw = layout.zone(of: item.id)?.rawValue ?? ""
+            } else {
+                ledgerRecords.append(IdentityRecord(
+                    assignmentKey: "a-" + UUID().uuidString,
+                    ownerBundleID: item.ownerBundleID ?? "nil",
+                    observedTitle: item.title,
+                    observedOrdinal: item.ordinalInOwner,
+                    ownerItemCount: item.ownerItemCount,
+                    aliases: [item.id],
+                    zoneRaw: layout.zone(of: item.id)?.rawValue ?? "",
+                    pinnedBy: .inferred,
+                    lastSeenAt: clock()
+                ))
+            }
+        }
+        ledgerRecords = IdentityLedger.prune(records: ledgerRecords, now: clock(), seenIDs: Set(observed.map(\.id)))
     }
 
     /// 出现过"多对多、不敢猜"的进程，供诊断与设置界面提示（不是判错，是如实声明无能为力）。

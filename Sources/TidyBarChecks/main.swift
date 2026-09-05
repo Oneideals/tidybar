@@ -38,8 +38,9 @@ let suites: [TestSuite] = [
     TestSuite("PositionSignature", PositionSignatureTests.testCases),
     TestSuite("TitleDriftAdoption", TitleDriftAdoptionTests.testCases),
     TestSuite("ResidualPairing", ResidualPairingTests.testCases),
+    TestSuite("IdentityLedger", IdentityLedgerTests.testCases + LedgerAcrossLaunchTests.testCases),
     // 行为层
-    TestSuite("RevealStateMachine", RevealStateMachineTests.testCases),
+    TestSuite("RevealStateMachine", RevealStateMachineTests.testCases + RevealStateMachineTests.idleTimerContractCases),
     TestSuite("EventEngine", EventEngineThrottleTests.testCases),
     TestSuite("TidyBarController", TidyBarControllerTests.testCases),
     // 规则层

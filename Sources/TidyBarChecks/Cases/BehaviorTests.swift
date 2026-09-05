@@ -156,6 +156,49 @@ struct PanelGeometryTests {
     }
 }
 
+// MARK: - 收起剩余时间（空闲不挂表的前提）
+
+extension RevealStateMachineTests {
+    /// 收起状态下必须回答"没有剩余时间"，装配层据此**不挂任何定时器**。
+    /// 这条断言守的不是数值，是"空闲时不能有周期任务"这个契约——
+    /// 常驻 0.25s repeating Timer 就是因为它，40 分钟白醒了约 9600 次。
+    func remainingTimeIsNilUnlessRevealed() throws {
+        let machine = RevealStateMachine(rehideDelay: 2)
+        expectNil(machine.remainingRevealTime(at: Date()), "未展开时不该有任何待收起时间")
+
+        let start = Date(timeIntervalSince1970: 5_000)
+        machine.reveal(by: .dividerClick, at: start)
+        let remaining = machine.remainingRevealTime(at: start.addingTimeInterval(0.5))
+        expect(remaining != nil && abs((remaining ?? 0) - 1.5) < 0.001, "展开后剩余应为 delay 递减：\(String(describing: remaining))")
+        // 超时之后是 0.0 而不是 nil：收起由"到点那条表"负责，装配层最迟 50ms 内触发收起，
+        // 收起之后才真正变成 nil（见下一段断言）。这里断言"不再有待等时间"而不是"没有值"。
+        let overdue = machine.remainingRevealTime(at: start.addingTimeInterval(2.5))
+        expect(overdue == nil || overdue == 0, "超过 delay 后不该还有正的剩余时间：\(String(describing: overdue))")
+        expect(machine.shouldAutoConceal(at: start.addingTimeInterval(2.5)))
+        machine.conceal()
+        expectNil(machine.remainingRevealTime(at: start.addingTimeInterval(3)),
+                  "收起之后必须不再给出时间，否则装配层会一直挂表")
+    }
+
+    /// 0 延迟 = 永不自动收起 ⇒ 也不该挂表
+    func zeroDelayMeansNoTimer() throws {
+        let machine = RevealStateMachine(rehideDelay: 0)
+        machine.reveal(by: .hotkey, at: Date(timeIntervalSince1970: 1_000))
+        expectNil(machine.remainingRevealTime(at: Date(timeIntervalSince1970: 1_001)),
+                  "关闭自动收起却仍给出剩余时间，装配层就会白挂一个定时器")
+    }
+}
+
+extension RevealStateMachineTests {
+    static var idleTimerContractCases: [TestCase] {
+        let suite = RevealStateMachineTests()
+        return [
+            TestCase("remainingTimeIsNilUnlessRevealed", suite.remainingTimeIsNilUnlessRevealed),
+            TestCase("zeroDelayMeansNoTimer", suite.zeroDelayMeansNoTimer),
+        ]
+    }
+}
+
 extension RevealStateMachineTests {
     static var testCases: [TestCase] {
         let suite = RevealStateMachineTests()

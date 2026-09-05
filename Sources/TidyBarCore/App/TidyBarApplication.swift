@@ -64,7 +64,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let engine = LayoutEngine(
             layout: journal.readCommittedLayout() ?? MenuBarLayout(),
             services: services,
-            journal: journal
+            journal: journal,
+            ledger: IdentityLedgerStore(url: AppPaths.identityLedgerFile)
         )
         let settings = settingsStore.load()
         let barController = TidyBarController(
@@ -99,20 +100,27 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         events.onEvent = { [weak self, weak barController, weak panel] event in
             guard let self, let barController, let panel else { return }
             barController.handle(event: event)
-            self.syncPanel(barController: barController, panel: panel)
         }
         events.start()
         self.eventEngine = events
 
-        // 心跳只服务「自动重隐藏」判定，0.25s 足够顺滑且省电（报告 §4.3 空闲 CPU 目标）
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak barController, weak panel] _ in
-            guard let barController else { return }
-            if barController.tick() {
-                panel?.hide()
-            }
+        // 面板绘制与收起排表都由**快照**驱动，而不是散落在各个调用点上。
+        // 教训：先前把 scheduleAutoConceal 挂在事件回调里，自检一绕开事件直接 handle()
+        // 就出现"展得开、再也收不回"——挂表时机绑在调用点上必然漏，绑在状态上不会。
+        barController.onSnapshot = { [weak self, weak barController, weak panel] _ in
+            guard let self, let barController, let panel else { return }
+            self.syncPanel(barController: barController, panel: panel)
+            // 每次交互都可能续期，收起点跟着重算
+            self.scheduleAutoConceal(barController: barController, panel: panel)
         }
-        RunLoop.main.add(timer, forMode: .common)
-        tickTimer = timer
+
+        // 自动收起改用"只在展开时挂的一次性定时器"。
+        //
+        // 原来是一条常驻 0.25s repeating Timer：面板收起时它每 0.25 秒醒一次，
+        // 去做一件必然返回 false 的判断。40 分钟就是约 9600 次无意义唤醒——
+        // 空闲 CPU 超预算的头号嫌疑就是它，而不是什么深奥的系统行为。
+        // 现在收起状态下**没有任何周期任务**，展开时才挂表，且挂的是"到点即收"的那一条。
+        scheduleAutoConceal(barController: barController, panel: panel)
 
         statusItem = makeStatusItem(controller: barController)
         barController.start(scansSynchronously: false)
@@ -123,6 +131,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         reportStartup(barController: barController)
         // 自检必须在**真 app 进程**里跑：探针 CLI 没有 NSApp 激活策略与完整 run loop，
         // 键盘焦点这类断言在它里面必然失败，测出来的是环境不等价而不是产品有 bug。
+        if ProcessInfo.processInfo.environment["TIDYBAR_SELFCHECK_CONCEAL"] == "1" {
+            concealSelfCheck(barController: barController, panel: panel)
+        }
         if ProcessInfo.processInfo.environment["TIDYBAR_SELFCHECK_SEARCH"] == "1" {
             searchSelfCheck(barController: barController)
         }
@@ -139,6 +150,46 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             }
         }
         self.shutdown = shutdown
+    }
+
+    /// 按"剩余可见时间"挂一次性收起表；不需要收起时**不挂任何表**。
+    private func scheduleAutoConceal(barController: TidyBarController, panel: TidyBarPanelController?) {
+        tickTimer?.invalidate()
+        tickTimer = nil
+        guard let remaining = barController.remainingRevealTime else { return }
+        let timer = Timer(timeInterval: max(0.05, remaining), repeats: false) { [weak self, weak barController, weak panel] _ in
+            guard let self, let barController else { return }
+            if barController.tick() {
+                panel?.hide()
+            }
+            self.scheduleAutoConceal(barController: barController, panel: panel)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        tickTimer = timer
+    }
+
+    /// 自动收起自检（`TIDYBAR_SELFCHECK_CONCEAL=1`）。
+    ///
+    /// 为什么必须有它：改成"只在展开时挂一次性表"之后，空闲不挂表是想要的效果，
+    /// 但如果我把挂表时机接错，症状是**面板再也收不起来**——一个更糟、却同样"省 CPU"的 bug。
+    /// 光看空闲 CPU 下降无法区分这两种情况，所以必须正面验一次"展开→自行收起"。
+    private func concealSelfCheck(barController: TidyBarController, panel: TidyBarPanelController) {
+        let delay = barController.settings.rehideDelay
+        barController.handle(event: .init(trigger: .dividerClick, location: NSEvent.mouseLocation))
+        syncPanel(barController: barController, panel: panel)
+        let opened = panel.isVisible
+        let started = Date()
+        var samples = 0
+        var closedAt: TimeInterval?
+        while closedAt == nil && Date().timeIntervalSince(started) < delay + 3 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            samples += 1
+            if !panel.isVisible { closedAt = Date().timeIntervalSince(started) }
+        }
+        let line = "收起自检｜delay=\(delay)s 展开成功=\(opened ? "yes" : "no") 自行收起=\(closedAt.map { String(format: "%.1fs", $0) } ?? "未发生") 采样=\(samples) 次"
+        fprint(line)
+        print(line)
+        exit(opened && closedAt != nil ? 0 : 1)
     }
 
     private static func signalName(_ sig: Int32) -> String {
