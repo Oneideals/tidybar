@@ -120,6 +120,8 @@ public struct ScreenInfo: Equatable, Sendable {
     public let menuBarHeight: CGFloat
     /// 内建屏幕刘海宽度；非刘海屏为 nil
     public let notchWidth: CGFloat?
+    /// 背板缩放（Retina 为 2）。抓图必须按像素算，用点算会让缓存字节数低估一半。
+    public let scaleFactor: Double
     public let isBuiltin: Bool
 
     public init(
@@ -127,13 +129,15 @@ public struct ScreenInfo: Equatable, Sendable {
         frame: CGRect,
         menuBarHeight: CGFloat,
         notchWidth: CGFloat?,
-        isBuiltin: Bool
+        isBuiltin: Bool,
+        scaleFactor: Double = 2
     ) {
         self.identifier = identifier
         self.frame = frame
         self.menuBarHeight = menuBarHeight
         self.notchWidth = notchWidth
         self.isBuiltin = isBuiltin
+        self.scaleFactor = scaleFactor
     }
 
     public var hasNotch: Bool { notchWidth != nil }

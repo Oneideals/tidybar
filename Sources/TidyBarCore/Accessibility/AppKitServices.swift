@@ -89,7 +89,10 @@ extension ScreenInfo {
             frame: fullFrame,
             menuBarHeight: measuredMenuBarHeight > 0 ? measuredMenuBarHeight : AppKitScreenConstants.fallbackMenuBarHeight,
             notchWidth: notchWidth,
-            isBuiltin: Self.isBuiltinDisplay(displayID)
+            isBuiltin: Self.isBuiltinDisplay(displayID),
+            // 抓图与缓存都按像素算。写死 2 在外接非 Retina 屏上会多要一倍的像素，
+            // 在混合缩放的多屏上则会裁偏——缩放必须由这块屏自己报告。
+            scaleFactor: Double(screen.backingScaleFactor)
         )
     }
 

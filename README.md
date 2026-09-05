@@ -4,11 +4,12 @@
 
 原生 Swift 开发的菜单栏图标整理工具，对标 Bartender / Ice，主打**低占用**与**在 macOS Tahoe 上的可靠性**。产品决策与完整功能清单见 [docs/软件开发计划.md](docs/软件开发计划.md)。
 
-当前进度：**M0 技术验证 4/4 通过 + 真实菜单栏闸门全绿，已进入 M1**（P0 功能面）。M1 第一步「点击转发」已落地并真机复验 → [docs/findings/06-click-forwarding.md](docs/findings/06-click-forwarding.md)。
+当前进度：**M0 技术验证 4/4 通过 + 真实菜单栏闸门全绿，已进入 M1**（P0 功能面）。
+已完成 M1-1 [点击转发](docs/findings/06-click-forwarding.md) 与 M1-2 [面板真实缩略图](docs/findings/07-icon-bitmaps.md)。
 
 ## 当前状态
 
-**M0 技术验证完成**（4/4 通过），分层与逻辑已落地并有 150 条回归用例。枚举与 ⌘ 拖拽两个高危环节都已在真机打通；但 100 次全绿是在**自造 fixture 图标**上取得的，所以产品侧接管闸门（`isConfirmedSupportedOS`）仍未开放——现在它读得到你的图标，但不会移动任何一个。
+**M0 技术验证完成**（4/4 通过），分层与逻辑已落地并有 162 条回归用例。枚举与 ⌘ 拖拽两个高危环节都已在真机打通；但 100 次全绿是在**自造 fixture 图标**上取得的，所以产品侧接管闸门（`isConfirmedSupportedOS`）仍未开放——现在它读得到你的图标，但不会移动任何一个。
 
 | 能力 | 状态 |
 | --- | --- |
@@ -29,7 +30,7 @@
 
 ```bash
 swift build                       # 编译全部目标
-swift run tidybar-checks          # 跑 150 条回归用例
+swift run tidybar-checks          # 跑 162 条回归用例
 swift run tidybar-checks --verbose
 swift run tidybar-checks --filter 规则   # 按套件/用例名过滤
 

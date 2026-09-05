@@ -37,6 +37,10 @@ public final class TidyBarPanelView: NSView {
     public var notice: String? {
         didSet { needsDisplay = true }
     }
+    /// 真实缩略图，键为图标 id。缺项表示尚未抓到（或被拒授权），此时画占位。
+    public var images: [String: CGImage] = [:] {
+        didSet { needsDisplay = true }
+    }
     public var onClick: ((ManagedItem) -> Void)?
 
     override public func draw(_ dirtyRect: NSRect) {
@@ -67,7 +71,13 @@ public final class TidyBarPanelView: NSView {
             let rect = CGRect(x: origin.x, y: origin.y, width: metrics.itemSide, height: metrics.itemSide)
             NSColor.secondaryLabelColor.withAlphaComponent(0.18).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
-            // 占位：首字母，避免在缺少真实位图时面板空白难辨
+            if let image = images[item.id] {
+                // 真实位图优先。留 3pt 内缩，避免图标贴边被圆角切掉
+                let inset = rect.insetBy(dx: 3, dy: 3)
+                NSGraphicsContext.current?.cgContext.draw(image, in: inset)
+                continue
+            }
+            // 占位：首字母。没授权时这是常态路径，不是错误状态
             let label = String(item.title.prefix(1)).uppercased()
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 11, weight: .medium),
@@ -101,7 +111,11 @@ public final class TidyBarPanelController: NSObject {
     public let panel = TidyBarPanel()
     private let panelView = TidyBarPanelView()
     private let screenObserver: ScreenObserving
+    private let capturer: MenuBarIconCapturing
+    private let bitmaps: IconBitmapStore
     private var lastAnchorX: CGFloat = 0
+    /// 正在抓的项。心跳每 0.25s 会重绘一次面板，没有这个闸门就会把同一批图标反复送去屏幕录制。
+    private var inFlight: Set<String> = []
 
     public var onItemClick: ((ManagedItem) -> Void)? {
         didSet { panelView.onClick = onItemClick }
@@ -112,8 +126,14 @@ public final class TidyBarPanelController: NSObject {
         panelView.notice = text
     }
 
-    public init(services: SystemServices) {
+    public init(
+        services: SystemServices,
+        capturer: MenuBarIconCapturing = UnverifiedMenuBarIconCapturer(),
+        bitmaps: IconBitmapStore = IconBitmapStore()
+    ) {
         self.screenObserver = services.screens
+        self.capturer = capturer
+        self.bitmaps = bitmaps
         super.init()
         panelView.wantsLayer = true
         panel.contentView = panelView
@@ -122,9 +142,53 @@ public final class TidyBarPanelController: NSObject {
         }
     }
 
+    /// 缓存里现成可用的位图（位置没变的才算）。
+    public func cachedImages(for items: [ManagedItem]) -> [String: CGImage] {
+        var result: [String: CGImage] = [:]
+        for item in items {
+            if let image = bitmaps.image(for: item) { result[item.id] = image }
+        }
+        return result
+    }
+
+    /// 只为"缺的项"发起抓图。抓完回填并交给 `onBitmapsReady` 重绘——
+    /// 每次呼出面板都全量重抓等于持续做屏幕录制，白耗电。
+    public func requestMissingBitmaps(for items: [ManagedItem], onBitmapsReady: @escaping () -> Void) {
+        let missing = bitmaps.needsCapture(items).filter { !inFlight.contains($0.id) }
+        guard !missing.isEmpty, capturer.isAuthorized else { return }
+        inFlight.formUnion(missing.map(\.id))
+        let scale = screenObserver.primaryScreen.map { $0.scaleFactor } ?? 2
+        let inFlightFor = Set(missing.map(\.id))
+        let group = DispatchGroup()
+        var incoming: [(ManagedItem, CGImage)] = []
+        let lock = NSLock()
+        for item in missing {
+            group.enter()
+            capturer.capture(frame: item.frame, scale: scale) { outcome in
+                if case .success(let image) = outcome {
+                    lock.lock()
+                    incoming.append((item, image))
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            self.inFlight.subtract(inFlightFor)
+            var changed = false
+            for (item, image) in incoming {
+                self.bitmaps.ingest(image, for: item)
+                changed = true
+            }
+            if changed { onBitmapsReady() }
+        }
+    }
+
     public func show(items: [ManagedItem], screen: ScreenInfo?, anchorX: CGFloat) {
         guard let screen else { return }
         lastAnchorX = anchorX
+        bitmaps.retain(alive: Set(items.map(\.id)))
+        panelView.images = cachedImages(for: items)
         panelView.items = items
         let metrics = PanelGeometry.Metrics()
         let frame = PanelGeometry.adjustedForNotch(
