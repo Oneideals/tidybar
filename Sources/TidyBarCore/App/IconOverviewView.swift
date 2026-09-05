@@ -34,6 +34,7 @@ public final class IconOverviewView: NSView {
     private let inspectorCard = NSView()
     private let inspectorIconView = NSImageView()
     private let inspectorTextLabel = NSTextField(labelWithString: "")
+    private let smartApplyButton = NSButton()
 
     public init(onReassign: @escaping (String, MenuBarZone) -> Void) {
         self.onReassign = onReassign
@@ -99,6 +100,15 @@ public final class IconOverviewView: NSView {
         inspectorTextLabel.translatesAutoresizingMaskIntoConstraints = false
         inspectorCard.addSubview(inspectorTextLabel)
 
+        smartApplyButton.title = "🪄 一键智能推荐收纳"
+        smartApplyButton.bezelStyle = .rounded
+        smartApplyButton.controlSize = .small
+        smartApplyButton.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        smartApplyButton.target = self
+        smartApplyButton.action = #selector(applySmartRecommendations)
+        smartApplyButton.translatesAutoresizingMaskIntoConstraints = false
+        inspectorCard.addSubview(smartApplyButton)
+
         NSLayoutConstraint.activate([
             inspectorIconView.leadingAnchor.constraint(equalTo: inspectorCard.leadingAnchor, constant: 10),
             inspectorIconView.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
@@ -106,11 +116,22 @@ public final class IconOverviewView: NSView {
             inspectorIconView.heightAnchor.constraint(equalToConstant: 18),
 
             inspectorTextLabel.leadingAnchor.constraint(equalTo: inspectorIconView.trailingAnchor, constant: 8),
-            inspectorTextLabel.trailingAnchor.constraint(equalTo: inspectorCard.trailingAnchor, constant: -10),
+            inspectorTextLabel.trailingAnchor.constraint(lessThanOrEqualTo: smartApplyButton.leadingAnchor, constant: -8),
             inspectorTextLabel.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
+
+            smartApplyButton.trailingAnchor.constraint(equalTo: inspectorCard.trailingAnchor, constant: -8),
+            smartApplyButton.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
         ])
 
         updateInspector(item: nil, zone: nil)
+    }
+
+    @objc private func applySmartRecommendations() {
+        let recommendations = SmartItemClassifier.classifyAll(items: rows.map(\.item))
+        for rec in recommendations {
+            onReassign(rec.itemID, rec.recommendedZone)
+        }
+        onZoneChanged?()
     }
 
     private func updateInspector(item: ManagedItem?, zone: MenuBarZone?) {
@@ -126,14 +147,15 @@ public final class IconOverviewView: NSView {
             let appName = item.title.isEmpty ? (item.ownerBundleID ?? "未知应用") : item.title
             let bundle = item.ownerBundleID ?? "未知来源"
             let posHint = item.isPositionalIdentity ? " · [位置匹配]" : ""
+            let rec = SmartItemClassifier.classify(item: item)
             inspectorIconView.image = AppIconResolver.resolve(for: item)
             inspectorIconView.isHidden = false
-            inspectorTextLabel.stringValue = "当前图标：\(appName)（\(bundle)）\(posHint) ｜ 分区：\(zone.displayLabel) ｜ 拖拽或单击移至其他托盘"
+            inspectorTextLabel.stringValue = "\(appName)（\(bundle)）\(posHint) ｜ 当前：\(zone.displayLabel) ｜ 智能推荐：\(rec.recommendedZone.displayLabel)（\(rec.category.rawValue) · \(rec.reason)）"
             inspectorTextLabel.textColor = .labelColor
         } else {
-            inspectorIconView.image = NSImage(systemSymbolName: "hand.draw", accessibilityDescription: "提示")
+            inspectorIconView.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "提示")
             inspectorIconView.isHidden = false
-            inspectorTextLabel.stringValue = "💡 提示：按住图标直接跨托盘拖拽即可调整状态；也可直接单击或右键图标调出快捷移动菜单。"
+            inspectorTextLabel.stringValue = "💡 提示：支持图标直接跨托盘拖拽，也可点击右侧「一键智能推荐收纳」按人机交互规则一键分类。"
             inspectorTextLabel.textColor = .secondaryLabelColor
         }
     }
