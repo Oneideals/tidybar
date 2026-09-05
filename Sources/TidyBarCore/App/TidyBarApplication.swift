@@ -282,10 +282,13 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private func scheduleRefresh(reason: EnumerationCadence.Trigger) {
         guard let controller else { return }
         let reader = services.reader
+        let scanStarted = Date()
         enumerator.request(
             reason: reason,
             scan: { reader.discoverItems() },
             apply: { [weak self, weak controller] items in
+                fprint("重扫｜触发=" + reason.rawValue + "｜图标 " + String(items.count)
+                     + "｜耗时 " + String(format: "%.0f", Date().timeIntervalSince(scanStarted) * 1000) + "ms")
                 guard let self else { return }
                 controller?.layoutEngine.migrateLegacyLayoutIfNeeded(observed: items)
                 if let outcome = controller?.layoutEngine.lastMigration {
