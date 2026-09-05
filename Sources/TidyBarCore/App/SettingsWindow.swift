@@ -16,9 +16,9 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
-        let height: CGFloat = 268
+        let height: CGFloat = 500
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 420, height: height),
+            contentRect: CGRect(x: 0, y: 0, width: 460, height: height),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -38,7 +38,20 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
     private func build(hotKeyDescription: String) {
         guard let root = window?.contentView else { return }
-        var y = 232.0
+
+        // 第一页主体：图标总览（三分区全景）。其余设置项在其下方。
+        // 上次提交这段没进 build()——补丁的字符串匹配失败了却没报错，
+        // 结果"设置第一页挂总览"只存在于属性和 reload 里，窗口里根本没画。
+        overview.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(overview)
+        NSLayoutConstraint.activate([
+            overview.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+            overview.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
+            overview.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
+            overview.heightAnchor.constraint(equalToConstant: 224),
+        ])
+
+        var y = 250.0
         func place(_ view: NSView, at top: CGFloat) {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
@@ -67,7 +80,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
         launchToggle.target = self
         launchToggle.action = #selector(toggleLaunchAtLogin)
-        place(launchToggle, at: y); y -= 30
+        place(launchToggle, at: y); y -= 36   // 标题在 needsApproval 态会变长换行
 
         rehideStepper.minValue = 0
         rehideStepper.maxValue = 10

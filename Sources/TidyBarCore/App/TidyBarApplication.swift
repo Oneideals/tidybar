@@ -188,6 +188,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         reportStartup(barController: barController)
         // 自检必须在**真 app 进程**里跑：探针 CLI 没有 NSApp 激活策略与完整 run loop，
         // 键盘焦点这类断言在它里面必然失败，测出来的是环境不等价而不是产品有 bug。
+        if ProcessInfo.processInfo.environment["TIDYBAR_OPEN_SETTINGS"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.openSettings()
+            }
+        }
         if ProcessInfo.processInfo.environment["TIDYBAR_SELFCHECK_CONCEAL"] == "1" {
             concealSelfCheck(barController: barController, panel: panel)
         }
