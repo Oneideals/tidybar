@@ -318,6 +318,60 @@ enum ImageStats {
 }
 
 // MARK: - 主闸门流程（恢复自 4cb1164：一次删尾部代码的脚本把它连带截掉了）
+/// 真机因果验证：漂移是自己造的，因此"配置跟不跟着走"有了确定的因果，而不是碰运气观测。
+///
+/// 前提：fixture 以 TIDYBAR_MUTATE_TITLE=1 启动，其中一个图标每 2.5s 自改标题。
+/// 断言链：认下当前 id 的隐藏区归属 → 等它改名 → 重新折叠 → 新 id 必须在隐藏区、
+/// 旧 id 必须迁净，且漂移确实被 detectTitleDrift 报出来。
+if arguments.contains("--drift-e2e") {
+    let bundle = argumentValue("--bundle") ?? "local.tidybar.fixture"
+    let probe = globalOrder().filter { $0.ownerBundleID == bundle && $0.title.hasPrefix("MX") }
+    guard let original = probe.first else {
+        print("DRIFT 没找到会自改标题的图标。先跑：TIDYBAR_MUTATE_TITLE=1 open dist/TidyBarFixture.app --args 4")
+        exit(3)
+    }
+    print("DRIFT 起点 id=\(original.id) 标题=\(original.title) ownerItemCount=\(original.ownerItemCount)")
+
+    var seeded = MenuBarLayout()
+    seeded.append(original.id, to: .hidden)
+    let gateReader = AccessibilityMenuBarReader()
+    let driftEngine = LayoutEngine(
+        layout: seeded,
+        services: SystemServices(
+            reader: gateReader, mover: UnverifiedMenuBarMover(), cursor: cursor,
+            accessibility: AppKitAccessibilityTrust(), screens: AppKitScreenObserver()
+        ),
+        journal: LayoutJournal(directory: URL(fileURLWithPath: NSTemporaryDirectory() + "tidybar-drift-e2e"))
+    )
+
+    // 轮询到标题**真的变了**为止。上一版是睡固定 6 秒，正好落在标题复位的那一帧，
+    // 于是漂移记数为 0——把"没观测到"误当成"没有漂移"，这是同一类错误。
+    let frameA = globalOrder().filter { $0.ownerBundleID == bundle }
+    var later: [ManagedItem] = frameA
+    var drifted: [ManagedItem] = []
+    for _ in 0..<14 {
+        usleep(1_000_000)
+        let frame = globalOrder().filter { $0.ownerBundleID == bundle }
+        if frame.contains(where: { $0.ownerBundleID == bundle && $0.id != original.id && $0.title.hasPrefix("MX") }) {
+            later = frame
+            drifted = frame.filter { $0.id != original.id && $0.title.hasPrefix("MX") }
+            break
+        }
+    }
+    let drift = MenuBarEnumeration.detectTitleDrift(before: frameA, after: later)
+    print("DRIFT 漂移记录 \(drift.count) 处；新 id \(drifted.map { $0.id }.joined(separator: ", "))")
+    check("漂移确实被观测到", !drift.isEmpty)
+
+    driftEngine.fold(items: later, newItemZone: .visible)
+    let adopted = drifted.first.map { driftEngine.layout.zone(of: $0.id) } ?? nil
+    check("改名后的图标仍留在隐藏区（配置跟过去了）", adopted == .hidden,
+          detail: "实际 \(String(describing: adopted))")
+    check("旧 id 已迁净，不会同占两坑", driftEngine.layout.zone(of: original.id) == nil || drifted.isEmpty,
+          detail: "旧 id 仍指向 \(String(describing: driftEngine.layout.zone(of: original.id)))")
+    print("DRIFT 布局现状 " + driftEngine.layout.allItemIDs.sorted().joined(separator: " | "))
+    exit(failures.isEmpty ? 0 : 1)
+}
+
 header("环境")
 print("系统: " + ProcessInfo.processInfo.operatingSystemVersionString)
 print("路径: " + (useEngine ? "LayoutEngine（产品主路径）" : "直连 mover（组件级，默认不走）"))

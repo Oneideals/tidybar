@@ -46,6 +46,23 @@ final class FixtureApplication: NSObject, NSApplicationDelegate, NSMenuDelegate 
             menus.append(menu)
         }
         log("launched count=\(count) pid=\(ProcessInfo.processInfo.processIdentifier)")
+
+        // 受控漂移源：环境变量开启后，最后一个图标每隔几秒自己改标题。
+        // 有了它，"标题漂移 → 配置认领"才能被反复验证；否则只能守着微信等它来消息，
+        // 那种"验证"实质是碰运气，不能作为发布依据。
+        if ProcessInfo.processInfo.environment["TIDYBAR_MUTATE_TITLE"] == "1" {
+            guard let victim = items.last else { return }
+            var tick = 0
+            Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { _ in
+                tick += 1
+                let title = tick % 2 == 0 ? "MX" : "MX (\(tick))"
+                victim.button?.title = title
+                FileHandle.standardError.write(
+                    ("FIXTURE-EVENT title=" + title + "\n").data(using: .utf8) ?? Data()
+                )
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
         let pid = ProcessInfo.processInfo.processIdentifier
         let message = "TidyBarFixture: 已创建 \(count) 个图标，pid=\(pid)"
         FileHandle.standardError.write((message + "\n").data(using: .utf8) ?? Data())
