@@ -83,6 +83,12 @@ scripts/                # 打包、性能核对、fixture 构建、M0 强杀演�
 
 复测：`./scripts/perf-check.sh --minutes 5`
 
+## 分发状态
+
+**本地自用，暂不发布**（2026-09-05）：无 Apple 开发者账号，Developer ID 签名/公证/Sparkle 整条发布链暂缓。
+当前 `./scripts/build-app.sh` 产出 ad-hoc 签名的 `dist/TidyBar.app`，重建后系统可能要求重新授予辅助功能/屏幕录制权限——
+这是 ad-hoc 签名的固有行为，不是工具问题；真要长期用，重建后到 系统设置 → 隐私与安全性 里把两项开关关掉再打开即可。
+
 ## 隐私
 
 不收集、不上报任何数据。设置与布局日志写入 `~/Library/Application Support/TidyBar/`，卸载即清除。
