@@ -222,6 +222,22 @@ public final class LayoutEngine {
         }
     }
 
+    /// 仅供回归测试装载初始分区状态；产品路径一律走 `recoverOnLaunch`/`apply`。
+    public func adoptLayoutForChecks(_ layout: MenuBarLayout) {
+        self.layout = layout
+    }
+
+    // MARK: - 点击转发（报告 A3/A8：面板与搜索结果里的点击）
+
+    /// 代点一个图标。不改布局、不写 journal：它不产生状态变更，失败也不该留下任何"半成品"。
+    @discardableResult
+    public func activate(itemID: String) -> ActivationOutcome {
+        guard let activator = services.activator else {
+            return .actionUnsupported
+        }
+        return activator.activate(itemID: itemID)
+    }
+
     /// 回滚：把内存布局恢复到意图执行前，并清除 pending
     public func rollback(_ intent: LayoutJournal.LayoutIntent) {
         if let previousZone = intent.previousZone {

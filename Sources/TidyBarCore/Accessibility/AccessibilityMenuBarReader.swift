@@ -10,7 +10,7 @@ import ApplicationServices
 /// 这是 M0 验证项 1 的实现，同时也是产品里的正式 reader。
 /// 真机测得的四类脏数据（0×0 的不可见项、混进来的弹层、只有 roleDescription 的无名项、
 /// 副屏负原点坐标）由 MenuBarItemPolicy 统一拦截，结论见 docs/findings/01-enumeration.md。
-public final class AccessibilityMenuBarReader: MenuBarReading {
+public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating {
     public struct Config: Sendable {
         /// 跳过这些进程（默认跳掉 Dock/WindowServer 这类必然无 extras 的，省时间）
         public var skippedBundleIDs: Set<String>
@@ -116,6 +116,86 @@ public final class AccessibilityMenuBarReader: MenuBarReading {
             screens: screensProvider(),
             primaryHeight: NSScreen.screens.first?.frame.height ?? 0
         ).accepted
+    }
+
+    // MARK: - MenuBarActivating（点击转发）
+
+    /// 在面板里点一下 = 在菜单栏点一下。
+    ///
+    /// 找回元素靠的是 **(归属进程, 进程内序号)**：枚举时序号就是 `children` 的原始下标
+    /// （策略过滤发生在映射之后），所以两边用的是同一把尺子。
+    /// 不靠标题找回——88% 的图标根本没有可读标题。
+    @discardableResult
+    public func activate(itemID: String) -> ActivationOutcome {
+        guard let item = discoverItems().first(where: { $0.id == itemID }) else {
+            return .itemNotFound
+        }
+        guard let bundleID = item.ownerBundleID,
+              let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == bundleID }),
+              let extras = extrasMenuBar(of: application.processIdentifier, messagingTimeout: config.processMessagingTimeout)
+        else {
+            // 图标刚被扫到、进程却已经没了：属于"顺序/存在性刚变"，不是我们的查找逻辑错
+            return .elementNotFound
+        }
+        let children = self.children(of: extras)
+        guard item.ordinalInOwner < children.count, item.ordinalInOwner >= 0 else { return .elementNotFound }
+        let element = children[item.ordinalInOwner]
+
+        var actions: CFArray?
+        let listed = AXUIElementCopyActionNames(element, &actions)
+        guard listed == .success, let raw = actions as? [AnyObject] else { return .actionUnsupported }
+        // CFArray 里的元素是 CFStringRef，不能直接 as? [String] 指望桥接成功
+        let names = raw.compactMap { $0 as? String }
+        guard names.contains("AXPress") else { return .actionUnsupported }
+        let result = AXUIElementPerformAction(element, "AXPress" as CFString)
+        guard result == .success else {
+        // kAXErrorCannotComplete：目标已经去吃这个事件了（弹菜单进入模态循环），没来得及回执。
+        // 真机对照 fixture 的菜单日志确认过：返回 -25204 的那一次，菜单确实打开了。
+        return result == .cannotComplete ? .pressedUnconfirmed(code: Int(result.rawValue))
+                                        : .failed(code: Int(result.rawValue))
+    }
+    return .pressed
+    }
+
+    // MARK: - 可点性普查（只读，不真的点）
+
+    /// 每个归属进程有多少图标接受 AXPress。
+    ///
+    /// 为什么单独要这个读数：A3/A8 的验收标准是"面板里点一下等效于点真实图标"，
+    /// 而"能读到"不等于"能点到"。上线前必须知道有多少 App 点到、多少点不到，
+    /// 否则就是拿用户的预期去试错。
+    /// **只看动作列表，绝不 AXPress**——真去点会把每个 App 的菜单都弹一遍。
+    public struct PressCensus: Sendable {
+        public let ownerBundleID: String
+        public let ownerName: String
+        public let total: Int
+        public let pressCapable: Int
+    }
+
+    public func pressCapabilityCensus() -> [PressCensus] {
+        guard AXIsProcessTrusted() else { return [] }
+        var result: [PressCensus] = []
+        for application in candidateApplications() {
+            guard let extras = extrasMenuBar(
+                of: application.processIdentifier,
+                messagingTimeout: config.processMessagingTimeout
+            ) else { continue }
+            let children = self.children(of: extras)
+            guard !children.isEmpty else { continue }
+            let capable = children.filter { element in
+                var actions: CFArray?
+                guard AXUIElementCopyActionNames(element, &actions) == .success,
+                      let raw = actions as? [AnyObject] else { return false }
+                return raw.compactMap { $0 as? String }.contains("AXPress")
+            }.count
+            result.append(PressCensus(
+                ownerBundleID: application.bundleIdentifier ?? "?",
+                ownerName: application.localizedName ?? "?",
+                total: children.count,
+                pressCapable: capable
+            ))
+        }
+        return result
     }
 
     /// 扫描候选：过滤 + 截断 + **排序**。

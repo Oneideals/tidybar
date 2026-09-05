@@ -79,6 +79,33 @@ func globalOrder() -> [ManagedItem] {
 
 func snapshot(_ items: [ManagedItem]) -> [String] { items.map(\.id) }
 
+/// 单发模式：只代点一次，把结论与现场打全。
+/// 真机验证点击转发用它——配合 fixture 的事件日志，能拿到"确实被点了"的正面证据。
+if let target = argumentValue("--activate") {
+    let items = globalOrder().filter { $0.ownerBundleID == target }
+    print("ACTIVATE target=\(target) 候选图标 \(items.count) 个")
+    guard let first = items.first else {
+        print("ACTIVATE outcome=itemNotFound（该 bundle 没有图标在栏）")
+        exit(3)
+    }
+    let outcome = reader.activate(itemID: first.id)
+    print("ACTIVATE \(first.id) → \(outcome) ｜ \(outcome.userReadable)")
+    exit(outcome == .pressed ? 0 : 1)
+}
+
+/// 可点性普查：只读动作列表，不真的点任何图标。
+if arguments.contains("--press-census") {
+    let census = reader.pressCapabilityCensus()
+    let total = census.reduce(0) { $0 + $1.total }
+    let capable = census.reduce(0) { $0 + $1.pressCapable }
+    print("CENSUS owners=\(census.count) 子项=\(total) 接受 AXPress=\(capable) 覆盖率=\(String(format: "%.0f%%", total > 0 ? Double(capable) / Double(total) * 100 : 0))")
+    for entry in census.sorted(by: { $0.total > $1.total }) {
+        let mark = entry.pressCapable == entry.total ? "✓" : (entry.pressCapable == 0 ? "✗" : "部分")
+        print("  \(mark) \(entry.ownerBundleID) \(entry.pressCapable)/\(entry.total) ｜ \(entry.ownerName)")
+    }
+    exit(0)
+}
+
 header("环境")
 print("系统: " + ProcessInfo.processInfo.operatingSystemVersionString)
 print("路径: " + (useEngine ? "LayoutEngine（产品主路径）" : "直连 mover（组件级，默认不走）"))

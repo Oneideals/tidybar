@@ -31,6 +31,53 @@ public protocol MenuBarMoving: AnyObject {
     func move(itemID: String, toX targetX: CGFloat) throws -> CGPoint
 }
 
+/// 点击转发的结果。面板里点一个图标，必须等效于在菜单栏点它（报告 A3）；
+/// 等效不了就要说清是哪一类"等效不了"，不能只回一句"失败"。
+public enum ActivationOutcome: Equatable, Sendable {
+    /// 已对该元素执行 AXPress
+    case pressed
+    /// 当前扫描里没有这个图标（App 大概已退出）
+    case itemNotFound
+    /// 逻辑 id 认得，但按归属进程 + 序号找不到对应元素（顺序刚变过）
+    case elementNotFound
+    /// 该元素不接受 AXPress——确实有自绘状态项不支持
+    case actionUnsupported
+    /// 动作已生效但目标没回回执：带菜单的状态项在 AXPress 后会进入模态跟踪循环，
+    /// 系统常返回 kAXErrorCannotComplete(-25204)。真机实测**菜单确实开了**，
+    /// 所以这一类不能报成"点击被拒绝"，否则用户会以为没点上而重复操作。
+    case pressedUnconfirmed(code: Int)
+    /// 系统返回了明确的错误码
+    case failed(code: Int)
+
+    public var userReadable: String {
+        switch self {
+        case .pressed: return "已点击"
+        case .itemNotFound: return "图标已不在菜单栏上"
+        case .elementNotFound: return "图标位置刚发生变化，请再点一次"
+        case .actionUnsupported: return "这个 App 不允许工具代点，请直接在菜单栏点击"
+        case .pressedUnconfirmed: return "已点击（目标未回执，通常因为它弹出了菜单）"
+        case .failed(let code): return "系统拒绝了这次点击（错误码 " + String(code) + "）"
+        }
+    }
+}
+
+/// 点击转发：把收纳面板/搜索面板里的一次点击打到真实菜单栏图标上。
+/// 与读取、移动分列协议，是因为"能读到"不等于"能点到"（实测就有不支持 AXPress 的自绘项）。
+public protocol MenuBarActivating: AnyObject {
+    @discardableResult
+    func activate(itemID: String) -> ActivationOutcome
+}
+
+extension ActivationOutcome {
+    /// 是否应当按"点到了"处理：UI 反馈与诊断都以此为准，而不是只看 .pressed
+    public var countsAsPressed: Bool {
+        switch self {
+        case .pressed, .pressedUnconfirmed: return true
+        case .itemNotFound, .elementNotFound, .actionUnsupported, .failed: return false
+        }
+    }
+}
+
 /// 可被打断收尾的移动器：进程被要求退出时，把悬在半空的按下就地抬起。
 /// 单独成协议是为了让装配层只写 `(mover as? DragReleasing)?.releaseInFlightDrag()`，
 /// 占位实现与假拖拽器不必为了「根本不发输入事件」而假装能收尾。
@@ -111,6 +158,8 @@ public protocol ScreenObserving: AnyObject {
 public struct SystemServices {
     public let reader: MenuBarReading
     public let mover: MenuBarMoving?
+    /// nil 表示这套装配尚未接通点击转发。此时面板点击必须明确报"未接通"，不得假装成功。
+    public let activator: MenuBarActivating?
     public let cursor: CursorReading
     public let accessibility: AccessibilityTrustReading
     public let screens: ScreenObserving
@@ -120,10 +169,12 @@ public struct SystemServices {
         mover: MenuBarMoving?,
         cursor: CursorReading,
         accessibility: AccessibilityTrustReading,
-        screens: ScreenObserving
+        screens: ScreenObserving,
+        activator: MenuBarActivating? = nil
     ) {
         self.reader = reader
         self.mover = mover
+        self.activator = activator
         self.cursor = cursor
         self.accessibility = accessibility
         self.screens = screens

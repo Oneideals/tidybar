@@ -33,6 +33,10 @@ public final class TidyBarPanelView: NSView {
     public var items: [ManagedItem] = [] {
         didSet { needsDisplay = true }
     }
+    /// 一行操作反馈（例如"这个 App 不允许工具代点"）。空表示不显示。
+    public var notice: String? {
+        didSet { needsDisplay = true }
+    }
     public var onClick: ((ManagedItem) -> Void)?
 
     override public func draw(_ dirtyRect: NSRect) {
@@ -41,6 +45,22 @@ public final class TidyBarPanelView: NSView {
         let path = NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10)
         background.setFill()
         path.fill()
+
+        if let notice, !notice.isEmpty {
+            // 提示占一行高度，绘制在条目下方；放不下就退回不画（宁可少一行字也不压住图标）
+            let noteAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+            let size = notice.size(withAttributes: noteAttributes)
+            let y = bounds.minY + 2
+            if bounds.height > metrics.itemSide + size.height + 10 {
+                notice.draw(
+                    at: CGPoint(x: bounds.midX - size.width / 2, y: y),
+                    withAttributes: noteAttributes
+                )
+            }
+        }
 
         for (index, item) in items.enumerated() {
             let origin = PanelGeometry.itemOrigin(in: bounds, index: index, metrics: metrics)
@@ -85,6 +105,11 @@ public final class TidyBarPanelController: NSObject {
 
     public var onItemClick: ((ManagedItem) -> Void)? {
         didSet { panelView.onClick = onItemClick }
+    }
+
+    /// 给面板加一行反馈文字（代点失败原因等）。
+    public func setActivationNotice(_ text: String?) {
+        panelView.notice = text
     }
 
     public init(services: SystemServices) {

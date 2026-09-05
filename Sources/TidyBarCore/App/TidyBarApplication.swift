@@ -30,12 +30,16 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private static func defaultServices() -> SystemServices {
-        SystemServices(
-            reader: AccessibilityMenuBarReader(),
+        // reader 自己就是点击转发的实现方（它才知道每个元素在 AX 树里的位置）。
+        // mover 仍是未验证占位——**读得到、点得动、但不搬动**，正是接管闸门关闭时的产品形态。
+        let reader = AccessibilityMenuBarReader()
+        return SystemServices(
+            reader: reader,
             mover: UnverifiedMenuBarMover(),
             cursor: AppKitCursorReader(),
             accessibility: AppKitAccessibilityTrust(),
-            screens: AppKitScreenObserver()
+            screens: AppKitScreenObserver(),
+            activator: reader
         )
     }
 
@@ -58,8 +62,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         self.controller = barController
 
         let panel = TidyBarPanelController(services: services)
-        panel.onItemClick = { [weak barController] item in
-            barController?.activate(itemID: item.id)
+        panel.onItemClick = { [weak barController, weak panel] item in
+            guard let barController else { return }
+            let outcome = barController.activate(itemID: item.id)
+            // 代点失败必须有可见反馈：图标在面板里点不动又不说原因，是这类工具最常见的差评来源
+            panel?.setActivationNotice(outcome.countsAsPressed ? nil : outcome.userReadable)
         }
         self.panelController = panel
 

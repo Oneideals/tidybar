@@ -32,6 +32,7 @@ let suites: [TestSuite] = [
     TestSuite("GracefulShutdown", GracefulShutdownTests.testCases),
     TestSuite("InFlightDragRelease", InFlightDragTests.testCases),
     TestSuite("PendingIntentReplay", PendingIntentReplayTests.testCases),
+    TestSuite("MenuBarActivation", ActivationTests.testCases),
     // 行为层
     TestSuite("RevealStateMachine", RevealStateMachineTests.testCases),
     TestSuite("EventEngine", EventEngineThrottleTests.testCases),

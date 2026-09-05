@@ -218,12 +218,21 @@ public final class TidyBarController {
             .map { $0 }
     }
 
-    /// 搜索面板里激活某项：若处于隐藏区则先呼出，再由面板转发真实点击
-    public func activate(itemID: String, at date: Date = Date()) {
+    /// 面板/搜索里激活某项：先呼出隐藏区，再把点击打到真实图标上，并把结果记进诊断。
+    /// 返回结果是为了让 UI 能给反馈（"这个 App 不允许代点"必须让用户看见，而不是图标默默不动）。
+    @discardableResult
+    public func activate(itemID: String, at date: Date = Date()) -> ActivationOutcome {
         if engine.layout.zone(of: itemID) == .alwaysHidden {
             reveal.reveal(by: .hotkey, at: date)
         }
+        let outcome = engine.activate(itemID: itemID)
+        if outcome.countsAsPressed {
+            record("已代点 \(itemID)（\(outcome.userReadable)）")
+        } else {
+            record("代点失败 \(itemID)：\(outcome.userReadable)")
+        }
         publish()
+        return outcome
     }
 
     // MARK: - 私有

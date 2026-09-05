@@ -114,6 +114,14 @@ public final class PlaceholderMenuBarReader: MenuBarReading {
 
 /// ⚠️ 占位移动器：一律上报「机制未验证」，驱动上层走收纳面板降级模式。
 /// 真实实现 = 合成 ⌘ 拖拽事件 + 前后光标复核，须先通过 EventSentinel 预检。
+/// 未接通时的点击转发占位。刻意"什么都不做但给出原因"，
+/// 而不是静默成功——面板点了没反应又不说为什么，是这类工具最常见的差评来源。
+public final class UnverifiedMenuBarActivator: MenuBarActivating {
+    public init() {}
+    @discardableResult
+    public func activate(itemID: String) -> ActivationOutcome { .actionUnsupported }
+}
+
 public final class UnverifiedMenuBarMover: MenuBarMoving {
     public init() {}
 
