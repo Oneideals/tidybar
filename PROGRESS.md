@@ -1,7 +1,7 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-09-06T07:10:32Z (read-only projection)
-> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 26
+> **Last Updated:** 2026-09-06T07:40:40Z (read-only projection)
+> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 27
 
 ---
 
@@ -23,10 +23,7 @@ _No open issues._
 
 ## 📝 Working Tree Changes
 
-- `.M` `Sources/TidyBarCore/App/SettingsWindow.swift`
-- `.M` `Sources/TidyBarCore/App/TidyBarApplication.swift`
-- `.M` `Sources/TidyBarCore/App/TidyBarController.swift`
-- `.M` `Sources/TidyBarCore/Events/EventEngine.swift`
+_Working tree is clean._
 
 ## 💡 Handoff Instructions for Next Agent
 

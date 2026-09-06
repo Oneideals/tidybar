@@ -219,8 +219,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         reportStartup(barController: barController)
         // 自检必须在**真 app 进程**里跑：探针 CLI 没有 NSApp 激活策略与完整 run loop，
         // 键盘焦点这类断言在它里面必然失败，测出来的是环境不等价而不是产品有 bug。
-        if ProcessInfo.processInfo.environment["TIDYBAR_OPEN_SETTINGS"] == "1" {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        // 启动时自动打开设置面板，方便用户查看与控制（支持 TIDYBAR_NO_WINDOW=1 静默后台启动）
+        if ProcessInfo.processInfo.environment["TIDYBAR_NO_WINDOW"] != "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.openSettings()
             }
         }
@@ -250,6 +251,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             }
         }
         self.shutdown = shutdown
+    }
+
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openSettings()
+        return true
     }
 
     /// 按"剩余可见时间"挂一次性收起表；不需要收起时**不挂任何表**。
@@ -385,6 +391,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private func makeStatusItem(controller barController: TidyBarController) -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.autosaveName = "TidyBarStatusItem"
         item.button?.title = "☰"
         item.button?.toolTip = "TidyBar：左键打开收纳抽屉，右键弹出菜单"
         item.button?.target = self
@@ -641,7 +648,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         openSettings()
     }
 
-    @objc private func openSettings() {
+    @objc public func openSettings() {
         if controller?.snapshot.items.isEmpty ?? true {
             controller?.refreshItems()
         }

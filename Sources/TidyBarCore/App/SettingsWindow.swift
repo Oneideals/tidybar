@@ -337,6 +337,8 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     public func showAgain() {
         refresh()
         showWindow(nil)
+        window?.center()
+        window?.orderFrontRegardless()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
