@@ -93,9 +93,13 @@ public final class TidyBarController {
     public var dividerCenters: (left: CGFloat?, right: CGFloat?) = (nil, nil) {
         didSet { installTargetProvider() }
     }
-    /// 供设置窗口或菜单触发/查询菜单栏物理分隔符状态
+    /// 供设置窗口或菜单触发/查询菜单栏物理分隔符与折叠状态
     public var onToggleDividers: (() -> Void)?
     public var areDividersPlaced: (() -> Bool)?
+    public var onToggleMenuBarFold: (() -> Void)?
+    public var isMenuBarFoldedQuery: (() -> Bool)?
+    public var onToggleDrawer: (() -> Void)?
+    public var onExecuteSmartFold: (() -> Void)?
 
     private var targetProviderInstalled = false
     private func installTargetProviderOnce() {
@@ -247,7 +251,24 @@ public final class TidyBarController {
 
     /// 事件层入口：只响应用户开启的呼出方式
     public func handle(event: EventEngine.Event, at date: Date = Date()) {
-        guard settings.revealTriggers.contains(event.trigger) else { return }
+        guard settings.revealTriggers.contains(event.trigger) || event.trigger == .emptyBarClick else { return }
+        if event.trigger == .emptyBarClick {
+            let hitItem = items.first { $0.frame.contains(event.location) }
+            if hitItem != nil {
+                if reveal.isRevealed {
+                    reveal.conceal()
+                    publish()
+                }
+                return
+            }
+            if reveal.isRevealed {
+                reveal.conceal()
+                publish()
+            } else {
+                if reveal.reveal(by: .emptyBarClick, at: date) { publish() }
+            }
+            return
+        }
         if reveal.reveal(by: event.trigger, at: date) { publish() }
     }
 

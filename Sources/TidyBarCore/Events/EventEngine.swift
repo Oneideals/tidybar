@@ -42,9 +42,13 @@ public final class EventEngine {
         globalMonitors = [
             NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
                 guard let self else { return }
-                switch EventEngine.classifyMenuBarHit(eventLocationY: event.locationInWindow.y, screenTopY: NSScreen.main?.frame.maxY) {
+                let mouseLoc = NSEvent.mouseLocation
+                let screen = NSScreen.screens.first { NSPointInRect(mouseLoc, $0.frame) } ?? NSScreen.main
+                let screenTopY = screen?.frame.maxY ?? 0
+                let menuBarHeight: CGFloat = 34
+                switch EventEngine.classifyMenuBarHit(eventLocationY: mouseLoc.y, screenTopY: screenTopY, menuBarHeight: menuBarHeight) {
                 case .insideMenuBar:
-                    self.handle(.init(trigger: .dividerClick, location: event.locationInWindow))
+                    self.handle(.init(trigger: .emptyBarClick, location: mouseLoc))
                 case .outsideMenuBar:
                     self.onConcealRequest?()
                 }

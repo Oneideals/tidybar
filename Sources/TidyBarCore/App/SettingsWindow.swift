@@ -17,6 +17,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let statusLine = NSTextField(labelWithString: "")
     private let overview = IconOverviewView(onReassign: { _, _ in })   // 回调在 init 里重设
     private let dividerButton = NSButton(title: "│ 摆放菜单栏分隔符", target: nil, action: nil)
+    private let foldButton = NSButton(title: "▶ 原地折叠菜单栏", target: nil, action: nil)
 
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
@@ -75,6 +76,13 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         smartButton.translatesAutoresizingMaskIntoConstraints = false
         tab1View.addSubview(smartButton)
 
+        foldButton.bezelStyle = .rounded
+        foldButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        foldButton.target = self
+        foldButton.action = #selector(toggleFoldFromSettings)
+        foldButton.translatesAutoresizingMaskIntoConstraints = false
+        tab1View.addSubview(foldButton)
+
         dividerButton.bezelStyle = .rounded
         dividerButton.font = NSFont.systemFont(ofSize: 12)
         dividerButton.target = self
@@ -97,8 +105,12 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             dividerButton.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor, constant: -6),
             dividerButton.heightAnchor.constraint(equalToConstant: 28),
 
+            foldButton.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
+            foldButton.trailingAnchor.constraint(equalTo: dividerButton.leadingAnchor, constant: -8),
+            foldButton.heightAnchor.constraint(equalToConstant: 28),
+
             smartButton.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
-            smartButton.trailingAnchor.constraint(equalTo: dividerButton.leadingAnchor, constant: -8),
+            smartButton.trailingAnchor.constraint(equalTo: foldButton.leadingAnchor, constant: -8),
             smartButton.heightAnchor.constraint(equalToConstant: 28),
 
             overview.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 4),
@@ -255,6 +267,10 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             dividerButton.contentTintColor = .controlAccentColor
         }
 
+        let isFolded = controller.isMenuBarFoldedQuery?() ?? false
+        foldButton.title = isFolded ? "◀ 展开菜单栏" : "▶ 原地折叠菜单栏"
+        foldButton.contentTintColor = isFolded ? .systemGreen : .systemBlue
+
         let memMB = currentResidentMemoryMB()
         let memStr = memMB != nil ? String(format: "%.1f MB", memMB!) : "约 13 MB"
         performanceLine.stringValue = "性能（F1）：常驻内存 \(memStr)（预算 ≤40MB）｜ 空闲 CPU ≈ 0.0%"
@@ -264,6 +280,12 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
     @objc private func triggerSmartCategorize() {
         overview.applySmartRecommendations()
+        controller.onExecuteSmartFold?()
+        refresh()
+    }
+
+    @objc private func toggleFoldFromSettings() {
+        controller.onToggleMenuBarFold?()
         refresh()
     }
 

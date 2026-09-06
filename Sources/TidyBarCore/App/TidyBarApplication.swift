@@ -8,6 +8,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var controller: TidyBarController?
     private var tickTimer: Timer?
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
+    private var foldMenuItem: NSMenuItem?
+    private var isMenuBarFolded = false
+    private var foldSpacer: NSStatusItem?
     /// 两条分隔符（报告 A2）。它们同样是**我们自己的图标**：用户改边界时拖的是它们，
     /// 不需要为了挪一条线去搬动别人的图标。位置只从现场读回，不自记坐标。
     private var dividerItems: [NSStatusItem] = []
@@ -95,6 +99,18 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         barController.areDividersPlaced = { [weak self] in
             !(self?.dividerItems.isEmpty ?? true)
         }
+        barController.onToggleMenuBarFold = { [weak self] in
+            self?.toggleMenuBarFold()
+        }
+        barController.isMenuBarFoldedQuery = { [weak self] in
+            self?.isMenuBarFolded ?? false
+        }
+        barController.onToggleDrawer = { [weak self] in
+            self?.toggleDrawer()
+        }
+        barController.onExecuteSmartFold = { [weak self] in
+            self?.executeFoldingByCalculatedZones()
+        }
         self.controller = barController
 
         let capturer = ScreenCaptureKitIconCapturer()
@@ -122,6 +138,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         events.onEvent = { [weak self, weak barController, weak panel] event in
             guard let self, let barController, let panel else { return }
             barController.handle(event: event)
+        }
+        events.onConcealRequest = { [weak barController] in
+            barController?.conceal()
         }
         events.start()
         self.eventEngine = events
@@ -235,10 +254,6 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     /// 按"剩余可见时间"挂一次性收起表；不需要收起时**不挂任何表**。
     private func scheduleAutoConceal(barController: TidyBarController, panel: TidyBarPanelController?) {
-        memoryPressureSource?.cancel()
-        memoryPressureSource = nil
-        rescanObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
-        rescanObservers = []
         tickTimer?.invalidate()
         tickTimer = nil
         guard let remaining = barController.remainingRevealTime else { return }
@@ -330,18 +345,40 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     // MARK: - 面板同步
 
     private func syncPanel(barController: TidyBarController, panel: TidyBarPanelController) {
+        if barController.snapshot.items.isEmpty {
+            barController.refreshItems()
+        }
         let snapshot = barController.snapshot
 
         if snapshot.isRevealed {
-            let hiddenItems = snapshot.items.filter { snapshot.layout.zone(of: $0.id) == .hidden }
+            let drawerItems = snapshot.items.filter {
+                let zone = snapshot.layout.zone(of: $0.id) ?? .hidden
+                return (zone == .hidden || zone == .alwaysHidden) && !$0.isSystemOwned && !self.isTidyBarOwnItem($0)
+            }
+            fprint("syncPanel: items=\(snapshot.items.count), drawerItems=\(drawerItems.count)")
+            let mouseX = NSEvent.mouseLocation.x
+            let anchor = mouseX > 0 ? mouseX : (statusItem?.button?.window?.frame.midX ?? (services.screens.primaryScreen?.frame.midX ?? 800))
             panel.show(
-                items: hiddenItems,
+                items: drawerItems,
                 screen: services.screens.primaryScreen,
-                anchorX: NSEvent.mouseLocation.x
+                anchorX: anchor
             )
         } else {
             panel.hide()
         }
+    }
+
+    private func isTidyBarOwnItem(_ item: ManagedItem) -> Bool {
+        if let bundle = item.ownerBundleID, bundle.contains("tidybar") {
+            return true
+        }
+        if item.title == "☰" || item.title == Self.dividerGlyph || item.title == "▶" {
+            return true
+        }
+        if controller?.dividerIDs.contains(item.id) == true {
+            return true
+        }
+        return false
     }
 
     // MARK: - 本工具自己的菜单栏入口
@@ -349,6 +386,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private func makeStatusItem(controller barController: TidyBarController) -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.title = "☰"
+        item.button?.toolTip = "TidyBar：左键打开收纳抽屉，右键弹出菜单"
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         let menu = NSMenu()
 
         let summary = NSMenuItem(
@@ -364,7 +405,16 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             menu.addItem(note)
         }
         menu.addItem(.separator())
-        menu.addItem(withTitle: "呼出隐藏区", action: #selector(revealHiddenArea), keyEquivalent: "")
+
+        let foldItem = NSMenuItem(
+            title: isMenuBarFolded ? "展开菜单栏图标" : "折叠菜单栏图标",
+            action: #selector(toggleMenuBarFold),
+            keyEquivalent: ""
+        )
+        self.foldMenuItem = foldItem
+        menu.addItem(foldItem)
+
+        menu.addItem(withTitle: "呼出收纳抽屉", action: #selector(toggleDrawer), keyEquivalent: "")
         menu.addItem(withTitle: "🪄 智能推荐收纳所有图标", action: #selector(smartCategorizeFromMenu), keyEquivalent: "")
         // 分区分配先走菜单：跨区拖拽要等接管闸门开放，而"把某个图标收进隐藏区"
         // 这个意图本身不依赖拖拽，不必让它陪着闸门一起等着。
@@ -411,8 +461,30 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "退出 TidyBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         menu.items.forEach { $0.target = $0.action == #selector(NSApplication.terminate(_:)) ? NSApp : self }
-        item.menu = menu
+        self.statusMenu = menu
         return item
+    }
+
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        guard let event = NSApp.currentEvent else { return }
+        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            if let menu = statusMenu {
+                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+            }
+        } else {
+            toggleDrawer()
+        }
+    }
+
+    @objc public func toggleDrawer() {
+        guard let controller, let panel = panelController else { return }
+        if panel.isVisible {
+            controller.conceal()
+            panel.hide()
+        } else {
+            controller.handle(event: .init(trigger: .emptyBarClick, location: NSEvent.mouseLocation))
+            syncPanel(barController: controller, panel: panel)
+        }
     }
 
     /// 呼出搜索面板。
@@ -442,20 +514,63 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - 菜单栏原地折叠（Way 1）与分隔符控制
+
+    @objc public func toggleMenuBarFold() {
+        setMenuBarFolded(!isMenuBarFolded)
+    }
+
+    public func setMenuBarFolded(_ folded: Bool) {
+        if dividerItems.isEmpty {
+            toggleDividers()
+        }
+        isMenuBarFolded = folded
+        applyMenuBarFoldState()
+    }
+
+    private func applyMenuBarFoldState() {
+        let screenWidth = services.screens.primaryScreen?.frame.width ?? (NSScreen.main?.frame.width ?? 1920)
+        if isMenuBarFolded {
+            if foldSpacer == nil {
+                foldSpacer = NSStatusBar.system.statusItem(withLength: 0)
+            }
+            foldSpacer?.length = screenWidth
+            dividerItems.first?.button?.title = "▶"
+            dividerItems.first?.button?.toolTip = "TidyBar：点击展开折叠图标"
+            foldMenuItem?.title = "展开菜单栏图标"
+        } else {
+            foldSpacer?.length = 0
+            dividerItems.first?.button?.title = Self.dividerGlyph
+            dividerItems.first?.button?.toolTip = "TidyBar 分隔符：点击折叠，⌘ 拖动调整边界"
+            foldMenuItem?.title = "折叠菜单栏图标"
+        }
+    }
+
     /// 摆出/收起两条分隔符。
     ///
     /// 只有接管已在本机解锁才允许摆：没有分隔符时改分区靠"同区同伴"给落点，
     /// 有分隔符才谈得上"按位置自动归区"。摆出来后拖动它 = 用已验过的 ⌘ 拖拽搬我们自己的图标。
     @objc private func toggleDividers() {
         if dividerItems.isEmpty {
-            for _ in 0..<2 {
-                let divider = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-                divider.button?.title = Self.dividerGlyph
-                divider.button?.toolTip = "TidyBar 分隔符：⌘ 拖动它调整区的边界"
-                dividerItems.append(divider)
+            let divider = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            divider.button?.title = isMenuBarFolded ? "▶" : Self.dividerGlyph
+            divider.button?.toolTip = "TidyBar 分隔符：点击折叠/展开，⌘ 拖动调整边界"
+            divider.button?.target = self
+            divider.button?.action = #selector(toggleMenuBarFold)
+            dividerItems.append(divider)
+
+            if foldSpacer == nil {
+                foldSpacer = NSStatusBar.system.statusItem(withLength: 0)
             }
-            fprint("已摆出 2 条分隔符，可 ⌘ 拖动调整边界")
+
+            let divider2 = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            divider2.button?.title = Self.dividerGlyph
+            divider2.button?.toolTip = "TidyBar 分隔符 2：完全收纳区边界"
+            dividerItems.append(divider2)
+
+            fprint("已摆出分隔符与折叠控制器，可 ⌘ 拖动调整边界，或单击折叠")
         } else {
+            foldSpacer = nil
             dividerItems.forEach { NSStatusBar.system.removeStatusItem($0) }
             dividerItems.removeAll()
             controller?.dividerCenters = (nil, nil)
@@ -469,13 +584,40 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         settingsWindow?.refresh()
     }
 
+    /// 将折叠分隔符自动对齐至常驻区（.visible）最左侧图标边界
+    public func alignDividerToVisibleBoundary() {
+        guard let controller else { return }
+        let snapshot = controller.snapshot
+        let visibleItems = snapshot.items.filter {
+            !self.isTidyBarOwnItem($0) && !$0.isSystemOwned && snapshot.layout.zone(of: $0.id) == .visible
+        }
+        guard let minVisibleX = visibleItems.map(\.frame.minX).min() else { return }
+        let targetX = minVisibleX - 10
+
+        if let dividerItem = snapshot.items.first(where: { $0.title == Self.dividerGlyph || $0.title == "▶" }) {
+            if let mover = services.mover, !(mover is UnverifiedMenuBarMover) {
+                _ = try? mover.move(itemID: dividerItem.id, toX: targetX)
+                fprint("已将折叠分隔符自动对齐至常驻区左边界 x=\(targetX)")
+            }
+        }
+    }
+
+    /// 执行按计算结果执行折叠（Way 1）
+    @objc public func executeFoldingByCalculatedZones() {
+        if dividerItems.isEmpty {
+            toggleDividers()
+        }
+        alignDividerToVisibleBoundary()
+        setMenuBarFolded(true)
+    }
+
     /// 从现场读回分隔符位置（左/右两条的中心 x），并据此重算每个图标的归属。
     private func syncDividerPositions(from items: [ManagedItem]) {
         guard !dividerItems.isEmpty else {
             controller?.dividerCenters = (nil, nil)
             return
         }
-        let centers = items.filter { $0.title == Self.dividerGlyph }
+        let centers = items.filter { $0.title == Self.dividerGlyph || $0.title == "▶" }
             .map { $0.frame.midX }
             .sorted()
         guard centers.count >= 2 else {
@@ -484,7 +626,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             return
         }
         controller?.dividerCenters = (centers.first, centers.last)
-        controller?.dividerIDs = Set(items.filter { $0.title == Self.dividerGlyph }.map(\.id))
+        controller?.dividerIDs = Set(items.filter { $0.title == Self.dividerGlyph || $0.title == "▶" }.map(\.id))
         controller?.realignToDividers()
     }
 
@@ -495,6 +637,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         for rec in recommendations {
             controller.reassignZone(rec.itemID, to: rec.recommendedZone)
         }
+        executeFoldingByCalculatedZones()
         openSettings()
     }
 
