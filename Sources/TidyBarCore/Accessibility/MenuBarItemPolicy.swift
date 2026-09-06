@@ -118,12 +118,17 @@ public enum MenuBarItemPolicy {
         }
         // 逐屏判定：任一块屏幕的菜单栏带内含图标中心即认为在菜单栏上
         let center = CGPoint(x: frame.midX, y: frame.midY)
-        let onSomeMenuBar = screens.contains { screen in
-            guard screen.frame.contains(center) else { return false }
+        let onSomeMenuBar = screens.contains(where: { (screen: ScreenInfo) -> Bool in
             let bandTop = screen.frame.maxY
             let bandBottom = screen.frame.maxY - screen.menuBarHeight - config.menuBarTolerance
-            return center.y >= bandBottom && center.y <= bandTop
-        }
+            guard center.y >= bandBottom && center.y <= bandTop else { return false }
+            if screen.frame.contains(center) { return true }
+            // 允许主屏（minX == 0）菜单栏由于物理折叠被推至左侧离屏区域的合法图标（x 在 -4000 至 screen.maxX 之间）
+            if screen.frame.minX == 0 && center.x >= -4000 && center.x <= screen.frame.maxX {
+                return true
+            }
+            return false
+        })
         return onSomeMenuBar ? nil : .outsideMenuBar
     }
 }

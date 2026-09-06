@@ -80,6 +80,15 @@ struct MenuBarItemPolicyTests {
             "同屏但不在菜单栏带内的残留项要拒绝"
         )
     }
+
+    func acceptsFoldedOffScreenItems() throws {
+        // 物理折叠时，隐藏区域的图标被分隔符推至左侧负坐标（如 x = -1127, y = 1053）
+        let foldedItem = CGRect(x: -1_127, y: 1_053, width: 24, height: 24)
+        expect(
+            MenuBarItemPolicy.rejection(frame: foldedItem, screens: [mainScreen]) == nil,
+            "折叠时被推至左侧离屏的菜单栏图标必须保留，不得误杀"
+        )
+    }
 }
 
 struct ScreenCoordinateSpaceTests {
@@ -256,6 +265,7 @@ extension MenuBarItemPolicyTests {
             TestCase("acceptsWideClockItem", suite.acceptsWideClockItem),
             TestCase("secondaryScreenWithNegativeOriginIsNotOffScreen", suite.secondaryScreenWithNegativeOriginIsNotOffScreen),
             TestCase("rejectsItemBelowMenuBarOnItsOwnScreen", suite.rejectsItemBelowMenuBarOnItsOwnScreen),
+            TestCase("acceptsFoldedOffScreenItems", suite.acceptsFoldedOffScreenItems),
         ]
     }
 }

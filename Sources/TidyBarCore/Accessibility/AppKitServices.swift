@@ -50,7 +50,7 @@ public final class AppKitScreenObserver: ScreenObserving {
     }
 
     public var primaryScreen: ScreenInfo? {
-        NSScreen.main.flatMap { ScreenInfo(from: $0) }
+        (NSScreen.main ?? NSScreen.screens.first).flatMap { ScreenInfo(from: $0) }
     }
 
     public func addObserver(_ observer: @escaping @Sendable () -> Void) {

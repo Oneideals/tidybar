@@ -119,6 +119,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             let outcome = barController.activate(itemID: item.id)
             // 代点失败必须有可见反馈：图标在面板里点不动又不说原因，是这类工具最常见的差评来源
             panel?.setActivationNotice(outcome.countsAsPressed ? nil : outcome.userReadable)
+            if outcome.countsAsPressed {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    barController.conceal()
+                    panel?.hide()
+                }
+            }
         }
         self.panelController = panel
 
@@ -138,7 +144,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             guard let self, let barController, let panel else { return }
             barController.handle(event: event)
         }
-        events.onConcealRequest = { [weak barController] in
+        events.onConcealRequest = { [weak barController, weak panel] in
+            if let panelWindow = panel?.panel, panelWindow.isVisible, panelWindow.frame.contains(NSEvent.mouseLocation) {
+                return
+            }
             barController?.conceal()
         }
         events.start()
@@ -269,9 +278,32 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private func scheduleAutoConceal(barController: TidyBarController, panel: TidyBarPanelController?) {
         tickTimer?.invalidate()
         tickTimer = nil
+
+        // 浮层抽屉展开时，属于用户主动呼出（类似 Popover / 浮动工具条），
+        // 只要鼠标在面板内或用户在浏览，不应在 2 秒短延时内直接关掉。
+        // 用户点击外部（onConcealRequest）或点击条目即刻收起，15 秒无操作作为兜底。
+        if let panelWindow = panel?.panel, panelWindow.isVisible {
+            let timer = Timer(timeInterval: 15.0, repeats: false) { [weak self, weak barController, weak panel] _ in
+                guard let self, let barController else { return }
+                if let pw = panel?.panel, pw.isVisible, pw.frame.contains(NSEvent.mouseLocation) {
+                    self.scheduleAutoConceal(barController: barController, panel: panel)
+                    return
+                }
+                barController.conceal()
+                panel?.hide()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            tickTimer = timer
+            return
+        }
+
         guard let remaining = barController.remainingRevealTime else { return }
         let timer = Timer(timeInterval: max(0.05, remaining), repeats: false) { [weak self, weak barController, weak panel] _ in
             guard let self, let barController else { return }
+            if let panelWindow = panel?.panel, panelWindow.isVisible, panelWindow.frame.contains(NSEvent.mouseLocation) {
+                self.scheduleAutoConceal(barController: barController, panel: panel)
+                return
+            }
             if barController.tick() {
                 panel?.hide()
             }
@@ -370,9 +402,13 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let snapshot = barController.snapshot
 
         if snapshot.isRevealed {
+            let layoutOrder = (snapshot.layout.items(in: .hidden) + snapshot.layout.items(in: .alwaysHidden))
+            let idToIndex = Dictionary(uniqueKeysWithValues: layoutOrder.enumerated().map { ($1, $0) })
             let drawerItems = snapshot.items.filter {
                 let zone = snapshot.layout.zone(of: $0.id) ?? .hidden
                 return (zone == .hidden || zone == .alwaysHidden) && !$0.isSystemOwned && !self.isTidyBarOwnItem($0)
+            }.sorted {
+                (idToIndex[$0.id] ?? 999) < (idToIndex[$1.id] ?? 999)
             }
             fprint("syncPanel: items=\(snapshot.items.count), drawerItems=\(drawerItems.count)")
             let mouseX = NSEvent.mouseLocation.x
@@ -496,18 +532,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
             }
         } else if isOptionClick {
-            // 按住 Option 点击可在「原地折叠/展开」与「浮层抽屉」间互换动作
-            if isMenuBarFolded {
-                toggleDrawer()
-            } else {
-                toggleMenuBarFold()
-            }
+            // 按住 Option 点击打开收纳抽屉
+            toggleDrawer()
         } else {
-            if isMenuBarFolded {
-                toggleMenuBarFold()
-            } else {
-                toggleDrawer()
-            }
+            // 单击：单一图标统一折叠/展开，点一下展开，再点一下收起
+            toggleMenuBarFold()
         }
     }
 
@@ -517,7 +546,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             controller.conceal()
             panel.hide()
         } else {
-            controller.handle(event: .init(trigger: .emptyBarClick, location: NSEvent.mouseLocation))
+            let mouseX = NSEvent.mouseLocation.x
+            let anchor = mouseX > 0 ? mouseX : (statusItem?.button?.window?.frame.midX ?? 800)
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: anchor, y: 0)))
             syncPanel(barController: controller, panel: panel)
         }
     }
@@ -570,15 +601,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         if isMenuBarFolded {
             separator?.length = collapseLength
             separator?.button?.title = ""
+            separator?.button?.action = #selector(toggleDrawer)
+            separator?.button?.toolTip = "TidyBar：点击弹出收纳抽屉"
             statusItem?.button?.title = "▶"
-            statusItem?.button?.toolTip = "TidyBar：已折叠收纳，点击展开菜单栏图标"
+            statusItem?.button?.toolTip = "TidyBar：点击展开菜单栏图标（右键打开菜单，⌥点击打开抽屉）"
             foldMenuItem?.title = "展开菜单栏图标"
         } else {
-            separator?.length = NSStatusItem.squareLength
-            separator?.button?.title = Self.dividerGlyph
-            separator?.button?.toolTip = "TidyBar 分隔符：点击折叠，按住 ⌘ 拖动调整折叠边界"
-            statusItem?.button?.title = "☰"
-            statusItem?.button?.toolTip = "TidyBar：点击打开收纳抽屉，右键弹出菜单"
+            separator?.length = 0
+            separator?.button?.title = ""
+            separator?.button?.action = #selector(toggleMenuBarFold)
+            statusItem?.button?.title = "◀"
+            statusItem?.button?.toolTip = "TidyBar：点击折叠菜单栏图标（右键打开菜单，⌥点击打开抽屉）"
             foldMenuItem?.title = "折叠菜单栏图标"
         }
         settingsWindow?.refresh()
@@ -587,12 +620,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     /// 创建/就绪菜单栏分隔符
     public func setupDividers() {
         guard dividerItems.isEmpty else { return }
-        let divider = NSStatusBar.system.statusItem(withLength: isMenuBarFolded ? max(2000, (NSScreen.main?.frame.width ?? 1920) + 200) : NSStatusItem.squareLength)
+        let divider = NSStatusBar.system.statusItem(withLength: isMenuBarFolded ? max(2000, (NSScreen.main?.frame.width ?? 1920) + 200) : 0)
         divider.autosaveName = "tidybar_separator"
-        divider.button?.title = isMenuBarFolded ? "" : Self.dividerGlyph
-        divider.button?.toolTip = "TidyBar 分隔符：点击折叠/展开，按住 ⌘ 拖动调整折叠边界"
+        divider.button?.title = ""
+        divider.button?.toolTip = isMenuBarFolded ? "TidyBar：点击弹出收纳抽屉" : "TidyBar 分隔符：点击折叠/展开"
         divider.button?.target = self
-        divider.button?.action = #selector(toggleMenuBarFold)
+        divider.button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
         dividerItems.append(divider)
         fprint("已就绪菜单栏分隔符（tidybar_separator）")
     }

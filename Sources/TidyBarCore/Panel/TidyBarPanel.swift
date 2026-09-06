@@ -105,10 +105,14 @@ public final class TidyBarPanelView: NSView {
 
     override public func draw(_ dirtyRect: NSRect) {
         let metrics = PanelGeometry.Metrics()
-        let background = NSColor.controlBackgroundColor.withAlphaComponent(0.96)
+        let background = NSColor.windowBackgroundColor.withAlphaComponent(0.96)
         let path = NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10)
         background.setFill()
         path.fill()
+        let strokeColor = NSColor.separatorColor.withAlphaComponent(0.35)
+        strokeColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
 
         if let notice, !notice.isEmpty {
             // 提示占一行高度，绘制在条目下方；放不下就退回不画（宁可少一行字也不压住图标）

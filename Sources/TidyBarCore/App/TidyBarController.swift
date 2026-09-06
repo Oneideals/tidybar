@@ -252,7 +252,12 @@ public final class TidyBarController {
     public func handle(event: EventEngine.Event, at date: Date = Date()) {
         guard settings.revealTriggers.contains(event.trigger) || event.trigger == .emptyBarClick else { return }
         if event.trigger == .emptyBarClick {
-            let hitItem = items.first { $0.frame.contains(event.location) }
+            let hitItem = items.first {
+                $0.frame.contains(event.location)
+                && !dividerIDs.contains($0.id)
+                && !($0.ownerBundleID?.contains("tidybar") == true)
+                && !($0.title == "▶" || $0.title == "◀" || $0.title == "☰" || $0.title == "│")
+            }
             if hitItem != nil {
                 if reveal.isRevealed {
                     reveal.conceal()
