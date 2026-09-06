@@ -98,6 +98,7 @@ public final class IconOverviewView: NSView {
         inspectorTextLabel.font = NSFont.systemFont(ofSize: 11)
         inspectorTextLabel.textColor = .secondaryLabelColor
         inspectorTextLabel.lineBreakMode = .byTruncatingTail
+        inspectorTextLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         inspectorTextLabel.translatesAutoresizingMaskIntoConstraints = false
         inspectorCard.addSubview(inspectorTextLabel)
 
@@ -350,6 +351,9 @@ private final class LaneShelfView: NSView {
         hConstraint.isActive = true
         self.shelfHeightConstraint = hConstraint
 
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         NSLayoutConstraint.activate([
             emptyLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -505,6 +509,7 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func setup() {
+        autoresizingMask = []
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.imageScaling = .scaleProportionallyUpOrDown
         iconImageView.image = AppIconResolver.resolve(for: row.item)

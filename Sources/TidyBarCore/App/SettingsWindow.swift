@@ -22,13 +22,15 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 760, height: 530),
+            contentRect: CGRect(x: 0, y: 0, width: 780, height: 560),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
         window.title = "TidyBar 设置"
         window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 780, height: 560)
+        window.maxSize = NSSize(width: 780, height: 560)
         super.init(window: window)
         overview.onReassign = { [weak controller] itemID, zone in
             _ = controller?.reassignZone(itemID, to: zone)
@@ -42,6 +44,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
     private func build(hotKeyDescription: String) {
         guard let root = window?.contentView else { return }
+        root.widthAnchor.constraint(equalToConstant: 780).isActive = true
 
         let tabView = NSTabView()
         tabView.translatesAutoresizingMaskIntoConstraints = false
@@ -66,6 +69,8 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         let subtitleLabel = NSTextField(labelWithString: "将图标在三个状态托盘间自由拖拽，松手即时生效并同步落地配置。")
         subtitleLabel.font = NSFont.systemFont(ofSize: 11)
         subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         tab1View.addSubview(subtitleLabel)
 
