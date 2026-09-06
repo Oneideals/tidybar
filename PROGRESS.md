@@ -1,7 +1,7 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-09-05T14:04:08Z (read-only projection)
-> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 23
+> **Last Updated:** 2026-09-06T06:40:21Z (read-only projection)
+> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 25
 
 ---
 
@@ -19,13 +19,15 @@ _No open issues._
 
 ## 🔄 Active Leases & In-Progress Work
 
-_No active leases._
+- **agy** (`9dce787c-1123-4752-9084-546453137806`): 修复智能推荐收纳在无物理分隔符时静默失败并实现逻辑分区强制落地 *(files: sources/tidybarcore/layout/layoutengine.swift)*
 
 ## 📝 Working Tree Changes
 
+- `.M` `Sources/TidyBarChecks/Cases/IconOverviewTests.swift`
 - `.M` `Sources/TidyBarCore/App/IconOverviewView.swift`
 - `.M` `Sources/TidyBarCore/App/SettingsWindow.swift`
 - `.M` `Sources/TidyBarCore/App/TidyBarApplication.swift`
+- `.M` `Sources/TidyBarCore/App/TidyBarController.swift`
 
 ## 💡 Handoff Instructions for Next Agent
 

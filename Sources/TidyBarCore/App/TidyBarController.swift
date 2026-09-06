@@ -93,6 +93,9 @@ public final class TidyBarController {
     public var dividerCenters: (left: CGFloat?, right: CGFloat?) = (nil, nil) {
         didSet { installTargetProvider() }
     }
+    /// 供设置窗口或菜单触发/查询菜单栏物理分隔符状态
+    public var onToggleDividers: (() -> Void)?
+    public var areDividersPlaced: (() -> Bool)?
 
     private var targetProviderInstalled = false
     private func installTargetProviderOnce() {
@@ -323,6 +326,23 @@ public final class TidyBarController {
         // 一个个钉成"用户决定"，免修剪保护于是变成一堆误钉。
         if origin == .user {
             engine.pinAsUser(itemID: itemID)
+            record("图标已归入\(TidyBarController.zoneLabel(zone))")
+        }
+        publish()
+        return true
+    }
+
+    /// 重新设定图标分区（优先尝试物理 ⌘ 拖拽；若未摆放物理分隔符或目标区无邻居，则保全逻辑分区与持久化，并在收纳面板中生效）
+    @discardableResult
+    public func reassignZone(_ itemID: String, to zone: MenuBarZone, origin: ChangeOrigin = .user) -> Bool {
+        if move(itemID, to: zone, origin: origin) {
+            return true
+        }
+        // 若物理拖拽因缺少落点未能执行，绝不能让用户的设置操作静默失败并丢失！
+        engine.recordZoneOnly(itemID: itemID, zone: zone)
+        if origin == .user {
+            engine.pinAsUser(itemID: itemID)
+            record("图标已归入\(TidyBarController.zoneLabel(zone))（未摆放物理分隔符，已在收纳面板中生效）")
         }
         publish()
         return true

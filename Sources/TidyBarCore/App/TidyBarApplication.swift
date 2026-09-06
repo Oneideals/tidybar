@@ -89,6 +89,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             settings: settings,
             store: settingsStore
         )
+        barController.onToggleDividers = { [weak self] in
+            self?.toggleDividers()
+        }
+        barController.areDividersPlaced = { [weak self] in
+            !(self?.dividerItems.isEmpty ?? true)
+        }
         self.controller = barController
 
         let capturer = ScreenCaptureKitIconCapturer()
@@ -172,6 +178,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             self.stylingController.update(enabled: barController.settings.stylingEnabled, screen: self.services.screens.primaryScreen)
             // 每次交互都可能续期，收起点跟着重算
             self.scheduleAutoConceal(barController: barController, panel: panel)
+            self.settingsWindow?.refresh()
         }
 
         // 自动收起改用"只在展开时挂的一次性定时器"。
@@ -297,22 +304,23 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     /// 后台扫描一次，结果回主线程落地
     private func scheduleRefresh(reason: EnumerationCadence.Trigger) {
-        guard let controller else { return }
+        guard controller != nil else { return }
         let reader = services.reader
         let scanStarted = Date()
         enumerator.request(
             reason: reason,
             scan: { reader.discoverItems() },
-            apply: { [weak self, weak controller] items in
+            apply: { [weak self] items in
                 fprint("重扫｜触发=" + reason.rawValue + "｜图标 " + String(items.count)
                      + "｜耗时 " + String(format: "%.0f", Date().timeIntervalSince(scanStarted) * 1000) + "ms")
-                guard let self else { return }
-                controller?.layoutEngine.migrateLegacyLayoutIfNeeded(observed: items)
-                if let outcome = controller?.layoutEngine.lastMigration {
+                guard let self, let controller = self.controller else { return }
+                controller.layoutEngine.migrateLegacyLayoutIfNeeded(observed: items)
+                if let outcome = controller.layoutEngine.lastMigration {
                     fprint("台账迁移｜老条目 \(outcome.migrated) 项，当场对上 \(outcome.matched) 项；旧布局已备份可回退")
                 }
-                controller?.applyScan(items)
+                controller.applyScan(items)
                 self.syncDividerPositions(from: items)
+                self.settingsWindow?.refresh()
                 let elapsed = Date().timeIntervalSince(self.launchedAt)
                 fprint(String(format: "首扫完成｜图标 %d 个｜距启动 %.2fs（预算 2s）", items.count, elapsed))
             }
@@ -455,6 +463,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             fprint("已收起分隔符")
         }
         controller?.refreshItems()
+        if let items = controller?.snapshot.items {
+            syncDividerPositions(from: items)
+        }
+        settingsWindow?.refresh()
     }
 
     /// 从现场读回分隔符位置（左/右两条的中心 x），并据此重算每个图标的归属。
@@ -481,12 +493,15 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let items = controller.snapshot.items
         let recommendations = SmartItemClassifier.classifyAll(items: items)
         for rec in recommendations {
-            controller.move(rec.itemID, to: rec.recommendedZone)
+            controller.reassignZone(rec.itemID, to: rec.recommendedZone)
         }
         openSettings()
     }
 
     @objc private func openSettings() {
+        if controller?.snapshot.items.isEmpty ?? true {
+            controller?.refreshItems()
+        }
         if settingsWindow == nil {
             settingsWindow = TidyBarSettingsWindowController(controller: barControllerProxy, hotKeyDescription: hotKeyNote)
         }
@@ -515,7 +530,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     /// 分区分配：只改归属（布局意图），不搬动系统图标。
     @objc private func assignZone(_ sender: NSMenuItem) {
         guard let request = sender.representedObject as? ZoneAssignmentRequest, let controller else { return }
-        controller.move(request.itemID, to: request.zone)
+        controller.reassignZone(request.itemID, to: request.zone)
     }
 
     @objc private func openAccessibilitySettings() {

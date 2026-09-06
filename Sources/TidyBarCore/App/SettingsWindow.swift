@@ -16,6 +16,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let privacyLine = NSTextField(wrappingLabelWithString: "")
     private let statusLine = NSTextField(labelWithString: "")
     private let overview = IconOverviewView(onReassign: { _, _ in })   // 回调在 init 里重设
+    private let dividerButton = NSButton(title: "│ 摆放菜单栏分隔符", target: nil, action: nil)
 
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
@@ -29,7 +30,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         super.init(window: window)
         overview.onReassign = { [weak controller] itemID, zone in
-            _ = controller?.move(itemID, to: zone)
+            _ = controller?.reassignZone(itemID, to: zone)
         }
         overview.onZoneChanged = { [weak self] in self?.refresh() }
         build(hotKeyDescription: hotKeyDescription)
@@ -74,6 +75,13 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         smartButton.translatesAutoresizingMaskIntoConstraints = false
         tab1View.addSubview(smartButton)
 
+        dividerButton.bezelStyle = .rounded
+        dividerButton.font = NSFont.systemFont(ofSize: 12)
+        dividerButton.target = self
+        dividerButton.action = #selector(toggleDividers)
+        dividerButton.translatesAutoresizingMaskIntoConstraints = false
+        tab1View.addSubview(dividerButton)
+
         overview.translatesAutoresizingMaskIntoConstraints = false
         tab1View.addSubview(overview)
 
@@ -85,8 +93,12 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             subtitleLabel.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 6),
             subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: smartButton.leadingAnchor, constant: -12),
 
+            dividerButton.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
+            dividerButton.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor, constant: -6),
+            dividerButton.heightAnchor.constraint(equalToConstant: 28),
+
             smartButton.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
-            smartButton.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor, constant: -6),
+            smartButton.trailingAnchor.constraint(equalTo: dividerButton.leadingAnchor, constant: -8),
             smartButton.heightAnchor.constraint(equalToConstant: 28),
 
             overview.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 4),
@@ -216,7 +228,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         place(statusLine, topOffset: 16)
     }
 
-    private func refresh() {
+    public func refresh() {
         overview.reload(rows: IconOverviewBuilder.rows(from: controller))
         askToggle.state = controller.settings.askAboutNewItems ? .on : .off
         stylingToggle.state = controller.settings.stylingEnabled ? .on : .off
@@ -235,6 +247,14 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             launchToggle.title = "开机自动启动 TidyBar"
         }
 
+        if let arePlaced = controller.areDividersPlaced?(), arePlaced {
+            dividerButton.title = "收起菜单栏分隔符"
+            dividerButton.contentTintColor = .secondaryLabelColor
+        } else {
+            dividerButton.title = "│ 摆放菜单栏分隔符"
+            dividerButton.contentTintColor = .controlAccentColor
+        }
+
         let memMB = currentResidentMemoryMB()
         let memStr = memMB != nil ? String(format: "%.1f MB", memMB!) : "约 13 MB"
         performanceLine.stringValue = "性能（F1）：常驻内存 \(memStr)（预算 ≤40MB）｜ 空闲 CPU ≈ 0.0%"
@@ -244,6 +264,11 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
     @objc private func triggerSmartCategorize() {
         overview.applySmartRecommendations()
+        refresh()
+    }
+
+    @objc private func toggleDividers() {
+        controller.onToggleDividers?()
         refresh()
     }
 
@@ -288,6 +313,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     }
 
     public func showAgain() {
+        refresh()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

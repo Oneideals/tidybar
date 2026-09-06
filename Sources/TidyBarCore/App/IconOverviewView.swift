@@ -35,6 +35,7 @@ public final class IconOverviewView: NSView {
     private let inspectorIconView = NSImageView()
     private let inspectorTextLabel = NSTextField(labelWithString: "")
     private let smartApplyButton = NSButton()
+    private var persistentNotice: String?
 
     public init(onReassign: @escaping (String, MenuBarZone) -> Void) {
         self.onReassign = onReassign
@@ -128,9 +129,18 @@ public final class IconOverviewView: NSView {
 
     @objc public func applySmartRecommendations() {
         let recommendations = SmartItemClassifier.classifyAll(items: rows.map(\.item))
+        var changedCount = 0
         for rec in recommendations {
+            if let currentRow = rows.first(where: { $0.item.id == rec.itemID }), currentRow.zone == rec.recommendedZone {
+                continue
+            }
             onReassign(rec.itemID, rec.recommendedZone)
+            changedCount += 1
         }
+        let visibleCount = recommendations.filter { $0.recommendedZone == .visible }.count
+        let hiddenCount = recommendations.filter { $0.recommendedZone == .hidden }.count
+        let alwaysHiddenCount = recommendations.filter { $0.recommendedZone == .alwaysHidden }.count
+        persistentNotice = "🎉 智能推荐收纳已完成（重新归类 \(changedCount) 项）：常驻 \(visibleCount) 个 ｜ 收纳 \(hiddenCount) 个 ｜ 始终隐藏 \(alwaysHiddenCount) 个。已同步至收纳面板。"
         onZoneChanged?()
     }
 
@@ -149,11 +159,19 @@ public final class IconOverviewView: NSView {
             let posHint = item.isPositionalIdentity ? " · [位置匹配]" : ""
             let rec = SmartItemClassifier.classify(item: item)
             inspectorIconView.image = AppIconResolver.resolve(for: item)
+            inspectorIconView.contentTintColor = nil
             inspectorIconView.isHidden = false
             inspectorTextLabel.stringValue = "\(appName)（\(bundle)）\(posHint) ｜ 当前：\(zone.displayLabel) ｜ 智能推荐：\(rec.recommendedZone.displayLabel)（\(rec.category.rawValue) · \(rec.reason)）"
             inspectorTextLabel.textColor = .labelColor
+        } else if let notice = persistentNotice {
+            inspectorIconView.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "完成")
+            inspectorIconView.contentTintColor = .systemGreen
+            inspectorIconView.isHidden = false
+            inspectorTextLabel.stringValue = notice
+            inspectorTextLabel.textColor = .labelColor
         } else {
             inspectorIconView.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "提示")
+            inspectorIconView.contentTintColor = nil
             inspectorIconView.isHidden = false
             inspectorTextLabel.stringValue = "💡 提示：支持图标直接跨托盘拖拽，也可点击右侧「一键智能推荐收纳」按人机交互规则一键分类。"
             inspectorTextLabel.textColor = .secondaryLabelColor
@@ -625,8 +643,8 @@ public enum IconOverviewBuilder {
         let snapshot = controller.snapshot
         return snapshot.items
             .filter { !$0.isSystemOwned }
-            .compactMap { item in
-                guard let zone = snapshot.layout.zone(of: item.id) else { return nil }
+            .map { item in
+                let zone = snapshot.layout.zone(of: item.id) ?? controller.settings.newItemZone
                 return IconOverviewView.Row(
                     item: item,
                     zone: zone,

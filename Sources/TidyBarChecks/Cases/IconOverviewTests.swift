@@ -52,6 +52,34 @@ struct IconOverviewBuilderTests {
                "只有位置身份的项必须标出来，否则用户以为设置钉死了某个 App")
     }
 
+    /// 无论是否有物理落点，设置界面的 reassignZone 必须确保逻辑分区与持久化成功落地。
+    func reassignZonePersistsEvenWithoutLandingPoint() throws {
+        let item = TestItems.item("com.reassign.test", centerX: 600, centerY: 1_188)
+        let reader = FakeMenuBarReader(items: [item])
+        let engine = LayoutEngine(
+            layout: MenuBarLayout(),
+            services: makeServices(reader: reader, mover: FakeMenuBarMover()),
+            journal: LayoutJournal(directory: TestPaths.journalDirectory("ov-reassign"))
+        )
+        let controller = TidyBarController(
+            engine: engine,
+            reveal: RevealStateMachine(rehideDelay: 2),
+            settings: AppSettings(newItemZone: .visible),
+            store: FakeSettingsStore()
+        )
+        controller.start(scansSynchronously: true)
+        expectEqual(controller.snapshot.layout.zone(of: item.id), .visible)
+
+        // 普通 move 因缺少 landing point 失败
+        expect(!controller.move(item.id, to: .hidden))
+
+        // reassignZone 确保逻辑落地并在设置和面板中生效
+        expect(controller.reassignZone(item.id, to: .hidden))
+        expectEqual(controller.snapshot.layout.zone(of: item.id), .hidden)
+        let rows = IconOverviewBuilder.rows(from: controller)
+        expectEqual(rows.first(where: { $0.item.id == item.id })?.zone, .hidden)
+    }
+
     private func make(_ items: [ManagedItem]) -> TidyBarController {
         let reader = FakeMenuBarReader(items: items)
         let engine = LayoutEngine(layout: MenuBarLayout(),
@@ -71,6 +99,7 @@ extension IconOverviewBuilderTests {
             TestCase("systemItemsAreExcluded", suite.systemItemsAreExcluded),
             TestCase("unassignedItemsAreExcluded", suite.unassignedItemsAreExcluded),
             TestCase("positionalIdentityFlagTravelsWithRow", suite.positionalIdentityFlagTravelsWithRow),
+            TestCase("reassignZonePersistsEvenWithoutLandingPoint", suite.reassignZonePersistsEvenWithoutLandingPoint),
         ]
     }
 }
