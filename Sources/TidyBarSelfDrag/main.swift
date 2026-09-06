@@ -97,6 +97,33 @@ func reportTitleDrift() {
 
 /// 单发模式：只代点一次，把结论与现场打全。
 /// 真机验证点击转发用它——配合 fixture 的事件日志，能拿到"确实被点了"的正面证据。
+if let moveTarget = argumentValue("--move-bundle"), let toBundle = argumentValue("--to-bundle") {
+    let items = globalOrder()
+    let src = items.first(where: { ($0.ownerBundleID ?? "").localizedCaseInsensitiveContains(moveTarget) })
+    let dst = items.first(where: { ($0.ownerBundleID ?? "").localizedCaseInsensitiveContains(toBundle) })
+    guard let src, let dst,
+          let fromIndex = items.firstIndex(where: { $0.id == src.id }),
+          let toIndex = items.firstIndex(where: { $0.id == dst.id }),
+          let targetX = MenuBarDropTarget.targetX(in: items, moving: fromIndex, to: toIndex) else {
+        print("MOVE failed. src=\(src?.id ?? "nil"), dst=\(dst?.id ?? "nil")")
+        print("Available: " + items.compactMap(\.ownerBundleID).joined(separator: ", "))
+        exit(1)
+    }
+    print("Moving \(src.id) from index \(fromIndex) (x=\(src.frame.minX)) to index \(toIndex) (targetX=\(targetX))")
+    do {
+        _ = try mover.move(itemID: src.id, toX: targetX)
+        usleep(250_000)
+        let after = globalOrder()
+        let newIndex = after.firstIndex(where: { $0.id == src.id }) ?? -1
+        let newX = after.first(where: { $0.id == src.id })?.frame.minX ?? -1
+        print("MOVE success: now at index \(newIndex) (x=\(newX))")
+        exit(0)
+    } catch {
+        print("MOVE error: \(error)")
+        exit(2)
+    }
+}
+
 if let target = argumentValue("--activate") {
     let items = globalOrder().filter { $0.ownerBundleID == target }
     print("ACTIVATE target=\(target) 候选图标 \(items.count) 个")

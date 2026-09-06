@@ -145,10 +145,9 @@ public final class TidyBarController {
 
     /// 把"分区归属"整体按分隔符重算（用户拖完分隔符后调用）。
     public func realignToDividers() {
-        guard dividerCenters.left != nil, dividerCenters.right != nil else { return }
-        let edges = [dividerCenters.left!, dividerCenters.right!].sorted()
+        guard let rightEdge = dividerCenters.right else { return }
         for item in items where !item.isSystemOwned && !dividerIDs.contains(item.id) {
-            let zone = DividerGeometry.zone(forX: item.frame.midX, leftEdge: edges.first, rightEdge: edges.last)
+            let zone = DividerGeometry.zone(forX: item.frame.midX, leftEdge: dividerCenters.left, rightEdge: rightEdge)
             if engine.layout.zone(of: item.id) != zone {
                 engine.recordZoneOnly(itemID: item.id, zone: zone)
             }

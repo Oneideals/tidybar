@@ -682,16 +682,20 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             controller?.dividerCenters = (nil, nil)
             return
         }
-        let centers = items.filter { $0.title == Self.dividerGlyph || $0.title == "▶" }
-            .map { $0.frame.midX }
-            .sorted()
-        guard centers.count >= 2 else {
-            // 只读到一条（刚摆出来还没被枚举到，或某个 App 吞了位置）：宁可当作没有边界
-            controller?.dividerCenters = (nil, nil)
+        let centers = items.filter {
+            $0.title == Self.dividerGlyph || $0.title == "│" || $0.id.contains("tidybar_separator")
+        }
+        .map { $0.frame.midX }
+        .sorted()
+        guard !centers.isEmpty else {
             return
         }
-        controller?.dividerCenters = (centers.first, centers.last)
-        controller?.dividerIDs = Set(items.filter { $0.title == Self.dividerGlyph || $0.title == "▶" }.map(\.id))
+        if centers.count == 1 {
+            controller?.dividerCenters = (nil, centers.first)
+        } else {
+            controller?.dividerCenters = (centers.first, centers.last)
+        }
+        controller?.dividerIDs = Set(items.filter { isTidyBarOwnItem($0) }.map(\.id))
         controller?.realignToDividers()
     }
 
