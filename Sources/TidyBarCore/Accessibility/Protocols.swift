@@ -66,6 +66,14 @@ public enum ActivationOutcome: Equatable, Sendable {
 public protocol MenuBarActivating: AnyObject {
     @discardableResult
     func activate(itemID: String) -> ActivationOutcome
+    @discardableResult
+    func showMenu(itemID: String) -> ActivationOutcome
+}
+
+extension MenuBarActivating {
+    /// 默认实现：回退到 activate（AXPress），在没有专门实现 AXShowMenu 的 reader 上仍能工作。
+    @discardableResult
+    public func showMenu(itemID: String) -> ActivationOutcome { activate(itemID: itemID) }
 }
 
 extension ActivationOutcome {

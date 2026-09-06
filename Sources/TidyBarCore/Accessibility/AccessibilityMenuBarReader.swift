@@ -157,6 +157,41 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     return .pressed
     }
 
+    /// 右键菜单转发：在面板里右键 = 在真实图标上弹出上下文菜单。
+    ///
+    /// 优先使用 AXShowMenu（专为弹出右键菜单设计），
+    /// 不支持时回退到 AXPress（至少能触发常规点击）。
+    @discardableResult
+    public func showMenu(itemID: String) -> ActivationOutcome {
+        guard let item = discoverItems().first(where: { $0.id == itemID }) else {
+            return .itemNotFound
+        }
+        guard let bundleID = item.ownerBundleID,
+              let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == bundleID }),
+              let extras = extrasMenuBar(of: application.processIdentifier, messagingTimeout: config.processMessagingTimeout)
+        else {
+            return .elementNotFound
+        }
+        let children = self.children(of: extras)
+        guard item.ordinalInOwner < children.count, item.ordinalInOwner >= 0 else { return .elementNotFound }
+        let element = children[item.ordinalInOwner]
+
+        var actions: CFArray?
+        let listed = AXUIElementCopyActionNames(element, &actions)
+        guard listed == .success, let raw = actions as? [AnyObject] else { return .actionUnsupported }
+        let names = raw.compactMap { $0 as? String }
+
+        // 优先 AXShowMenu，不支持则回退 AXPress
+        let action: String = names.contains("AXShowMenu") ? "AXShowMenu" : (names.contains("AXPress") ? "AXPress" : "")
+        guard !action.isEmpty else { return .actionUnsupported }
+        let result = AXUIElementPerformAction(element, action as CFString)
+        guard result == .success else {
+            return result == .cannotComplete ? .pressedUnconfirmed(code: Int(result.rawValue))
+                                            : .failed(code: Int(result.rawValue))
+        }
+        return .pressed
+    }
+
     // MARK: - 可点性普查（只读，不真的点）
 
     /// 每个归属进程有多少图标接受 AXPress。

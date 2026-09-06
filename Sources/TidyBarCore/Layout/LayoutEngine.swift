@@ -386,6 +386,15 @@ public final class LayoutEngine {
         return activator.activate(itemID: itemID)
     }
 
+    /// 代弹右键菜单。与 activate 同理，不改布局。
+    @discardableResult
+    public func showMenu(itemID: String) -> ActivationOutcome {
+        guard let activator = services.activator else {
+            return .actionUnsupported
+        }
+        return activator.showMenu(itemID: itemID)
+    }
+
     /// 回滚：把内存布局恢复到意图执行前，并清除 pending
     public func rollback(_ intent: LayoutJournal.LayoutIntent) {
         if let previousZone = intent.previousZone {

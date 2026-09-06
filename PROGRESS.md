@@ -1,7 +1,7 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-09-06T09:04:25Z (read-only projection)
-> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 41
+> **Last Updated:** 2026-09-06T09:11:09Z (read-only projection)
+> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 43
 
 ---
 
@@ -19,7 +19,7 @@ _No open issues._
 
 ## 🔄 Active Leases & In-Progress Work
 
-_No active leases._
+- **agy** (`9dce787c-1123-4752-9084-546453137806`): 修复展开间距问题、修复右键折叠图标误触发抽屉问题、实现抽屉内图标右键菜单 *(files: sources/tidybarcore/accessibility/accessibilitymenubarreader.swift, sources/tidybarcore/app/tidybarapplication.swift, sources/tidybarcore/app/tidybarcontroller.swift, sources/tidybarcore/panel/tidybarpanel.swift)*
 
 ## 📝 Working Tree Changes
 

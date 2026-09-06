@@ -46,6 +46,7 @@ public final class TidyBarPanelView: NSView {
         didSet { needsDisplay = true }
     }
     public var onClick: ((ManagedItem) -> Void)?
+    public var onRightClick: ((ManagedItem) -> Void)?
 
     private var hoveredIndex: Int? {
         didSet {
@@ -184,6 +185,20 @@ public final class TidyBarPanelView: NSView {
         }
         super.mouseDown(with: event)
     }
+
+    override public func rightMouseDown(with event: NSEvent) {
+        let metrics = PanelGeometry.Metrics()
+        let point = convert(event.locationInWindow, from: nil)
+        for (index, item) in items.enumerated() {
+            let origin = PanelGeometry.itemOrigin(in: bounds, index: index, metrics: metrics)
+            let rect = CGRect(x: origin.x, y: origin.y, width: metrics.itemSide, height: metrics.itemSide)
+            if rect.contains(point) {
+                onRightClick?(item)
+                return
+            }
+        }
+        super.rightMouseDown(with: event)
+    }
 }
 
 /// 面板显隐控制：几何计算 + 屏幕参数变化时自动重新定位（报告 A3 第 3 条机制）。
@@ -199,6 +214,10 @@ public final class TidyBarPanelController: NSObject {
 
     public var onItemClick: ((ManagedItem) -> Void)? {
         didSet { panelView.onClick = onItemClick }
+    }
+
+    public var onRightClick: ((ManagedItem) -> Void)? {
+        didSet { panelView.onRightClick = onRightClick }
     }
 
     /// 内存压力时调用：位图全部丢弃，下次呼出面板按需重抓。

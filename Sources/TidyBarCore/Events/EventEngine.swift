@@ -40,7 +40,7 @@ public final class EventEngine {
         isRunning = true
 
         globalMonitors = [
-            NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
                 guard let self else { return }
                 let mouseLoc = NSEvent.mouseLocation
                 let screen = NSScreen.screens.first { NSPointInRect(mouseLoc, $0.frame) } ?? NSScreen.main
@@ -52,6 +52,12 @@ public final class EventEngine {
                 case .outsideMenuBar:
                     self.onConcealRequest?()
                 }
+            },
+            NSEvent.addGlobalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event in
+                guard let self else { return }
+                // 右键只做收起判定，不触发 emptyBarClick——
+                // 否则右键点折叠图标弹菜单的同时会误开抽屉
+                self.onConcealRequest?()
             },
             NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
                 guard let self else { return }

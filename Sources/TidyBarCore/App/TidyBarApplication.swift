@@ -126,6 +126,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        panel.onRightClick = { [weak barController, weak panel] item in
+            guard let barController else { return }
+            let outcome = barController.showMenu(itemID: item.id)
+            panel?.setActivationNotice(outcome.countsAsPressed ? nil : outcome.userReadable)
+            // 右键弹菜单后不自动关闭抽屉——用户可能还要继续操作
+        }
         self.panelController = panel
 
         let search = TidyBarSearchUI()
@@ -607,7 +613,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             statusItem?.button?.toolTip = "TidyBar：点击展开菜单栏图标（右键打开菜单，⌥点击打开抽屉）"
             foldMenuItem?.title = "展开菜单栏图标"
         } else {
-            separator?.length = 0
+            separator?.length = 8
             separator?.button?.title = ""
             separator?.button?.action = #selector(toggleMenuBarFold)
             statusItem?.button?.title = "◀"

@@ -464,6 +464,22 @@ public final class TidyBarController {
         return outcome
     }
 
+    /// 面板/搜索里右键弹菜单：先呼出隐藏区，再在真实图标上触发 AXShowMenu。
+    @discardableResult
+    public func showMenu(itemID: String, at date: Date = Date()) -> ActivationOutcome {
+        if engine.layout.zone(of: itemID) == .alwaysHidden {
+            reveal.reveal(by: .hotkey, at: date)
+        }
+        let outcome = engine.showMenu(itemID: itemID)
+        if outcome.countsAsPressed {
+            record("已弹菜单 \(itemID)（\(outcome.userReadable)）")
+        } else {
+            record("弹菜单失败 \(itemID)：\(outcome.userReadable)")
+        }
+        publish()
+        return outcome
+    }
+
     // MARK: - 私有
 
     /// 诊断日志快照（报告 B6）。设置面板里的"上次为什么没动"就读这里。
