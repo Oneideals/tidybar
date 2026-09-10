@@ -208,6 +208,27 @@ struct MenuBarArrangementTests {
         }
     }
 
+    func settlingItemsSettleBeforeArrangement() throws {
+        MainActor.assumeIsolated {
+            // 折叠状态下处于负 x 坐标的图标，在恢复整理时应等待其归位，而不是直接报跨屏错误
+            var displaced = before
+            displaced[1] = TestItems.item("hidden", centerX: -200) // 处于左侧负坐标
+            let settled = before
+            let reader = FakeMenuBarReader(items: displaced)
+            let mover = MainLoopMover(reader: reader, result: after)
+            let operation = MenuBarArrangement(reader: reader, mover: mover, cursor: FakeCursor())
+            var outcome: Result<[ManagedItem], MenuBarArrangement.Failure>?
+            expect(operation.start(layout: layout, controls: controls, expectedItems: ["hidden", "visible"],
+                                   defaultZone: .hidden, screens: [screen]) { outcome = $0 })
+            // 模拟 50ms 后系统完成了坐标归位
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                reader.items = settled
+            }
+            expect(pump { outcome != nil })
+            if case .success = outcome {} else { expect(false, "处于折叠负坐标的图标在归位后应成功整理：\(String(describing: outcome))") }
+        }
+    }
+
     private final class PartialMover: MenuBarMoving {
         let reader: FakeMenuBarReader
         let swapsSameZonePeers: Bool
@@ -467,6 +488,7 @@ extension MenuBarArrangementTests {
             TestCase("cancellationDrainsInputBeforeCompleting", suite.cancellationDrainsInputBeforeCompleting),
             TestCase("controllerRejectsConflictingOperationsWhileArranging", suite.controllerRejectsConflictingOperationsWhileArranging),
             TestCase("crossScreenItemsNeverEnterTheSameArrangement", suite.crossScreenItemsNeverEnterTheSameArrangement),
+            TestCase("settlingItemsSettleBeforeArrangement", suite.settlingItemsSettleBeforeArrangement),
             TestCase("sameZoneSwapsCannotKeepArrangementRunning", suite.sameZoneSwapsCannotKeepArrangementRunning),
             TestCase("partialMovesMustImproveTheWholePartition", suite.partialMovesMustImproveTheWholePartition),
             TestCase("toggleSeparatesVisibleAndHiddenItemsInBothModes", suite.toggleSeparatesVisibleAndHiddenItemsInBothModes),

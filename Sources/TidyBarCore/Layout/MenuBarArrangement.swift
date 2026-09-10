@@ -95,30 +95,79 @@ public final class MenuBarArrangement {
                                             layout: MenuBarLayout, controls: DividerGeometry.Controls,
                                             expectedItems: Set<String>, defaultZone: MenuBarZone,
                                             screens: [ScreenInfo], restoreSavedOrder: Bool, progress: Progress) throws -> [ManagedItem] {
-        func readMenuBar() throws -> (raw: [ManagedItem], current: [ManagedItem]) {
-            let raw = reader.discoverItems()
-            let physical = DividerGeometry.physicalItems(raw)
-            guard controls.ids.isSubset(of: Set(physical.map(\.id))) else { throw Failure.controlsUnavailable }
-            let managed = Set(physical.filter { !$0.isSystemOwned && !controls.ids.contains($0.id) }.map(\.id))
-            guard managed == expectedItems else { throw Failure.itemsChanged }
-            guard let toggle = physical.first(where: { $0.id == controls.toggle }),
-                  let screen = screens.first(where: { ScreenCoordinateSpace.isWithinMenuBar(toggle.frame, screen: $0) }),
-                  physical.filter({ !$0.isSystemOwned || controls.ids.contains($0.id) }).allSatisfy({
-                      ScreenCoordinateSpace.isWithinMenuBar($0.frame, screen: screen)
-                  }) else { throw Failure.unsupportedDisplayLayout }
-            // 别的显示器上的系统观测不参与此菜单栏的排序或验收。
-            return (raw, physical.filter { ScreenCoordinateSpace.isWithinMenuBar($0.frame, screen: screen) })
+        func readMenuBar(waitSettled: Bool = false) throws -> (raw: [ManagedItem], current: [ManagedItem]) {
+            let deadline = waitSettled ? ProcessInfo.processInfo.systemUptime + 1.2 : ProcessInfo.processInfo.systemUptime
+            while true {
+                let raw = reader.discoverItems()
+                let physical = DividerGeometry.physicalItems(raw)
+                let physicalIDs = Set(physical.map(\.id))
+                let hasToggle = physicalIDs.contains(controls.toggle)
+                    || physical.contains(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "☰" || $0.title == "▶" || $0.title == "◀") })
+                let hasLeft = physicalIDs.contains(controls.leftDivider)
+                let hasRight = physicalIDs.contains(controls.rightDivider)
+                guard hasToggle && hasLeft && hasRight else {
+                    if ProcessInfo.processInfo.systemUptime < deadline {
+                        Thread.sleep(forTimeInterval: 0.05)
+                        continue
+                    }
+                    throw Failure.controlsUnavailable
+                }
+                let managed = Set(physical.filter { !$0.isSystemOwned && !controls.ids.contains($0.id) }.map(\.id))
+                guard managed == expectedItems else {
+                    if ProcessInfo.processInfo.systemUptime < deadline {
+                        Thread.sleep(forTimeInterval: 0.05)
+                        continue
+                    }
+                    throw Failure.itemsChanged
+                }
+                guard let toggle = physical.first(where: { $0.id == controls.toggle })
+                    ?? physical.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "☰" || $0.title == "▶" || $0.title == "◀") }),
+                      let screen = screens.first(where: { ScreenCoordinateSpace.isWithinMenuBar(toggle.frame, screen: $0) }) else {
+                    if ProcessInfo.processInfo.systemUptime < deadline {
+                        Thread.sleep(forTimeInterval: 0.05)
+                        continue
+                    }
+                    throw Failure.unsupportedDisplayLayout
+                }
+
+                let itemsToCheck = physical.filter({ !$0.isSystemOwned || controls.ids.contains($0.id) || $0.id == toggle.id })
+                let allOnScreen = itemsToCheck.allSatisfy {
+                    ScreenCoordinateSpace.isWithinMenuBar($0.frame, screen: screen)
+                }
+                if allOnScreen {
+                    // 别的显示器上的系统观测不参与此菜单栏的排序或验收。
+                    return (raw, physical.filter { ScreenCoordinateSpace.isWithinMenuBar($0.frame, screen: screen) })
+                }
+
+                // 如果部分图标还在被展开/折叠推开的负坐标带或正在归位，且尚未超时，则等待回弹稳定
+                let hasSettlingItems = itemsToCheck.contains { item in
+                    let center = CGPoint(x: item.frame.midX, y: item.frame.midY)
+                    let bandTop = screen.frame.maxY
+                    let bandBottom = screen.frame.maxY - screen.menuBarHeight - 12
+                    let inBand = center.y >= bandBottom && center.y <= bandTop
+                    let isDisplaced = center.x < screen.frame.minX
+                    return inBand && isDisplaced
+                }
+                if hasSettlingItems && ProcessInfo.processInfo.systemUptime < deadline {
+                    Thread.sleep(forTimeInterval: 0.05)
+                    continue
+                }
+
+                throw Failure.unsupportedDisplayLayout
+            }
         }
 
-        func desiredOrder(for items: [ManagedItem]) -> [String] {
-            restoreSavedOrder
-                ? DividerGeometry.arrangementOrder(items: items, layout: layout, leftDivider: controls.leftDivider,
-                    rightDivider: controls.rightDivider, toggle: controls.toggle, defaultZone: defaultZone)
-                : DividerGeometry.foldingOrder(items: items, layout: layout, controls: controls, defaultZone: defaultZone)
+        func desiredOrder(for items: [ManagedItem], toggleID: String) -> [String] {
+            let effectiveControls = DividerGeometry.Controls(leftDivider: controls.leftDivider, rightDivider: controls.rightDivider, toggle: toggleID)
+            return restoreSavedOrder
+                ? DividerGeometry.arrangementOrder(items: items, layout: layout, leftDivider: effectiveControls.leftDivider,
+                    rightDivider: effectiveControls.rightDivider, toggle: effectiveControls.toggle, defaultZone: defaultZone)
+                : DividerGeometry.foldingOrder(items: items, layout: layout, controls: effectiveControls, defaultZone: defaultZone)
         }
-        func disorder(of items: [ManagedItem]) -> Int {
-            restoreSavedOrder ? DividerGeometry.orderDisorder(items: items, desiredOrder: desiredOrder(for: items))
-                : DividerGeometry.partitionDisorder(items: items, layout: layout, controls: controls, defaultZone: defaultZone)
+        func disorder(of items: [ManagedItem], toggleID: String) -> Int {
+            let effectiveControls = DividerGeometry.Controls(leftDivider: controls.leftDivider, rightDivider: controls.rightDivider, toggle: toggleID)
+            return restoreSavedOrder ? DividerGeometry.orderDisorder(items: items, desiredOrder: desiredOrder(for: items, toggleID: toggleID))
+                : DividerGeometry.partitionDisorder(items: items, layout: layout, controls: effectiveControls, defaultZone: defaultZone)
         }
         let limit = max(12, (expectedItems.count + controls.ids.count) * 3)
         var lastMoveEnded = -TimeInterval.infinity
@@ -126,10 +175,14 @@ public final class MenuBarArrangement {
         for attempt in 0..<limit {
             if progress.isCancelled { throw Failure.cancelled }
             guard cursor.isSessionInteractive else { throw Failure.sessionUnavailable }
-            let (raw, current) = try readMenuBar()
-            let desired = desiredOrder(for: current)
+            let (raw, current) = try readMenuBar(waitSettled: attempt == 0)
+            let toggleID = current.first(where: { $0.id == controls.toggle })?.id
+                ?? current.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "☰" || $0.title == "▶" || $0.title == "◀") })?.id
+                ?? controls.toggle
+            let effectiveControls = DividerGeometry.Controls(leftDivider: controls.leftDivider, rightDivider: controls.rightDivider, toggle: toggleID)
+            let desired = desiredOrder(for: current, toggleID: toggleID)
             if restoreSavedOrder ? current.map(\.id) == desired
-                : DividerGeometry.isCorrectlyPartitioned(items: current, layout: layout, controls: controls, defaultZone: defaultZone) {
+                : DividerGeometry.isCorrectlyPartitioned(items: current, layout: layout, controls: effectiveControls, defaultZone: defaultZone) {
                 return raw
             }
             guard desired.count == current.count,
@@ -170,14 +223,14 @@ public final class MenuBarArrangement {
             if progress.isCancelled { throw Failure.cancelled }
 
             // 系统可能只完成一部分移动；必须改善全局分区，不能靠同区图标互换反复运行。
-            let previousDisorder = disorder(of: current)
+            let previousDisorder = disorder(of: current, toggleID: toggleID)
             let deadline = ProcessInfo.processInfo.systemUptime + 0.8
             var advanced = false
             repeat {
                 if progress.isCancelled { throw Failure.cancelled }
                 guard cursor.isSessionInteractive else { throw Failure.sessionUnavailable }
                 let after = try readMenuBar().current
-                advanced = disorder(of: after) < previousDisorder
+                advanced = disorder(of: after, toggleID: toggleID) < previousDisorder
                 if advanced { break }
                 Thread.sleep(forTimeInterval: 0.04)
             } while ProcessInfo.processInfo.systemUptime < deadline
