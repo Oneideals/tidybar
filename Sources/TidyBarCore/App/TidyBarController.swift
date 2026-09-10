@@ -206,6 +206,7 @@ public final class TidyBarController {
     public var onToggleMenuBarFold: (() -> Void)?
     public var isMenuBarFoldedQuery: (() -> Bool)?
     public var onToggleDrawer: (() -> Void)?
+    public var onSearchRequested: (() -> Void)?
     /// 保存期望后由装配层排队整理；参数表示还须恢复分区内部的保存顺序。
     public var onRequestPhysicalArrangement: ((_ restoreSavedOrder: Bool) -> Void)?
     /// 装配层暂时展开自有分隔符，返回可用于实际移动的最新坐标。

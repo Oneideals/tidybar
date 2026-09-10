@@ -5,7 +5,35 @@ import AppKit
 /// 刻意做得"直白"：每一项都是**读系统或读状态**再显示，不缓存自己算出来的假状态——
 /// 开机自启尤其如此，用户在系统设置里手动改过之后，我们这里必须跟着变。
 public final class TidyBarSettingsWindowController: NSWindowController {
+    public enum Tab: String, CaseIterable {
+        case layout = "layout"
+        case triggers = "triggers"
+        case general = "general"
+        case advanced = "advanced"
+
+        var title: String {
+            switch self {
+            case .layout: return "菜单栏布局"
+            case .triggers: return "触发手势"
+            case .general: return "常规设置"
+            case .advanced: return "高级与诊断"
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .layout: return "rectangle.3.group"
+            case .triggers: return "hand.tap"
+            case .general: return "gearshape"
+            case .advanced: return "shield.lefthalf.filled"
+            }
+        }
+    }
+
     private let controller: TidyBarController
+    private var currentTab: Tab = .layout
+
+    // 控件
     private let launchToggle = NSButton(checkboxWithTitle: "开机自动启动 TidyBar", target: nil, action: nil)
     private let askToggle = NSButton(checkboxWithTitle: "出现新图标时先问我（A7）", target: nil, action: nil)
     private let stylingToggle = NSButton(checkboxWithTitle: "启用菜单栏美化（圆角胶囊背景，E1）", target: nil, action: nil)
@@ -15,7 +43,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let performanceLine = NSTextField(labelWithString: "")
     private let privacyLine = NSTextField(wrappingLabelWithString: "")
     private let statusLine = NSTextField(labelWithString: "")
-    private let overview = IconOverviewView(onReassign: { _, _ in false })   // 回调在 init 里重设
+    private let overview = IconOverviewView(onReassign: { _, _ in false })
     private let dividerButton = NSButton(title: "│ 摆放菜单栏分隔符", target: nil, action: nil)
     private let foldButton = NSButton(title: "▶ 原地折叠菜单栏", target: nil, action: nil)
     private let emptyBarToggle = NSButton(checkboxWithTitle: "点击菜单栏空白处触发", target: nil, action: nil)
@@ -24,265 +52,557 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let emptyBarActionPopup = NSPopUpButton()
     private let scrollActionPopup = NSPopUpButton()
 
+    // 侧边栏与内容容器
+    private let sidebarContainer = NSVisualEffectView()
+    private let contentContainer = NSView()
+    private var sidebarButtons: [Tab: NSButton] = [:]
+    private var tabViews: [Tab: NSView] = [:]
+
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 780, height: 560),
+            contentRect: CGRect(x: 0, y: 0, width: 880, height: 600),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "TidyBar 设置"
+        window.title = "TidyBar 偏好设置"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 780, height: 560)
-        window.maxSize = NSSize(width: 780, height: 560)
+        window.minSize = NSSize(width: 860, height: 580)
         super.init(window: window)
         overview.onReassign = { [weak controller] itemID, zone in
             controller?.reassignZone(itemID, to: zone) ?? false
         }
         overview.onZoneChanged = { [weak self] in self?.refresh() }
-        build(hotKeyDescription: hotKeyDescription)
+        buildLayout(hotKeyDescription: hotKeyDescription)
+        selectTab(.layout)
         refresh()
     }
 
     required init?(coder: NSCoder) { fatalError("不用 nib 加载") }
 
-    private func build(hotKeyDescription: String) {
+    private func buildLayout(hotKeyDescription: String) {
         guard let root = window?.contentView else { return }
-        root.widthAnchor.constraint(equalToConstant: 780).isActive = true
 
-        let tabView = NSTabView()
-        tabView.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(tabView)
+        // 左侧现代侧边栏
+        sidebarContainer.material = .sidebar
+        sidebarContainer.blendingMode = .behindWindow
+        sidebarContainer.state = .active
+        sidebarContainer.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(sidebarContainer)
+
+        // 分割线
+        let vDivider = NSBox()
+        vDivider.boxType = .separator
+        vDivider.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(vDivider)
+
+        // 右侧内容区
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(contentContainer)
+
         NSLayoutConstraint.activate([
-            tabView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
-            tabView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
-            tabView.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
-            tabView.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
+            sidebarContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            sidebarContainer.topAnchor.constraint(equalTo: root.topAnchor),
+            sidebarContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            sidebarContainer.widthAnchor.constraint(equalToConstant: 190),
+
+            vDivider.leadingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor),
+            vDivider.topAnchor.constraint(equalTo: root.topAnchor),
+            vDivider.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            vDivider.widthAnchor.constraint(equalToConstant: 1),
+
+            contentContainer.leadingAnchor.constraint(equalTo: vDivider.trailingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            contentContainer.topAnchor.constraint(equalTo: root.topAnchor),
+            contentContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
-        // Tab 1: 图标整理（Bartender 风格三行菜单栏托盘）
-        let tab1 = NSTabViewItem(identifier: "icons")
-        tab1.label = "图标整理"
-        let tab1View = NSView()
+        buildSidebar()
+        buildPanes(hotKeyDescription: hotKeyDescription)
+    }
 
-        let titleLabel = NSTextField(labelWithString: "拖拽图标自定义菜单栏布局")
-        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+    private func buildSidebar() {
+        // 顶部品牌标题
+        let headerBox = NSView()
+        headerBox.translatesAutoresizingMaskIntoConstraints = false
+        sidebarContainer.addSubview(headerBox)
+
+        let appTitle = NSTextField(labelWithString: "TidyBar")
+        appTitle.font = NSFont.systemFont(ofSize: 15, weight: .bold)
+        appTitle.translatesAutoresizingMaskIntoConstraints = false
+        headerBox.addSubview(appTitle)
+
+        let versionLabel = NSTextField(labelWithString: "v2.0 · 现代菜单栏管理")
+        versionLabel.font = NSFont.systemFont(ofSize: 10)
+        versionLabel.textColor = .secondaryLabelColor
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerBox.addSubview(versionLabel)
+
+        let buttonStack = NSStackView()
+        buttonStack.orientation = .vertical
+        buttonStack.alignment = .width
+        buttonStack.spacing = 6
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        sidebarContainer.addSubview(buttonStack)
+
+        NSLayoutConstraint.activate([
+            headerBox.topAnchor.constraint(equalTo: sidebarContainer.topAnchor, constant: 18),
+            headerBox.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 16),
+            headerBox.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -16),
+            headerBox.heightAnchor.constraint(equalToConstant: 40),
+
+            appTitle.topAnchor.constraint(equalTo: headerBox.topAnchor),
+            appTitle.leadingAnchor.constraint(equalTo: headerBox.leadingAnchor),
+
+            versionLabel.topAnchor.constraint(equalTo: appTitle.bottomAnchor, constant: 2),
+            versionLabel.leadingAnchor.constraint(equalTo: headerBox.leadingAnchor),
+
+            buttonStack.topAnchor.constraint(equalTo: headerBox.bottomAnchor, constant: 14),
+            buttonStack.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 12),
+            buttonStack.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -12),
+        ])
+
+        for tab in Tab.allCases {
+            let btn = createSidebarButton(tab: tab)
+            sidebarButtons[tab] = btn
+            buttonStack.addArrangedSubview(btn)
+        }
+    }
+
+    private func createSidebarButton(tab: Tab) -> NSButton {
+        let btn = NSButton(title: "  " + tab.title, target: self, action: #selector(sidebarClicked(_:)))
+        btn.identifier = NSUserInterfaceItemIdentifier(tab.rawValue)
+        btn.bezelStyle = .shadowlessSquare
+        btn.isBordered = false
+        btn.wantsLayer = true
+        btn.layer?.cornerRadius = 8
+        btn.alignment = .left
+        btn.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        btn.image = NSImage(systemSymbolName: tab.iconName, accessibilityDescription: tab.title)
+        btn.imagePosition = .imageLeading
+        btn.imageScaling = .scaleProportionallyDown
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        return btn
+    }
+
+    @objc private func sidebarClicked(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue, let tab = Tab(rawValue: id) else { return }
+        selectTab(tab)
+    }
+
+    private func selectTab(_ tab: Tab) {
+        currentTab = tab
+        for (t, btn) in sidebarButtons {
+            if t == tab {
+                btn.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+                btn.contentTintColor = .controlAccentColor
+                btn.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+            } else {
+                btn.layer?.backgroundColor = NSColor.clear.cgColor
+                btn.contentTintColor = .labelColor
+                btn.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+            }
+        }
+
+        for (t, pane) in tabViews {
+            pane.isHidden = (t != tab)
+        }
+    }
+
+    private func buildPanes(hotKeyDescription: String) {
+        let layoutPane = buildLayoutPane()
+        let triggersPane = buildTriggersPane(hotKeyDescription: hotKeyDescription)
+        let generalPane = buildGeneralPane()
+        let advancedPane = buildAdvancedPane()
+
+        tabViews[.layout] = layoutPane
+        tabViews[.triggers] = triggersPane
+        tabViews[.general] = generalPane
+        tabViews[.advanced] = advancedPane
+
+        for pane in [layoutPane, triggersPane, generalPane, advancedPane] {
+            pane.translatesAutoresizingMaskIntoConstraints = false
+            contentContainer.addSubview(pane)
+            NSLayoutConstraint.activate([
+                pane.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 18),
+                pane.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -18),
+                pane.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 18),
+                pane.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -18),
+            ])
+        }
+    }
+
+    // MARK: - 页面 1：菜单栏布局
+    private func buildLayoutPane() -> NSView {
+        let view = NSView()
+        let titleLabel = NSTextField(labelWithString: "菜单栏布局整理")
+        titleLabel.font = NSFont.systemFont(ofSize: 16, weight: .bold)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        tab1View.addSubview(titleLabel)
+        view.addSubview(titleLabel)
 
-        let subtitleLabel = NSTextField(labelWithString: "将图标在三个状态托盘间自由拖拽，松手即时生效并同步落地配置。")
-        subtitleLabel.font = NSFont.systemFont(ofSize: 11)
+        let subtitleLabel = NSTextField(labelWithString: "在下方拟态托盘间自由拖拽图标以划分状态区，配置即时生效。")
+        subtitleLabel.font = NSFont.systemFont(ofSize: 12)
         subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.lineBreakMode = .byTruncatingTail
-        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        tab1View.addSubview(subtitleLabel)
+        view.addSubview(subtitleLabel)
 
-        let smartButton = NSButton(title: "🪄 一键智能推荐收纳", target: self, action: #selector(triggerSmartCategorize))
+        let smartButton = NSButton(title: "🪄 智能推荐收纳", target: self, action: #selector(triggerSmartCategorize))
         smartButton.bezelStyle = .rounded
         smartButton.contentTintColor = .controlAccentColor
         smartButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         smartButton.translatesAutoresizingMaskIntoConstraints = false
-        tab1View.addSubview(smartButton)
+        view.addSubview(smartButton)
 
         foldButton.bezelStyle = .rounded
         foldButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         foldButton.target = self
         foldButton.action = #selector(toggleFoldFromSettings)
         foldButton.translatesAutoresizingMaskIntoConstraints = false
-        tab1View.addSubview(foldButton)
+        view.addSubview(foldButton)
 
         dividerButton.bezelStyle = .rounded
         dividerButton.font = NSFont.systemFont(ofSize: 12)
         dividerButton.target = self
         dividerButton.action = #selector(toggleDividers)
         dividerButton.translatesAutoresizingMaskIntoConstraints = false
-        tab1View.addSubview(dividerButton)
+        view.addSubview(dividerButton)
 
         overview.translatesAutoresizingMaskIntoConstraints = false
-        tab1View.addSubview(overview)
+        view.addSubview(overview)
 
         NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
-            titleLabel.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 6),
+            titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 2),
+            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
 
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
-            subtitleLabel.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 6),
-            subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: smartButton.leadingAnchor, constant: -12),
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+            subtitleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
 
-            dividerButton.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
-            dividerButton.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor, constant: -6),
+            dividerButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            dividerButton.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             dividerButton.heightAnchor.constraint(equalToConstant: 28),
 
-            foldButton.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
+            foldButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             foldButton.trailingAnchor.constraint(equalTo: dividerButton.leadingAnchor, constant: -8),
             foldButton.heightAnchor.constraint(equalToConstant: 28),
 
-            smartButton.topAnchor.constraint(equalTo: tab1View.topAnchor, constant: 10),
+            smartButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             smartButton.trailingAnchor.constraint(equalTo: foldButton.leadingAnchor, constant: -8),
             smartButton.heightAnchor.constraint(equalToConstant: 28),
 
-            overview.leadingAnchor.constraint(equalTo: tab1View.leadingAnchor, constant: 4),
-            overview.trailingAnchor.constraint(equalTo: tab1View.trailingAnchor, constant: -4),
-            overview.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 12),
-            overview.bottomAnchor.constraint(lessThanOrEqualTo: tab1View.bottomAnchor, constant: -6),
+            overview.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            overview.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            overview.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 14),
+            overview.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
-        tab1.view = tab1View
-        tabView.addTabViewItem(tab1)
 
-        // Tab 2: 常规设置
-        let tab2 = NSTabViewItem(identifier: "general")
-        tab2.label = "常规设置"
-        let tab2View = NSView()
-        buildGeneralTab(in: tab2View, hotKeyDescription: hotKeyDescription)
-        tab2.view = tab2View
-        tabView.addTabViewItem(tab2)
-
-        // Tab 3: 外观与性能
-        let tab3 = NSTabViewItem(identifier: "about")
-        tab3.label = "外观与性能"
-        let tab3View = NSView()
-        buildAboutTab(in: tab3View)
-        tab3.view = tab3View
-        tabView.addTabViewItem(tab3)
+        return view
     }
 
-    private func buildGeneralTab(in view: NSView, hotKeyDescription: String) {
+    // MARK: - 页面 2：触发手势
+    private func buildTriggersPane(hotKeyDescription: String) -> NSView {
+        let view = NSView()
         var previous: NSView?
-        func place(_ item: NSView, topOffset: CGFloat) {
-            item.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(item)
+
+        func addCard(_ card: NSView, topOffset: CGFloat = 16) {
+            card.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(card)
             let topConstraint = previous == nil
-                ? item.topAnchor.constraint(equalTo: view.topAnchor, constant: topOffset)
-                : item.topAnchor.constraint(equalTo: previous!.bottomAnchor, constant: topOffset)
+                ? card.topAnchor.constraint(equalTo: view.topAnchor, constant: topOffset)
+                : card.topAnchor.constraint(equalTo: previous!.bottomAnchor, constant: topOffset)
             NSLayoutConstraint.activate([
-                item.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-                item.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -20),
+                card.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                card.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 topConstraint,
             ])
-            previous = item
+            previous = card
         }
 
-        let triggerTitle = NSTextField(labelWithString: "手势与呼出方式（对标 Ice 自然触发）：")
-        triggerTitle.font = NSFont.systemFont(ofSize: 13, weight: .bold)
-        place(triggerTitle, topOffset: 16)
+        let titleLabel = NSTextField(labelWithString: "手势与快捷呼出（对标 Ice 自然体验）")
+        titleLabel.font = NSFont.systemFont(ofSize: 16, weight: .bold)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(titleLabel)
+        previous = titleLabel
 
-        let dividerHint = NSTextField(labelWithString: "• 点击主按钮 ☰：随时原地折叠/展开菜单栏，或按住 ⌥ 点击呼出收纳抽屉")
-        dividerHint.font = NSFont.systemFont(ofSize: 11)
-        dividerHint.textColor = .secondaryLabelColor
-        place(dividerHint, topOffset: 4)
+        // 卡片 1: 自然手势
+        let card1 = createCardView(title: "菜单栏自然手势", subtitle: "无需瞄准点击 ☰ 小按钮，在菜单栏区域随手即可触发。")
+        let stack1 = NSStackView()
+        stack1.orientation = .vertical
+        stack1.alignment = .leading
+        stack1.spacing = 10
+        stack1.translatesAutoresizingMaskIntoConstraints = false
 
-        // 空白处点击配置行
         let emptyBarRow = NSStackView()
         emptyBarRow.orientation = .horizontal
-        emptyBarRow.spacing = 10
-        emptyBarRow.alignment = .centerY
+        emptyBarRow.spacing = 12
         emptyBarToggle.target = self
         emptyBarToggle.action = #selector(toggleEmptyBarClick)
         emptyBarRow.addArrangedSubview(emptyBarToggle)
         emptyBarActionPopup.removeAllItems()
-        emptyBarActionPopup.addItems(withTitles: ["动作：原地展开/折叠", "动作：呼出/收起抽屉"])
+        emptyBarActionPopup.addItems(withTitles: ["目标：原地展开/折叠菜单栏", "目标：呼出/收起收纳抽屉"])
         emptyBarActionPopup.target = self
         emptyBarActionPopup.action = #selector(changeEmptyBarAction)
         emptyBarActionPopup.font = NSFont.systemFont(ofSize: 11)
         emptyBarRow.addArrangedSubview(emptyBarActionPopup)
-        place(emptyBarRow, topOffset: 8)
+        stack1.addArrangedSubview(emptyBarRow)
 
-        // 滚轮/轻扫配置行
         let scrollRow = NSStackView()
         scrollRow.orientation = .horizontal
-        scrollRow.spacing = 10
-        scrollRow.alignment = .centerY
+        scrollRow.spacing = 12
         scrollToggle.target = self
         scrollToggle.action = #selector(toggleScroll)
         scrollRow.addArrangedSubview(scrollToggle)
         scrollActionPopup.removeAllItems()
-        scrollActionPopup.addItems(withTitles: ["动作：原地展开/折叠", "动作：呼出/收起抽屉"])
+        scrollActionPopup.addItems(withTitles: ["目标：原地展开/折叠菜单栏", "目标：呼出/收起收纳抽屉"])
         scrollActionPopup.target = self
         scrollActionPopup.action = #selector(changeScrollAction)
         scrollActionPopup.font = NSFont.systemFont(ofSize: 11)
         scrollRow.addArrangedSubview(scrollActionPopup)
-        place(scrollRow, topOffset: 8)
+        stack1.addArrangedSubview(scrollRow)
 
         hoverToggle.target = self
         hoverToggle.action = #selector(toggleHover)
-        place(hoverToggle, topOffset: 8)
+        stack1.addArrangedSubview(hoverToggle)
 
-        hotKeyLine.stringValue = "快捷键：" + hotKeyDescription + " ｜ 搜索图标：快捷键 ⌘F（Spotlight 风格 HUD）"
-        hotKeyLine.font = NSFont.systemFont(ofSize: 11)
-        place(hotKeyLine, topOffset: 10)
+        card1.addSubview(stack1)
+        NSLayoutConstraint.activate([
+            stack1.leadingAnchor.constraint(equalTo: card1.leadingAnchor, constant: 16),
+            stack1.trailingAnchor.constraint(equalTo: card1.trailingAnchor, constant: -16),
+            stack1.topAnchor.constraint(equalTo: card1.topAnchor, constant: 48),
+            stack1.bottomAnchor.constraint(equalTo: card1.bottomAnchor, constant: -14),
+        ])
+        addCard(card1, topOffset: 14)
 
-        let sep1 = NSBox()
-        sep1.boxType = .separator
-        place(sep1, topOffset: 14)
+        // 卡片 2: 快捷键 & Spotlight 搜索
+        let card2 = createCardView(title: "快捷键与 Spotlight 搜索", subtitle: "随时随地一键唤醒菜单栏图标或居中搜索。")
+        let stack2 = NSStackView()
+        stack2.orientation = .vertical
+        stack2.alignment = .leading
+        stack2.spacing = 10
+        stack2.translatesAutoresizingMaskIntoConstraints = false
+
+        hotKeyLine.stringValue = "• 呼出抽屉快捷键：" + hotKeyDescription
+        hotKeyLine.font = NSFont.systemFont(ofSize: 12)
+        stack2.addArrangedSubview(hotKeyLine)
+
+        let searchRow = NSStackView()
+        searchRow.orientation = .horizontal
+        searchRow.spacing = 12
+        let searchLabel = NSTextField(labelWithString: "• Spotlight 搜索 HUD：在菜单中点击或按 ⌘F 呼出")
+        searchLabel.font = NSFont.systemFont(ofSize: 12)
+        searchRow.addArrangedSubview(searchLabel)
+
+        let testSearchBtn = NSButton(title: "立即呼出搜索 HUD 试试", target: self, action: #selector(testSearchHUD))
+        testSearchBtn.bezelStyle = .rounded
+        testSearchBtn.font = NSFont.systemFont(ofSize: 11)
+        searchRow.addArrangedSubview(testSearchBtn)
+        stack2.addArrangedSubview(searchRow)
+
+        card2.addSubview(stack2)
+        NSLayoutConstraint.activate([
+            stack2.leadingAnchor.constraint(equalTo: card2.leadingAnchor, constant: 16),
+            stack2.trailingAnchor.constraint(equalTo: card2.trailingAnchor, constant: -16),
+            stack2.topAnchor.constraint(equalTo: card2.topAnchor, constant: 48),
+            stack2.bottomAnchor.constraint(equalTo: card2.bottomAnchor, constant: -14),
+        ])
+        addCard(card2, topOffset: 14)
+
+        return view
+    }
+
+    // MARK: - 页面 3：常规设置
+    private func buildGeneralPane() -> NSView {
+        let view = NSView()
+        var previous: NSView?
+
+        func addCard(_ card: NSView, topOffset: CGFloat = 16) {
+            card.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(card)
+            let topConstraint = previous == nil
+                ? card.topAnchor.constraint(equalTo: view.topAnchor, constant: topOffset)
+                : card.topAnchor.constraint(equalTo: previous!.bottomAnchor, constant: topOffset)
+            NSLayoutConstraint.activate([
+                card.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                card.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                topConstraint,
+            ])
+            previous = card
+        }
+
+        let titleLabel = NSTextField(labelWithString: "常规与行为偏好")
+        titleLabel.font = NSFont.systemFont(ofSize: 16, weight: .bold)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(titleLabel)
+        previous = titleLabel
+
+        // 卡片 1: 启动与新图标
+        let card1 = createCardView(title: "系统启动与图标策略", subtitle: "管理开机行为以及新出现的未收纳图标。")
+        let stack1 = NSStackView()
+        stack1.orientation = .vertical
+        stack1.alignment = .leading
+        stack1.spacing = 10
+        stack1.translatesAutoresizingMaskIntoConstraints = false
 
         launchToggle.target = self
         launchToggle.action = #selector(toggleLaunchAtLogin)
-        place(launchToggle, topOffset: 16)
+        stack1.addArrangedSubview(launchToggle)
 
         askToggle.target = self
         askToggle.action = #selector(toggleAsk)
-        place(askToggle, topOffset: 16)
+        stack1.addArrangedSubview(askToggle)
+
+        card1.addSubview(stack1)
+        NSLayoutConstraint.activate([
+            stack1.leadingAnchor.constraint(equalTo: card1.leadingAnchor, constant: 16),
+            stack1.trailingAnchor.constraint(equalTo: card1.trailingAnchor, constant: -16),
+            stack1.topAnchor.constraint(equalTo: card1.topAnchor, constant: 48),
+            stack1.bottomAnchor.constraint(equalTo: card1.bottomAnchor, constant: -14),
+        ])
+        addCard(card1, topOffset: 14)
+
+        // 卡片 2: 收纳抽屉与自动隐藏
+        let card2 = createCardView(title: "收纳抽屉自动隐藏", subtitle: "设置鼠标离开抽屉后自动隐藏的延时时间。")
+        let rehideRow = NSStackView()
+        rehideRow.orientation = .horizontal
+        rehideRow.spacing = 10
+        rehideRow.translatesAutoresizingMaskIntoConstraints = false
 
         rehideStepper.minValue = 0
         rehideStepper.maxValue = 10
         rehideStepper.increment = 0.5
         rehideStepper.target = self
         rehideStepper.action = #selector(changeRehide)
-        place(rehideStepper, topOffset: 16)
+        rehideRow.addArrangedSubview(rehideStepper)
 
-        rehideValue.font = NSFont.systemFont(ofSize: 11)
-        view.addSubview(rehideValue)
-        rehideValue.translatesAutoresizingMaskIntoConstraints = false
+        rehideValue.font = NSFont.systemFont(ofSize: 12)
+        rehideRow.addArrangedSubview(rehideValue)
+
+        card2.addSubview(rehideRow)
         NSLayoutConstraint.activate([
-            rehideValue.leadingAnchor.constraint(equalTo: rehideStepper.trailingAnchor, constant: 8),
-            rehideValue.centerYAnchor.constraint(equalTo: rehideStepper.centerYAnchor),
+            rehideRow.leadingAnchor.constraint(equalTo: card2.leadingAnchor, constant: 16),
+            rehideRow.topAnchor.constraint(equalTo: card2.topAnchor, constant: 48),
+            rehideRow.bottomAnchor.constraint(equalTo: card2.bottomAnchor, constant: -14),
         ])
-    }
+        addCard(card2, topOffset: 14)
 
-    private func buildAboutTab(in view: NSView) {
-        var previous: NSView?
-        func place(_ item: NSView, topOffset: CGFloat) {
-            item.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(item)
-            let topConstraint = previous == nil
-                ? item.topAnchor.constraint(equalTo: view.topAnchor, constant: topOffset)
-                : item.topAnchor.constraint(equalTo: previous!.bottomAnchor, constant: topOffset)
-            NSLayoutConstraint.activate([
-                item.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-                item.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -20),
-                topConstraint,
-            ])
-            previous = item
-        }
-
+        // 卡片 3: 外观美化
+        let card3 = createCardView(title: "外观美化（可选）", subtitle: "在菜单栏下方绘制微妙的半透明胶囊背景（鼠标点击穿透）。")
         stylingToggle.target = self
         stylingToggle.action = #selector(toggleStyling)
-        place(stylingToggle, topOffset: 20)
+        stylingToggle.translatesAutoresizingMaskIntoConstraints = false
+        card3.addSubview(stylingToggle)
+        NSLayoutConstraint.activate([
+            stylingToggle.leadingAnchor.constraint(equalTo: card3.leadingAnchor, constant: 16),
+            stylingToggle.topAnchor.constraint(equalTo: card3.topAnchor, constant: 48),
+            stylingToggle.bottomAnchor.constraint(equalTo: card3.bottomAnchor, constant: -14),
+        ])
+        addCard(card3, topOffset: 14)
 
-        let stylingHint = NSTextField(labelWithString: "在菜单栏下方绘制微妙的半透明胶囊背景与细边框（鼠标点击完全穿透）")
-        stylingHint.font = NSFont.systemFont(ofSize: 10)
-        stylingHint.textColor = .tertiaryLabelColor
-        place(stylingHint, topOffset: 4)
+        return view
+    }
 
-        let sep = NSBox()
-        sep.boxType = .separator
-        place(sep, topOffset: 16)
+    // MARK: - 页面 4：高级与诊断
+    private func buildAdvancedPane() -> NSView {
+        let view = NSView()
+        var previous: NSView?
 
-        performanceLine.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        performanceLine.textColor = .secondaryLabelColor
-        place(performanceLine, topOffset: 16)
+        func addCard(_ card: NSView, topOffset: CGFloat = 16) {
+            card.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(card)
+            let topConstraint = previous == nil
+                ? card.topAnchor.constraint(equalTo: view.topAnchor, constant: topOffset)
+                : card.topAnchor.constraint(equalTo: previous!.bottomAnchor, constant: topOffset)
+            NSLayoutConstraint.activate([
+                card.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                card.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                topConstraint,
+            ])
+            previous = card
+        }
 
-        privacyLine.font = NSFont.systemFont(ofSize: 10)
+        let titleLabel = NSTextField(labelWithString: "系统高级与安全诊断")
+        titleLabel.font = NSFont.systemFont(ofSize: 16, weight: .bold)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(titleLabel)
+        previous = titleLabel
+
+        // 卡片 1: 内存与性能守门
+        let card1 = createCardView(title: "常驻性能指标（守门测试）", subtitle: "以系统真实物理驻留（phys_footprint）为准，严守预算。")
+        performanceLine.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        performanceLine.textColor = .labelColor
+        performanceLine.translatesAutoresizingMaskIntoConstraints = false
+        card1.addSubview(performanceLine)
+        NSLayoutConstraint.activate([
+            performanceLine.leadingAnchor.constraint(equalTo: card1.leadingAnchor, constant: 16),
+            performanceLine.trailingAnchor.constraint(equalTo: card1.trailingAnchor, constant: -16),
+            performanceLine.topAnchor.constraint(equalTo: card1.topAnchor, constant: 48),
+            performanceLine.bottomAnchor.constraint(equalTo: card1.bottomAnchor, constant: -14),
+        ])
+        addCard(card1, topOffset: 14)
+
+        // 卡片 2: 隐私与容灾
+        let card2 = createCardView(title: "本地隐私与日志", subtitle: "零网络连接、零遥测收集；WAL 预写日志保障异常恢复。")
+        let stack2 = NSStackView()
+        stack2.orientation = .vertical
+        stack2.alignment = .leading
+        stack2.spacing = 8
+        stack2.translatesAutoresizingMaskIntoConstraints = false
+
+        privacyLine.font = NSFont.systemFont(ofSize: 11)
         privacyLine.textColor = .secondaryLabelColor
-        privacyLine.maximumNumberOfLines = 3
-        place(privacyLine, topOffset: 12)
+        privacyLine.maximumNumberOfLines = 2
+        stack2.addArrangedSubview(privacyLine)
 
-        statusLine.font = NSFont.systemFont(ofSize: 10)
-        statusLine.textColor = .tertiaryLabelColor
+        statusLine.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        statusLine.textColor = .secondaryLabelColor
         statusLine.maximumNumberOfLines = 3
-        place(statusLine, topOffset: 16)
+        stack2.addArrangedSubview(statusLine)
+
+        card2.addSubview(stack2)
+        NSLayoutConstraint.activate([
+            stack2.leadingAnchor.constraint(equalTo: card2.leadingAnchor, constant: 16),
+            stack2.trailingAnchor.constraint(equalTo: card2.trailingAnchor, constant: -16),
+            stack2.topAnchor.constraint(equalTo: card2.topAnchor, constant: 48),
+            stack2.bottomAnchor.constraint(equalTo: card2.bottomAnchor, constant: -14),
+        ])
+        addCard(card2, topOffset: 14)
+
+        return view
+    }
+
+    private func createCardView(title: String, subtitle: String) -> NSView {
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.45).cgColor
+        card.layer?.cornerRadius = 10
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
+
+        let titleField = NSTextField(labelWithString: title)
+        titleField.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(titleField)
+
+        let subtitleField = NSTextField(labelWithString: subtitle)
+        subtitleField.font = NSFont.systemFont(ofSize: 11)
+        subtitleField.textColor = .secondaryLabelColor
+        subtitleField.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(subtitleField)
+
+        NSLayoutConstraint.activate([
+            titleField.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            titleField.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+
+            subtitleField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 3),
+            subtitleField.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+        ])
+
+        return card
+    }
+
+    @objc private func testSearchHUD() {
+        controller.onSearchRequested?()
     }
 
     public func refresh() {

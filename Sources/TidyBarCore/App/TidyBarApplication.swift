@@ -128,6 +128,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         barController.onToggleDrawer = { [weak self] in
             self?.toggleDrawer()
         }
+        barController.onSearchRequested = { [weak self] in
+            self?.presentSearch()
+        }
         barController.onRequestPhysicalArrangement = { [weak self] restoreOrder in
             guard let self else { return }
             self.endHeldMenuAccess()
