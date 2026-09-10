@@ -25,8 +25,11 @@ public final class IconOverviewView: NSView {
     }
 
     /// 改分区的回调（itemID, targetZone）
-    public var onReassign: (String, MenuBarZone) -> Void
+    public var onReassign: (String, MenuBarZone) -> Bool
     public var onZoneChanged: (() -> Void)?
+    public var physicalLayoutState: TidyBarController.PhysicalLayoutState = .idle {
+        didSet { updateInspector(item: nil, zone: nil) }
+    }
 
     private var rows: [Row] = []
     private let lanesStack = NSStackView()
@@ -36,8 +39,9 @@ public final class IconOverviewView: NSView {
     private let inspectorTextLabel = NSTextField(labelWithString: "")
     private let smartApplyButton = NSButton()
     private var persistentNotice: String?
+    private var noticeIsFailure = false
 
-    public init(onReassign: @escaping (String, MenuBarZone) -> Void) {
+    public init(onReassign: @escaping (String, MenuBarZone) -> Bool) {
         self.onReassign = onReassign
         super.init(frame: CGRect(x: 0, y: 0, width: 720, height: 380))
         setup()
@@ -57,8 +61,13 @@ public final class IconOverviewView: NSView {
             let lane = LaneView(
                 zone: zone,
                 onMoveItem: { [weak self] itemID, targetZone in
-                    self?.onReassign(itemID, targetZone)
-                    self?.onZoneChanged?()
+                    guard let self else { return false }
+                    let changed = self.onReassign(itemID, targetZone)
+                    self.persistentNotice = changed ? "分区已保存" : "移动未完成，请查看设置中的操作原因"
+                    self.noticeIsFailure = !changed
+                    self.onZoneChanged?()
+                    self.updateInspector(item: nil, zone: nil)
+                    return changed
                 },
                 onHoverItem: { [weak self] item, itemZone in
                     self?.updateInspector(item: item, zone: itemZone)
@@ -128,21 +137,31 @@ public final class IconOverviewView: NSView {
         updateInspector(item: nil, zone: nil)
     }
 
-    @objc public func applySmartRecommendations() {
+    @discardableResult
+    @objc public func applySmartRecommendations() -> Bool {
         let recommendations = SmartItemClassifier.classifyAll(items: rows.map(\.item))
         var changedCount = 0
+        var interrupted = false
         for rec in recommendations {
             if let currentRow = rows.first(where: { $0.item.id == rec.itemID }), currentRow.zone == rec.recommendedZone {
                 continue
             }
-            onReassign(rec.itemID, rec.recommendedZone)
+            guard onReassign(rec.itemID, rec.recommendedZone) else {
+                interrupted = true
+                break
+            }
             changedCount += 1
         }
-        let visibleCount = recommendations.filter { $0.recommendedZone == .visible }.count
-        let hiddenCount = recommendations.filter { $0.recommendedZone == .hidden }.count
-        let alwaysHiddenCount = recommendations.filter { $0.recommendedZone == .alwaysHidden }.count
-        persistentNotice = "🎉 智能推荐收纳已完成（重新归类 \(changedCount) 项）：常驻 \(visibleCount) 个 ｜ 收纳 \(hiddenCount) 个 ｜ 始终隐藏 \(alwaysHiddenCount) 个。已同步至收纳面板。"
         onZoneChanged?()
+        let visibleCount = rows.filter { $0.zone == .visible }.count
+        let hiddenCount = rows.filter { $0.zone == .hidden }.count
+        let alwaysHiddenCount = rows.filter { $0.zone == .alwaysHidden }.count
+        persistentNotice = interrupted
+            ? "已更新 \(changedCount) 项，其余项未完成；请查看设置中的操作原因。"
+            : "智能收纳已更新 \(changedCount) 项：常驻 \(visibleCount) 个 ｜ 收纳 \(hiddenCount) 个 ｜ 始终隐藏 \(alwaysHiddenCount) 个。"
+        noticeIsFailure = interrupted
+        updateInspector(item: nil, zone: nil)
+        return !interrupted
     }
 
     private func updateInspector(item: ManagedItem?, zone: MenuBarZone?) {
@@ -164,9 +183,12 @@ public final class IconOverviewView: NSView {
             inspectorIconView.isHidden = false
             inspectorTextLabel.stringValue = "\(appName)（\(bundle)）\(posHint) ｜ 当前：\(zone.displayLabel) ｜ 智能推荐：\(rec.recommendedZone.displayLabel)（\(rec.category.rawValue) · \(rec.reason)）"
             inspectorTextLabel.textColor = .labelColor
-        } else if let notice = persistentNotice {
-            inspectorIconView.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "完成")
-            inspectorIconView.contentTintColor = .systemGreen
+        } else if let notice = physicalLayoutState.message ?? persistentNotice {
+            let failed = physicalLayoutState.message == nil ? noticeIsFailure : physicalLayoutState.isFailure
+            let waiting = physicalLayoutState == .queued || physicalLayoutState == .arranging
+            inspectorIconView.image = NSImage(systemSymbolName: failed ? "exclamationmark.circle.fill" : waiting ? "clock" : "checkmark.circle.fill",
+                                              accessibilityDescription: failed ? "未完成" : waiting ? "等待整理" : "完成")
+            inspectorIconView.contentTintColor = failed ? .systemOrange : waiting ? .secondaryLabelColor : .systemGreen
             inspectorIconView.isHidden = false
             inspectorTextLabel.stringValue = notice
             inspectorTextLabel.textColor = .labelColor
@@ -194,7 +216,7 @@ public final class IconOverviewView: NSView {
 
 private final class LaneView: NSView {
     let zone: MenuBarZone
-    let onMoveItem: (String, MenuBarZone) -> Void
+    let onMoveItem: (String, MenuBarZone) -> Bool
     let onHoverItem: (ManagedItem?, MenuBarZone) -> Void
 
     private let titleLabel = NSTextField(labelWithString: "")
@@ -204,7 +226,7 @@ private final class LaneView: NSView {
 
     init(
         zone: MenuBarZone,
-        onMoveItem: @escaping (String, MenuBarZone) -> Void,
+        onMoveItem: @escaping (String, MenuBarZone) -> Bool,
         onHoverItem: @escaping (ManagedItem?, MenuBarZone) -> Void
     ) {
         self.zone = zone
@@ -298,7 +320,7 @@ private final class LaneShelfView: NSView {
     override var isFlipped: Bool { true }
 
     let zone: MenuBarZone
-    let onDrop: (String, MenuBarZone) -> Void
+    let onDrop: (String, MenuBarZone) -> Bool
     let onHover: (ManagedItem?, MenuBarZone) -> Void
 
     private var itemCells: [DraggableIconCellView] = []
@@ -311,7 +333,7 @@ private final class LaneShelfView: NSView {
 
     init(
         zone: MenuBarZone,
-        onDrop: @escaping (String, MenuBarZone) -> Void,
+        onDrop: @escaping (String, MenuBarZone) -> Bool,
         onHover: @escaping (ManagedItem?, MenuBarZone) -> Void
     ) {
         self.zone = zone
@@ -474,8 +496,7 @@ private final class LaneShelfView: NSView {
         guard let itemID = sender.draggingPasteboard.string(forType: iconPasteboardType) else {
             return false
         }
-        onDrop(itemID, zone)
-        return true
+        return onDrop(itemID, zone)
     }
 }
 
@@ -483,7 +504,7 @@ private final class LaneShelfView: NSView {
 
 private final class DraggableIconCellView: NSView, NSDraggingSource {
     let row: IconOverviewView.Row
-    let onMoveItem: (String, MenuBarZone) -> Void
+    let onMoveItem: (String, MenuBarZone) -> Bool
     let onHover: (ManagedItem?) -> Void
 
     private var isHovered = false { didSet { needsDisplay = true } }
@@ -493,7 +514,7 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
 
     init(
         row: IconOverviewView.Row,
-        onMoveItem: @escaping (String, MenuBarZone) -> Void,
+        onMoveItem: @escaping (String, MenuBarZone) -> Bool,
         onHover: @escaping (ManagedItem?) -> Void
     ) {
         self.row = row
@@ -606,7 +627,7 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
 
     @objc private func menuMoveZone(_ sender: NSMenuItem) {
         guard let targetZone = sender.representedObject as? MenuBarZone else { return }
-        onMoveItem(row.item.id, targetZone)
+        _ = onMoveItem(row.item.id, targetZone)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -646,8 +667,7 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
 public enum IconOverviewBuilder {
     public static func rows(from controller: TidyBarController) -> [IconOverviewView.Row] {
         let snapshot = controller.snapshot
-        return snapshot.items
-            .filter { !$0.isSystemOwned }
+        return controller.assignableItems
             .map { item in
                 let zone = snapshot.layout.zone(of: item.id) ?? controller.settings.newItemZone
                 return IconOverviewView.Row(

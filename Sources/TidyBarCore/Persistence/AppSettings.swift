@@ -1,11 +1,30 @@
 import Foundation
 import CoreGraphics
 
+/// 手势/点击触发时的目标动作（对标 Ice 交互配置）
+public enum GestureAction: String, Codable, CaseIterable, Sendable {
+    /// 原地展开/折叠菜单栏图标（主按钮同等效果）
+    case toggleFold
+    /// 呼出/收起收纳抽屉
+    case toggleDrawer
+
+    public var displayName: String {
+        switch self {
+        case .toggleFold: return "原地展开/折叠菜单栏"
+        case .toggleDrawer: return "呼出/收起收纳抽屉"
+        }
+    }
+}
+
 /// 用户设置（持久化到 UserDefaults，suite 与 bundle id 对齐）。
 /// 只存「用户意图」，图标位置真相源仍是 MenuBarLayout。
 public struct AppSettings: Codable, Equatable, Sendable {
     /// 呼出方式集合（报告 A4）
     public var revealTriggers: Set<RevealTrigger>
+    /// 点击菜单栏空白处时的动作
+    public var emptyBarClickAction: GestureAction
+    /// 在菜单栏上滚轮/轻扫时的动作
+    public var scrollOrSwipeAction: GestureAction
     /// 自动重新隐藏延迟，0 = 不自动收起（报告 A6）
     public var rehideDelay: TimeInterval
     /// 新图标默认归位分区（报告 A7）
@@ -34,6 +53,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init(
         revealTriggers: Set<RevealTrigger> = RevealTrigger.beginnerDefaults,
+        emptyBarClickAction: GestureAction = .toggleFold,
+        scrollOrSwipeAction: GestureAction = .toggleFold,
         rehideDelay: TimeInterval = 2.0,
         newItemZone: MenuBarZone = .hidden,
         itemSpacing: CGFloat = 0,
@@ -48,6 +69,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         hasCompletedFirstRunGuide: Bool = false
     ) {
         self.revealTriggers = revealTriggers
+        self.emptyBarClickAction = emptyBarClickAction
+        self.scrollOrSwipeAction = scrollOrSwipeAction
         self.rehideDelay = rehideDelay
         self.newItemZone = newItemZone
         self.itemSpacing = itemSpacing
@@ -69,7 +92,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// 症状还是"我没动过设置，它自己变回去了"，最难归因的一类。
     /// 有了这个 init，加字段就是安全的；新增字段请同时给默认值并在此登记。
     enum CodingKeys: String, CodingKey {
-        case revealTriggers, rehideDelay, newItemZone, itemSpacing, stylingEnabled
+        case revealTriggers, emptyBarClickAction, scrollOrSwipeAction, rehideDelay, newItemZone, itemSpacing, stylingEnabled
         case rulesEnabled, followMenuBarColorEnabled, autoRecoverPendingIntent
         case profiles, activeProfileName, rules, askAboutNewItems, hasCompletedFirstRunGuide
     }
@@ -79,6 +102,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         let defaults = AppSettings()
         revealTriggers = try c.decodeIfPresent(Set<RevealTrigger>.self, forKey: .revealTriggers)
             ?? defaults.revealTriggers
+        emptyBarClickAction = try c.decodeIfPresent(GestureAction.self, forKey: .emptyBarClickAction) ?? .toggleFold
+        scrollOrSwipeAction = try c.decodeIfPresent(GestureAction.self, forKey: .scrollOrSwipeAction) ?? .toggleFold
         rehideDelay = try c.decodeIfPresent(TimeInterval.self, forKey: .rehideDelay) ?? defaults.rehideDelay
         newItemZone = try c.decodeIfPresent(MenuBarZone.self, forKey: .newItemZone) ?? defaults.newItemZone
         itemSpacing = try c.decodeIfPresent(CGFloat.self, forKey: .itemSpacing) ?? defaults.itemSpacing

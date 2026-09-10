@@ -19,10 +19,25 @@ struct SettingsEvolutionTests {
         expectEqual(loaded.newItemZone, MenuBarZone.alwaysHidden)
         expectEqual(loaded.revealTriggers, Set<RevealTrigger>([.hover]))
         expectEqual(loaded.autoRecoverPendingIntent, false)
+        expectEqual(loaded.emptyBarClickAction, GestureAction.toggleFold)
+        expectEqual(loaded.scrollOrSwipeAction, GestureAction.toggleFold)
         expectEqual(loaded.askAboutNewItems, false, "新字段该按默认值补上，而不是拉整份下水")
         expectEqual(loaded.hasCompletedFirstRunGuide, false)
         expect(!store.didFallBackToDefaults, "本可救回来的文件不该被记成回退事故")
         defaults.removePersistentDomain(forName: suite)
+    }
+
+    /// 自然手势（空白处点击/轻扫）与动作行为的序列化与反序列化
+    func gestureActionsArePersistedAndDecoded() throws {
+        var settings = AppSettings()
+        settings.emptyBarClickAction = .toggleDrawer
+        settings.scrollOrSwipeAction = .toggleDrawer
+        settings.revealTriggers = [.emptyBarClick, .scrollOrSwipe]
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+        expectEqual(decoded.emptyBarClickAction, .toggleDrawer)
+        expectEqual(decoded.scrollOrSwipeAction, .toggleDrawer)
+        expectEqual(decoded.revealTriggers, [.emptyBarClick, .scrollOrSwipe])
     }
 
     /// 真的读不出来时，必须留下"我回退了"的痕迹，而不是静默当作首次运行。
@@ -136,6 +151,7 @@ extension SettingsEvolutionTests {
         let suite = SettingsEvolutionTests()
         return [
             TestCase("legacyFileKeepsExistingValues", suite.legacyFileKeepsExistingValues),
+            TestCase("gestureActionsArePersistedAndDecoded", suite.gestureActionsArePersistedAndDecoded),
             TestCase("unreadableFileIsReportedNotSwallowed", suite.unreadableFileIsReportedNotSwallowed),
             TestCase("failedHotKeyIsRetiredFromEffectiveTriggers", suite.failedHotKeyIsRetiredFromEffectiveTriggers),
             TestCase("askQueueCollectsNewThirdPartyItems", suite.askQueueCollectsNewThirdPartyItems),

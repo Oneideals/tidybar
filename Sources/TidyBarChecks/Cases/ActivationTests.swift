@@ -15,6 +15,14 @@ final class SpyActivator: MenuBarActivating {
 }
 
 struct ActivationTests {
+    func secondaryClickNeverFallsBackToPrimaryClick() throws {
+        let spy = SpyActivator()
+        let (controller, _) = makeController(activator: spy)
+        let outcome = controller.showMenu(itemID: "com.test.a")
+        expectEqual(outcome, .actionUnsupported, "不支持右键时必须明确失败，不能改发左键")
+        expect(spy.requested.isEmpty, "右键请求不能调用 activate")
+    }
+
     private func makeController(
         activator: MenuBarActivating?,
         mover: MenuBarMoving? = FakeMenuBarMover(),
@@ -116,6 +124,7 @@ extension ActivationTests {
     static var testCases: [TestCase] {
         let suite = ActivationTests()
         return [
+            TestCase("secondaryClickNeverFallsBackToPrimaryClick", suite.secondaryClickNeverFallsBackToPrimaryClick),
             TestCase("forwardsTheItemID", suite.forwardsTheItemID),
             TestCase("missingActivatorIsReportedNotSwallowed", suite.missingActivatorIsReportedNotSwallowed),
             TestCase("placeholderActivatorNeverClaimsSuccess", suite.placeholderActivatorNeverClaimsSuccess),

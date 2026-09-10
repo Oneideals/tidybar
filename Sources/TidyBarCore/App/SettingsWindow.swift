@@ -15,9 +15,14 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let performanceLine = NSTextField(labelWithString: "")
     private let privacyLine = NSTextField(wrappingLabelWithString: "")
     private let statusLine = NSTextField(labelWithString: "")
-    private let overview = IconOverviewView(onReassign: { _, _ in })   // 回调在 init 里重设
+    private let overview = IconOverviewView(onReassign: { _, _ in false })   // 回调在 init 里重设
     private let dividerButton = NSButton(title: "│ 摆放菜单栏分隔符", target: nil, action: nil)
     private let foldButton = NSButton(title: "▶ 原地折叠菜单栏", target: nil, action: nil)
+    private let emptyBarToggle = NSButton(checkboxWithTitle: "点击菜单栏空白处触发", target: nil, action: nil)
+    private let scrollToggle = NSButton(checkboxWithTitle: "在菜单栏上双指滚轮/横滑触发", target: nil, action: nil)
+    private let hoverToggle = NSButton(checkboxWithTitle: "光标在菜单栏空白处悬停触发", target: nil, action: nil)
+    private let emptyBarActionPopup = NSPopUpButton()
+    private let scrollActionPopup = NSPopUpButton()
 
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
@@ -33,7 +38,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         window.maxSize = NSSize(width: 780, height: 560)
         super.init(window: window)
         overview.onReassign = { [weak controller] itemID, zone in
-            _ = controller?.reassignZone(itemID, to: zone)
+            controller?.reassignZone(itemID, to: zone) ?? false
         }
         overview.onZoneChanged = { [weak self] in self?.refresh() }
         build(hotKeyDescription: hotKeyDescription)
@@ -159,23 +164,58 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             previous = item
         }
 
-        let triggerTitle = NSTextField(labelWithString: "呼出方式：")
-        triggerTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        place(triggerTitle, topOffset: 20)
+        let triggerTitle = NSTextField(labelWithString: "手势与呼出方式（对标 Ice 自然触发）：")
+        triggerTitle.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+        place(triggerTitle, topOffset: 16)
 
-        let triggers = NSTextField(wrappingLabelWithString: controller.settings.revealTriggers
-            .map(\.displayName).sorted().joined(separator: "、"))
-        triggers.font = NSFont.systemFont(ofSize: 11)
-        triggers.textColor = .secondaryLabelColor
-        place(triggers, topOffset: 6)
+        let dividerHint = NSTextField(labelWithString: "• 点击主按钮 ☰：随时原地折叠/展开菜单栏，或按住 ⌥ 点击呼出收纳抽屉")
+        dividerHint.font = NSFont.systemFont(ofSize: 11)
+        dividerHint.textColor = .secondaryLabelColor
+        place(dividerHint, topOffset: 4)
 
-        hotKeyLine.stringValue = "快捷键：" + hotKeyDescription
+        // 空白处点击配置行
+        let emptyBarRow = NSStackView()
+        emptyBarRow.orientation = .horizontal
+        emptyBarRow.spacing = 10
+        emptyBarRow.alignment = .centerY
+        emptyBarToggle.target = self
+        emptyBarToggle.action = #selector(toggleEmptyBarClick)
+        emptyBarRow.addArrangedSubview(emptyBarToggle)
+        emptyBarActionPopup.removeAllItems()
+        emptyBarActionPopup.addItems(withTitles: ["动作：原地展开/折叠", "动作：呼出/收起抽屉"])
+        emptyBarActionPopup.target = self
+        emptyBarActionPopup.action = #selector(changeEmptyBarAction)
+        emptyBarActionPopup.font = NSFont.systemFont(ofSize: 11)
+        emptyBarRow.addArrangedSubview(emptyBarActionPopup)
+        place(emptyBarRow, topOffset: 8)
+
+        // 滚轮/轻扫配置行
+        let scrollRow = NSStackView()
+        scrollRow.orientation = .horizontal
+        scrollRow.spacing = 10
+        scrollRow.alignment = .centerY
+        scrollToggle.target = self
+        scrollToggle.action = #selector(toggleScroll)
+        scrollRow.addArrangedSubview(scrollToggle)
+        scrollActionPopup.removeAllItems()
+        scrollActionPopup.addItems(withTitles: ["动作：原地展开/折叠", "动作：呼出/收起抽屉"])
+        scrollActionPopup.target = self
+        scrollActionPopup.action = #selector(changeScrollAction)
+        scrollActionPopup.font = NSFont.systemFont(ofSize: 11)
+        scrollRow.addArrangedSubview(scrollActionPopup)
+        place(scrollRow, topOffset: 8)
+
+        hoverToggle.target = self
+        hoverToggle.action = #selector(toggleHover)
+        place(hoverToggle, topOffset: 8)
+
+        hotKeyLine.stringValue = "快捷键：" + hotKeyDescription + " ｜ 搜索图标：快捷键 ⌘F（Spotlight 风格 HUD）"
         hotKeyLine.font = NSFont.systemFont(ofSize: 11)
-        place(hotKeyLine, topOffset: 12)
+        place(hotKeyLine, topOffset: 10)
 
         let sep1 = NSBox()
         sep1.boxType = .separator
-        place(sep1, topOffset: 16)
+        place(sep1, topOffset: 14)
 
         launchToggle.target = self
         launchToggle.action = #selector(toggleLaunchAtLogin)
@@ -246,6 +286,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     }
 
     public func refresh() {
+        overview.physicalLayoutState = controller.physicalLayoutState
         overview.reload(rows: IconOverviewBuilder.rows(from: controller))
         askToggle.state = controller.settings.askAboutNewItems ? .on : .off
         stylingToggle.state = controller.settings.stylingEnabled ? .on : .off
@@ -253,6 +294,14 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         rehideValue.stringValue = controller.settings.rehideDelay == 0
             ? "自动收起：从不"
             : String(format: "自动收起：%.1fs", controller.settings.rehideDelay)
+
+        // 自然手势触发与动作状态同步
+        emptyBarToggle.state = controller.settings.revealTriggers.contains(.emptyBarClick) ? .on : .off
+        scrollToggle.state = controller.settings.revealTriggers.contains(.scrollOrSwipe) ? .on : .off
+        hoverToggle.state = controller.settings.revealTriggers.contains(.hover) ? .on : .off
+        emptyBarActionPopup.selectItem(at: controller.settings.emptyBarClickAction == .toggleFold ? 0 : 1)
+        scrollActionPopup.selectItem(at: controller.settings.scrollOrSwipeAction == .toggleFold ? 0 : 1)
+
         let state = LaunchAtLogin.state()
         launchToggle.state = state == .enabled ? .on : .off
         switch state {
@@ -273,19 +322,67 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         }
 
         let isFolded = controller.isMenuBarFoldedQuery?() ?? false
-        foldButton.title = isFolded ? "◀ 展开菜单栏" : "▶ 原地折叠菜单栏"
+        foldButton.title = controller.isPhysicalLayoutBusy ? "正在整理菜单栏…"
+            : controller.capability == .panelOnlyFallback ? "打开收纳抽屉"
+            : (isFolded ? "◀ 展开菜单栏" : "▶ 原地折叠菜单栏")
+        foldButton.toolTip = controller.capabilityReason
+        foldButton.isEnabled = !controller.isPhysicalLayoutBusy
+        dividerButton.isEnabled = !controller.isPhysicalLayoutBusy
         foldButton.contentTintColor = isFolded ? .systemGreen : .systemBlue
 
-        let memMB = currentResidentMemoryMB()
-        let memStr = memMB != nil ? String(format: "%.1f MB", memMB!) : "约 13 MB"
-        performanceLine.stringValue = "性能（F1）：常驻内存 \(memStr)（预算 ≤40MB）｜ 空闲 CPU ≈ 0.0%"
+        let footprint = ResourceProbe.residentMemoryBytes()
+        let memStr = footprint > 0 ? String(format: "%.1f MB", Double(footprint) / 1_048_576) : "暂不可用"
+        performanceLine.stringValue = "内存占用：\(memStr)（预算 ≤40 MB）｜ CPU：未采样"
+        performanceLine.toolTip = "内存采用系统物理占用（phys_footprint），与性能预算和启动日志一致。"
         privacyLine.stringValue = "隐私（F2）：纯本地运行，零网络请求、零遥测收集；配置保存在本地。"
         statusLine.stringValue = controller.logs.suffix(2).joined(separator: "\n")
     }
 
+    @objc private func toggleEmptyBarClick() {
+        controller.update {
+            if emptyBarToggle.state == .on {
+                $0.revealTriggers.insert(.emptyBarClick)
+            } else {
+                $0.revealTriggers.remove(.emptyBarClick)
+            }
+        }
+        refresh()
+    }
+
+    @objc private func toggleScroll() {
+        controller.update {
+            if scrollToggle.state == .on {
+                $0.revealTriggers.insert(.scrollOrSwipe)
+            } else {
+                $0.revealTriggers.remove(.scrollOrSwipe)
+            }
+        }
+        refresh()
+    }
+
+    @objc private func toggleHover() {
+        controller.update {
+            if hoverToggle.state == .on {
+                $0.revealTriggers.insert(.hover)
+            } else {
+                $0.revealTriggers.remove(.hover)
+            }
+        }
+        refresh()
+    }
+
+    @objc private func changeEmptyBarAction() {
+        let action: GestureAction = emptyBarActionPopup.indexOfSelectedItem == 0 ? .toggleFold : .toggleDrawer
+        controller.update { $0.emptyBarClickAction = action }
+    }
+
+    @objc private func changeScrollAction() {
+        let action: GestureAction = scrollActionPopup.indexOfSelectedItem == 0 ? .toggleFold : .toggleDrawer
+        controller.update { $0.scrollOrSwipeAction = action }
+    }
+
     @objc private func triggerSmartCategorize() {
-        overview.applySmartRecommendations()
-        controller.onExecuteSmartFold?()
+        if overview.applySmartRecommendations() { controller.onRequestPhysicalArrangement?(false) }
         refresh()
     }
 
@@ -297,18 +394,6 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     @objc private func toggleDividers() {
         controller.onToggleDividers?()
         refresh()
-    }
-
-    private func currentResidentMemoryMB() -> Double? {
-        var info = mach_task_basic_info()
-        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
-        let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
-            }
-        }
-        guard kerr == KERN_SUCCESS else { return nil }
-        return Double(info.resident_size) / 1024.0 / 1024.0
     }
 
     @objc private func toggleStyling() {
@@ -357,7 +442,7 @@ public final class FirstRunWizardController: NSWindowController {
     private let body = NSTextField(wrappingLabelWithString: "")
     private var step = 1
     /// 第 2 步复用的总览：与设置页同一个视图类型、同一套行语义，不会各长一套。
-    private lazy var overviewInWizard: IconOverviewView = IconOverviewView(onReassign: { _, _ in })
+    private lazy var overviewInWizard: IconOverviewView = IconOverviewView(onReassign: { _, _ in false })
 
     private func installOverviewInWizard() {
         if overviewInWizard.superview == nil, let root = window?.contentView {
@@ -370,10 +455,11 @@ public final class FirstRunWizardController: NSWindowController {
                 overviewInWizard.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -56),
             ])
             overviewInWizard.onReassign = { [weak controller] itemID, zone in
-                _ = controller?.move(itemID, to: zone)
+                controller?.reassignZone(itemID, to: zone) ?? false
             }
             overviewInWizard.onZoneChanged = { [weak self] in self?.showStep() }
         }
+        overviewInWizard.physicalLayoutState = controller.physicalLayoutState
         overviewInWizard.reload(rows: IconOverviewBuilder.rows(from: controller))
     }
 
@@ -418,6 +504,9 @@ public final class FirstRunWizardController: NSWindowController {
         showStep()
     }
 
+    /// 只刷新当前步骤，不推进向导；异步整理结果与设置窗口同步呈现。
+    public func refresh() { showStep() }
+
     private func showStep() {
         window?.title = "欢迎用 TidyBar（\(step)/3）"
         // 总览只在第 2 步出现；别的步骤收回，避免窗口里挂着一块不相关的长表
@@ -425,7 +514,7 @@ public final class FirstRunWizardController: NSWindowController {
         let trusted = controller.layoutEngineAllowsTakeoverDescription
         switch step {
         case 1:
-            body.stringValue = "第 1 步：辅助功能权限决定我能不能读到并整理你的图标。\n当前：\(trusted)\n没授予的话我只会显示占位首字母，不会去搬动任何图标。"
+            body.stringValue = "第 1 步：辅助功能权限用于读取和整理菜单栏图标。\n当前：\(trusted)\n在系统设置中授权后，会自动更新可用能力。"
         case 2:
             body.stringValue = "第 2 步：这张表就是全景——每个图标现在在哪个区一目了然。\n点右侧按钮即可调整；默认策略是"
                 + (controller.settings.askAboutNewItems ? "出现新图标时先问你" : "新图标自动收进隐藏区")

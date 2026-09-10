@@ -162,7 +162,7 @@ if arguments.contains("--ledger-seed") || arguments.contains("--ledger-verify") 
         engine.assignForChecks(target.id, to: .hidden)
         // assignForChecks 只改内存不落盘（它本就是给自检准备的）；
         // 跨启动验证必须走 recordZoneOnly——那是"挪边界/改归属"的真实落盘路径。
-        engine.recordZoneOnly(itemID: target.id, zone: .hidden)
+        try engine.recordZoneOnly(itemID: target.id, zone: .hidden)
         engine.fold(items: items, newItemZone: .visible)
         let line = "LEDGER-SEED ok 目标=" + target.id + " 台账条目=" + String(engine.ledgerRecordsSnapshot.count)
         print(line)

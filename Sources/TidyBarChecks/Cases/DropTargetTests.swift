@@ -23,6 +23,7 @@ struct DropTargetTests {
         }
         // 往后插要越过目标图标的右缘，系统才认定"超过它"
         expectEqual(target, 482 + 24 + 2)
+        expectEqual(MenuBarDropTarget.expectedHitTargets(in: row, moving: 0, to: 2).map(\.id), ["FX2", "FX1"])
     }
 
     func backwardInsertLandsOnNeighboursCentre() throws {
@@ -30,6 +31,7 @@ struct DropTargetTests {
             return try record("应有合法落点")
         }
         expectEqual(target, 405, "往前插落在目标图标中心")
+        expectEqual(MenuBarDropTarget.expectedHitTargets(in: row, moving: 2, to: 0).map(\.id), ["FX4"])
     }
 
     func sameIndexHasNoTarget() throws {

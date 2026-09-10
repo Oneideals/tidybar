@@ -27,6 +27,19 @@ public struct ManagedItem: Identifiable, Codable, Equatable, Sendable {
     public let ordinalInOwner: Int
     /// 归属进程一共暴露了几个图标（判定"序号是否恒为 0"的依据）
     public let ownerItemCount: Int
+    /// 仅用于匹配同一次 AX 观测；不进入用户配置、持久化或界面值比较。
+    public internal(set) var observationToken: UUID? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case id, ownerBundleID, title, frame, isSystemOwned, lastActivatedAt, identitySource, ordinalInOwner, ownerItemCount
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.ownerBundleID == rhs.ownerBundleID && lhs.title == rhs.title
+            && lhs.frame == rhs.frame && lhs.isSystemOwned == rhs.isSystemOwned
+            && lhs.lastActivatedAt == rhs.lastActivatedAt && lhs.identitySource == rhs.identitySource
+            && lhs.ordinalInOwner == rhs.ordinalInOwner && lhs.ownerItemCount == rhs.ownerItemCount
+    }
 
     public init(
         id: String,
@@ -142,7 +155,7 @@ extension ManagedItem {
         /// id 里用的名字：序号型身份不能拿显示名参与（显示名含序号，会让 id 随显示变化），
         /// 所以只把"名字本身"交给 stableID；序号型直接走序号分支。
         public var item: ManagedItem {
-            ManagedItem(
+            var item = ManagedItem(
                 id: ManagedItem.stableID(
                     ownerBundleID: ownerBundleID,
                     title: displayTitle,
@@ -157,6 +170,8 @@ extension ManagedItem {
                 ordinalInOwner: ordinalInOwner,
                 ownerItemCount: ownerItemCount
             )
+            item.observationToken = UUID()
+            return item
         }
     }
 }

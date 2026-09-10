@@ -6,6 +6,12 @@ import CoreGraphics
 /// 坐标系沿用 AppKit：原点左下角，y 向上增大。菜单栏占据屏幕顶部
 /// `[frame.maxY - menuBarHeight, frame.maxY]`，面板应贴在菜单栏正下方。
 public enum PanelGeometry {
+    public struct ContentLayout {
+        public let size: CGSize
+        public let itemFrames: [CGRect]
+        public let footerFrame: CGRect?
+    }
+
     public struct Metrics: Equatable, Sendable {
         public let itemSide: CGFloat
         public let itemSpacing: CGFloat
@@ -26,6 +32,37 @@ public enum PanelGeometry {
         public var rowHeight: CGFloat { itemSide + contentInset * 2 }
     }
 
+    /// 每项保留截图比例；宽图标独占相应宽度，放不下时折行，不把文字压成方块。
+    public static func contentLayout(itemSizes: [CGSize], maximumWidth: CGFloat,
+                                     minimumWidth: CGFloat = Minimums.panelWidth, footerHeight: CGFloat = 0,
+                                     metrics: Metrics = Metrics()) -> ContentLayout {
+        let maximumWidth = max(Minimums.panelWidth, maximumWidth)
+        let available = maximumWidth - metrics.contentInset * 2
+        var x: CGFloat = 0, row = 0, widest: CGFloat = 0
+        var frames: [CGRect] = []
+        for size in itemSizes {
+            let naturalWidth = size.width > 0 && size.height > 0 && size.width.isFinite && size.height.isFinite
+                ? size.width * min(1, metrics.itemSide / size.height) : metrics.itemSide
+            let width = min(available, max(metrics.itemSide, ceil(naturalWidth)))
+            if x > 0 && x + width > available { row += 1; x = 0 }
+            frames.append(CGRect(x: metrics.contentInset + x,
+                                 y: CGFloat(row) * (metrics.itemSide + metrics.itemSpacing),
+                                 width: width, height: metrics.itemSide))
+            widest = max(widest, x + width)
+            x += width + metrics.itemSpacing
+        }
+        let height = metrics.rowHeight + CGFloat(row) * (metrics.itemSide + metrics.itemSpacing) + footerHeight
+        let width = min(maximumWidth, max(minimumWidth, widest + metrics.contentInset * 2))
+        let itemFrames = frames.map { frame in
+            CGRect(x: frame.minX, y: height - metrics.contentInset - metrics.itemSide - frame.minY,
+                   width: frame.width, height: frame.height)
+        }
+        let footer = footerHeight > 0
+            ? CGRect(x: metrics.contentInset, y: metrics.contentInset / 2,
+                     width: width - metrics.contentInset * 2, height: max(0, footerHeight - metrics.contentInset)) : nil
+        return ContentLayout(size: CGSize(width: width, height: height), itemFrames: itemFrames, footerFrame: footer)
+    }
+
     /// 面板 frame。
     /// - Parameters:
     ///   - screen: 目标屏幕信息
@@ -36,14 +73,16 @@ public enum PanelGeometry {
         screen: ScreenInfo,
         itemCount: Int,
         metrics: Metrics = Metrics(),
-        anchorX: CGFloat
+        anchorX: CGFloat,
+        contentSize: CGSize? = nil
     ) -> CGRect {
         let contentWidth = metrics.contentWidth(for: itemCount) + metrics.contentInset * 2
-        let desiredWidth = max(Minimums.panelWidth, contentWidth)
+        let desiredWidth = max(Minimums.panelWidth, contentSize?.width ?? contentWidth)
         let width = min(desiredWidth, max(Minimums.panelWidth, screen.frame.width - 2 * Margin.screenEdge))
+        let height = contentSize?.height ?? metrics.rowHeight
 
         let topY = screen.frame.maxY - screen.menuBarHeight - Margin.gapBelowMenuBar
-        let originY = topY - metrics.rowHeight
+        let originY = topY - height
 
         // 以锚点居中，再夹紧到屏幕内
         let unclampedX = anchorX - width / 2
@@ -51,7 +90,7 @@ public enum PanelGeometry {
         let maxX = screen.frame.maxX - width - Margin.screenEdge
         let originX = maxX >= minX ? min(max(unclampedX, minX), maxX) : minX
 
-        return CGRect(x: originX, y: originY, width: width, height: metrics.rowHeight)
+        return CGRect(x: originX, y: originY, width: width, height: height)
     }
 
     /// 刘海避让：面板不得覆盖刘海区域（覆盖会导致阴影/圆角穿帮，且遮挡系统菜单）。

@@ -6,11 +6,6 @@ import AppKit
 /// 而"把某个图标收进隐藏区"这个动作本身只是布局意图——菜单能立刻把它交付出去，
 /// 等闸门开放时同一套意图直接换成拖拽落点，不必重做。
 extension TidyBarController {
-    /// 可分配的项：排除系统托管图标（默认不参与自动隐藏，报告 A1 的边界）
-    public var assignableItems: [ManagedItem] {
-        snapshot.items.filter { !$0.isSystemOwned }
-    }
-
     /// 分区中文名，供 UI 与诊断共用一份，不在两处各写一遍
     public static func zoneLabel(_ zone: MenuBarZone) -> String {
         switch zone {
@@ -68,7 +63,7 @@ enum TidyBarMenuBuilder {
         }
         submenu.addItem(.separator())
         let note = NSMenuItem(
-            title: "　当前：\(controller.capability.displayName)（只改归属，不搬动系统图标）",
+            title: "　当前：\(controller.capability.displayName)",
             action: nil,
             keyEquivalent: ""
         )

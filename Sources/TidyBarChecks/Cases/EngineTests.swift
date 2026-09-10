@@ -28,9 +28,10 @@ struct LayoutEngineTests {
     func successfulMoveCommitsAndClearsPending() throws {
         let reader = FakeMenuBarReader(ids: [itemID, other])
         let fakeMover = FakeMenuBarMover()
+        fakeMover.coupledReader = reader
         let (engine, journal) = makeEngine(reader: reader, mover: fakeMover)
 
-        try engine.apply(itemID: itemID, to: .hidden, targetX: 600)
+        try engine.apply(itemID: itemID, to: .hidden, targetX: 700)
 
         expect(engine.layout.zone(of: itemID) == .hidden)
         expect(engine.capability == .fullDrag)

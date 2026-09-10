@@ -13,6 +13,8 @@ public struct SystemContext: Equatable, Sendable {
     public let batteryLevel: Double?
     public let isCharging: Bool
     public let connectedWiFiSSID: String?
+    /// nil SSID 可能表示断开，也可能是系统未提供；两者不能混为一谈。
+    public let hasKnownWiFiState: Bool
     /// 当前激活的焦点模式名；nil = 未开启任何焦点模式
     public let activeFocusMode: String?
     /// 当前前台 App 的 bundle id
@@ -27,11 +29,13 @@ public struct SystemContext: Equatable, Sendable {
         activeFocusMode: String?,
         frontmostAppBundleID: String?,
         now: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        hasKnownWiFiState: Bool? = nil
     ) {
         self.batteryLevel = batteryLevel
         self.isCharging = isCharging
         self.connectedWiFiSSID = connectedWiFiSSID
+        self.hasKnownWiFiState = hasKnownWiFiState ?? (connectedWiFiSSID != nil)
         self.activeFocusMode = activeFocusMode
         self.frontmostAppBundleID = frontmostAppBundleID
         self.now = now
@@ -50,6 +54,10 @@ public enum RuleCondition: String, Codable, CaseIterable, Sendable {
     case nightTime
     case workingHours
     case wifiDisconnected
+
+    public var supportsAutomaticEvaluation: Bool {
+        self != .focusModeActive && self != .screenSharingLikely
+    }
 
     /// 规则卡片上的中文标签
     public var label: String {
@@ -167,12 +175,17 @@ public struct RuleAction: Equatable, Sendable, Codable {
     /// 单图标动作
     public static func show(_ itemID: String) -> RuleAction { .init(kind: .show, itemID: itemID) }
     /// 按目标分区构造（编辑器用：选了"隐藏"就得到 hide）
-    public static func forZone(_ zone: MenuBarZone) -> RuleAction {
+    public static func forZone(_ zone: MenuBarZone, itemID: String? = nil) -> RuleAction {
         switch zone {
-        case .visible: return .init(kind: .show)
-        case .hidden: return .init(kind: .hide)
-        case .alwaysHidden: return .init(kind: .alwaysHide)
+        case .visible: return .init(kind: .show, itemID: itemID)
+        case .hidden: return .init(kind: .hide, itemID: itemID)
+        case .alwaysHidden: return .init(kind: .alwaysHide, itemID: itemID)
         }
+    }
+
+    public var isValid: Bool {
+        let target = kind == .applyProfile ? profileName : itemID
+        return target?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
     public static func hide(_ itemID: String) -> RuleAction { .init(kind: .hide, itemID: itemID) }
     public static func alwaysHide(_ itemID: String) -> RuleAction { .init(kind: .alwaysHide, itemID: itemID) }
@@ -206,7 +219,7 @@ public struct DisplayRule: Identifiable, Codable, Equatable, Sendable {
     }
 
     public var isEvaluable: Bool {
-        !conditions.isEmpty && !actions.isEmpty
+        !conditions.isEmpty && !actions.isEmpty && actions.allSatisfy(\.isValid)
     }
 }
 

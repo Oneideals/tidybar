@@ -78,6 +78,22 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     private let policyConfig: MenuBarItemPolicy.Config
     private let workspace: NSWorkspace
     private let screensProvider: () -> [ScreenInfo]
+    private struct Binding {
+        let item: ManagedItem
+        let element: AXUIElement
+    }
+    private let bindingsLock = NSLock()
+    private var bindings: [String: Binding] = [:]
+    private var bindingSnapshots: [[Binding]] = []
+    private var nextBindingGeneration = 0
+    private var publishedBindingGeneration = 0
+
+    private func beginObservation() -> Int {
+        bindingsLock.lock()
+        defer { bindingsLock.unlock() }
+        nextBindingGeneration += 1
+        return nextBindingGeneration
+    }
 
     public init(
         config: Config = Config(),
@@ -102,20 +118,166 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
         discoverItems(owning: bundleID)
     }
 
+    public func item(withID id: String) -> ManagedItem? {
+        bindingsLock.lock()
+        let owner = bindings[id]?.item.ownerBundleID
+        bindingsLock.unlock()
+        // 缓存只提供归属提示；帧与元素仍从该进程重新读取，避免每一步再全机扫描。
+        return owner.map { discoverItems(owning: $0).first { $0.id == id } }
+            ?? discoverItems().first { $0.id == id }
+    }
+
     /// 只读某一个进程的图标。
     ///
     /// 全量枚举要遍历 90 个进程，实测 110~195ms（首次 2.6s）。用它给 mover 取一个图标帧
     /// 是纯浪费，用它看"拖拽进行中的位置"更是每看一眼就错过整个动作。
     /// 单进程读取只有几毫秒，是拖拽期间采样的唯一可行工具。
     public func discoverItems(owning bundleID: String) -> [ManagedItem] {
+        let generation = beginObservation()
         guard let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) else {
             return []
         }
-        return scan(
+        let result = scan(
             application,
             screens: screensProvider(),
             primaryHeight: NSScreen.screens.first?.frame.height ?? 0
-        ).accepted
+        )
+        rememberBindings(items: result.accepted, elements: result.elements, replacingAll: false, generation: generation)
+        return result.accepted
+    }
+
+    private func rememberBindings(items: [ManagedItem], elements: [AXUIElement], replacingAll: Bool, generation: Int) {
+        let fresh = Dictionary(zip(items, elements).map { ($0.id, Binding(item: $0, element: $1)) }, uniquingKeysWith: { _, latest in latest })
+        bindingsLock.lock()
+        // 保留短期不可变快照；expected 必须匹配原观测，不能被后来同 ID 的兄弟元素替换。
+        bindingSnapshots.append(Array(fresh.values))
+        if bindingSnapshots.count > 8 { bindingSnapshots.removeFirst() }
+        if generation >= publishedBindingGeneration {
+            if replacingAll { bindings = fresh }
+            else { bindings.merge(fresh, uniquingKeysWith: { _, latest in latest }) }
+            publishedBindingGeneration = generation
+        }
+        bindingsLock.unlock()
+    }
+
+    private func observedElement(for item: ManagedItem) -> AXUIElement? {
+        bindingsLock.lock()
+        defer { bindingsLock.unlock() }
+        guard let token = item.observationToken else { return nil }
+        return bindingSnapshots.lazy.flatMap({ $0 }).first {
+            $0.item.observationToken == token && $0.item == item
+        }?.element
+    }
+
+    public func currentFrame(of item: ManagedItem) -> CGRect? {
+        guard let element = observedElement(for: item) else { return nil }
+        if config.processMessagingTimeout.isFinite { AXUIElementSetMessagingTimeout(element, Float(config.processMessagingTimeout)) }
+        guard let raw = cgFrame(of: element) else { return nil }
+        let frame = ScreenCoordinateSpace.cgToAppKit(raw, primaryScreenHeight: CGDisplayBounds(CGMainDisplayID()).height)
+        return MenuBarItemPolicy.rejection(frame: frame, screens: screensProvider(), config: policyConfig) == nil ? frame : nil
+    }
+
+    public func hitTest(expected item: ManagedItem?, at point: CGPoint) -> MenuBarHitOutcome {
+        guard AXIsProcessTrusted() else { return .unavailable }
+        let candidates: [AXUIElement]
+        if let item {
+            candidates = observedElement(for: item).map { [$0] } ?? []
+        } else {
+            bindingsLock.lock()
+            candidates = bindings.values.map(\.element)
+            bindingsLock.unlock()
+        }
+        guard !candidates.isEmpty else { return .unavailable }
+
+        let cgPoint = CGDragEventPoster.cgPoint(for: point, primaryScreenHeight: CGDisplayBounds(CGMainDisplayID()).height)
+        var hit: AXUIElement?
+        let systemWide = AXUIElementCreateSystemWide()
+        if config.processMessagingTimeout.isFinite { AXUIElementSetMessagingTimeout(systemWide, Float(config.processMessagingTimeout)) }
+        guard AXUIElementCopyElementAtPosition(systemWide, Float(cgPoint.x), Float(cgPoint.y), &hit) == .success,
+              var current = hit else { return .unavailable }
+        // 接受状态项本身或其图像/按钮子节点；弹出菜单中的行不属于可拖动的状态项。
+        for _ in 0..<8 {
+            if config.processMessagingTimeout.isFinite { AXUIElementSetMessagingTimeout(current, Float(config.processMessagingTimeout)) }
+            let role = stringAttribute(from: current, name: kAXRoleAttribute as String)
+            if role == kAXMenuRole as String { return .occluded }
+            if candidates.contains(where: { CFEqual($0, current) }) { return .verified }
+            if role == kAXMenuBarRole as String || role == kAXApplicationRole as String { return .occluded }
+            var parent: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parent)
+            if result == .noValue || result == .attributeUnsupported { return .occluded }
+            guard result == .success, let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else { return .unavailable }
+            current = parent as! AXUIElement
+        }
+        return .unavailable
+    }
+
+    public func isMenuPresented(for item: ManagedItem) -> Bool? {
+        guard AXIsProcessTrusted(), let owner = item.ownerBundleID else { return nil }
+        guard let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == owner }) else { return false }
+        guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let anchor = ScreenCoordinateSpace.appKitToCG(item.frame, primaryScreenHeight: CGDisplayBounds(CGMainDisplayID()).height)
+        var frames: [CGRect] = []
+        for window in windows where (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == application.processIdentifier {
+            guard let bounds = window[kCGWindowBounds as String] as? NSDictionary,
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary), frame.height > 28 else { continue }
+            // 一些状态项（如 AdGuard）使用原生弹出窗口承载自绘面板，不暴露 AXMenu。
+            if let level = window[kCGWindowLayer as String] as? NSNumber,
+               Self.isStatusPopup(frame: frame, level: level.intValue, itemFrame: anchor) { return true }
+            frames.append(frame)
+        }
+        guard !frames.isEmpty else { return false }
+        let app = AXUIElementCreateApplication(application.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, Float(min(0.2, config.processMessagingTimeout)))
+        func probe(_ roots: [AXUIElement]) -> Bool? {
+            Self.visibleMenuInTree(roots: roots) { element in
+                AXUIElementSetMessagingTimeout(element, Float(min(0.2, self.config.processMessagingTimeout)))
+                guard let role = self.stringAttribute(from: element, name: kAXRoleAttribute as String) else { return nil }
+                // 状态菜单不在普通文档窗内部；主菜单的静态定义也不是当前弹出的菜单。
+                if role == kAXMenuBarRole as String { return (false, []) }
+                if role == kAXWindowRole as String,
+                   self.stringAttribute(from: element, name: kAXSubroleAttribute as String) == kAXStandardWindowSubrole as String {
+                    return (false, [])
+                }
+                if role == kAXMenuRole as String {
+                    guard let frame = self.cgFrame(of: element) else { return nil }
+                    let visible = frame.width > 0 && frame.height > 0
+                        && frames.contains { $0.contains(CGPoint(x: frame.midX, y: frame.midY)) }
+                    return (visible, [])
+                }
+                guard let children = self.checkedChildren(of: element) else { return nil }
+                return (false, children)
+            }
+        }
+        // 先看目标自身的菜单，避免无关窗口占满预算而错过确定的可见证据。
+        let targetResult = observedElement(for: item).flatMap { probe([$0]) }
+        if targetResult == true { return true }
+        guard let roots = checkedChildren(of: app) else { return nil }
+        let applicationResult = probe(roots)
+        if applicationResult == true { return true }
+        guard targetResult != nil, applicationResult != nil else { return nil }
+        return false
+    }
+
+    public static func isStatusPopup(frame: CGRect, level: Int, itemFrame: CGRect) -> Bool {
+        level == Int(CGWindowLevelForKey(.popUpMenuWindow))
+            && frame.width > 0 && frame.height > max(28, itemFrame.height)
+            && frame.minY >= itemFrame.maxY - 8 && frame.minY <= itemFrame.maxY + 32
+            && frame.minX - 8 <= itemFrame.midX && frame.maxX + 8 >= itemFrame.midX
+    }
+
+    /// 只有完整、成功的检查才能确认关闭；预算或读取失败保留为未知。
+    public static func visibleMenuInTree<Node>(roots: [Node], nodeLimit: Int = 80,
+        inspect: (Node) -> (visible: Bool, children: [Node])?) -> Bool? {
+        var pending = Array(roots.reversed())
+        var visited = 0, uncertain = false
+        while !pending.isEmpty, visited < nodeLimit {
+            let element = pending.removeLast()
+            visited += 1
+            guard let node = inspect(element) else { uncertain = true; continue }
+            if node.visible { return true }
+            pending += node.children.reversed()
+        }
+        return pending.isEmpty && !uncertain ? false : nil
     }
 
     // MARK: - MenuBarActivating（点击转发）
@@ -159,8 +321,7 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
 
     /// 右键菜单转发：在面板里右键 = 在真实图标上弹出上下文菜单。
     ///
-    /// 优先使用 AXShowMenu（专为弹出右键菜单设计），
-    /// 不支持时回退到 AXPress（至少能触发常规点击）。
+    /// 简易装配只允许 AXShowMenu；应用抽屉走真实鼠标右键转发。
     @discardableResult
     public func showMenu(itemID: String) -> ActivationOutcome {
         guard let item = discoverItems().first(where: { $0.id == itemID }) else {
@@ -181,10 +342,8 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
         guard listed == .success, let raw = actions as? [AnyObject] else { return .actionUnsupported }
         let names = raw.compactMap { $0 as? String }
 
-        // 优先 AXShowMenu，不支持则回退 AXPress
-        let action: String = names.contains("AXShowMenu") ? "AXShowMenu" : (names.contains("AXPress") ? "AXPress" : "")
-        guard !action.isEmpty else { return .actionUnsupported }
-        let result = AXUIElementPerformAction(element, action as CFString)
+        guard names.contains("AXShowMenu") else { return .actionUnsupported }
+        let result = AXUIElementPerformAction(element, "AXShowMenu" as CFString)
         guard result == .success else {
             return result == .cannotComplete ? .pressedUnconfirmed(code: Int(result.rawValue))
                                             : .failed(code: Int(result.rawValue))
@@ -259,6 +418,7 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     /// 单个进程的采集结果（含被拒原因计数）
     private struct ProcessScan {
         var accepted: [ManagedItem] = []
+        var elements: [AXUIElement] = []
         var rejections: [MenuBarItemPolicy.Rejection: Int] = [:]
         var hasExtrasMenuBar = false
         var microseconds = 0
@@ -280,6 +440,7 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
         }
         let children = self.children(of: extras)
         var accepted: [ManagedItem] = []
+        var elements: [AXUIElement] = []
         var rejections: [MenuBarItemPolicy.Rejection: Int] = [:]
         for (ordinal, child) in children.enumerated() {
             switch mapChild(
@@ -292,12 +453,14 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
             ) {
             case .accepted(let item):
                 accepted.append(item)
+                elements.append(child)
             case .rejected(let reason):
                 rejections[reason, default: 0] += 1
             }
         }
         return ProcessScan(
             accepted: MenuBarEnumeration.deduplicatedIDs(from: accepted),
+            elements: elements,
             rejections: rejections,
             hasExtrasMenuBar: true,
             microseconds: elapsed(since: started)
@@ -310,6 +473,7 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
 
     /// 供 probe / M0 记录使用的详细版
     public func enumerate() -> EnumerationReport {
+        let generation = beginObservation()
         let started = DispatchTime.now()
         let granted = AXIsProcessTrusted()
         let screens = screensProvider()
@@ -328,6 +492,7 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
         }
 
         var items: [ManagedItem] = []
+        var elements: [AXUIElement] = []
         var probes: [ProcessProbe] = []
         var rejections: [MenuBarItemPolicy.Rejection: Int] = [:]
 
@@ -347,6 +512,7 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
         for (index, application) in apps.enumerated() {
             let result = slots[index]
             items.append(contentsOf: result.accepted)
+            elements.append(contentsOf: result.elements)
             for (reason, count) in result.rejections {
                 rejections[reason, default: 0] += count
             }
@@ -366,6 +532,7 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
         slots.deallocate()
 
         let uniqueItems = MenuBarEnumeration.deduplicatedIDs(from: items)
+        rememberBindings(items: uniqueItems, elements: elements, replacingAll: true, generation: generation)
         return EnumerationReport(
             items: uniqueItems,
             probes: probes,
@@ -412,19 +579,28 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     }
 
     private func children(of element: AXUIElement) -> [AXUIElement] {
-        guard let value = attribute(element, kAXChildrenAttribute as String) else { return [] }
+        checkedChildren(of: element) ?? []
+    }
+
+    private func checkedChildren(of element: AXUIElement) -> [AXUIElement]? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
+        if result == .noValue || result == .attributeUnsupported { return [] }
+        guard result == .success, let value else { return nil }
         // as? 对 CF 类型恒真，必须比 CFTypeID 才算真校验；
         // 且 Swift 把 AX 返回的 CFArray 桥接成 [AXUIElement] 并不可靠，故显式逐元素读，
         // 单个元素类型不符就跳过——reader 崩溃等于把用户的菜单栏一起搞挂。
-        guard CFGetTypeID(value) == CFArrayGetTypeID() else { return [] }
+        guard CFGetTypeID(value) == CFArrayGetTypeID() else { return nil }
         let cfArray = value as! CFArray
-        return (0..<CFArrayGetCount(cfArray)).compactMap { index in
+        var children: [AXUIElement] = []
+        for index in 0..<CFArrayGetCount(cfArray) {
             guard let raw = CFArrayGetValueAtIndex(cfArray, index) else { return nil }
             // 元素归 CFArray 所有，用 takeUnretained 才不会过度释放
             let candidate = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue()
             guard CFGetTypeID(candidate) == AXUIElementGetTypeID() else { return nil }
-            return (candidate as! AXUIElement)
+            children.append(candidate as! AXUIElement)
         }
+        return children
     }
 
     /// AX 原始坐标（左上原点，y 向下）
@@ -580,7 +756,7 @@ public enum MenuBarEnumeration {
             seen[item.id] = count + 1
             guard count > 0 else { return item }
             let suffix = "#\(count)"
-            return ManagedItem(
+            var renamed = ManagedItem(
                 id: item.id + suffix,
                 ownerBundleID: item.ownerBundleID,
                 title: item.title + suffix,
@@ -593,6 +769,8 @@ public enum MenuBarEnumeration {
                 ordinalInOwner: item.ordinalInOwner,
                 ownerItemCount: item.ownerItemCount
             )
+            renamed.observationToken = item.observationToken
+            return renamed
         }
     }
 

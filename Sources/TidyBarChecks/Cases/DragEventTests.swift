@@ -9,6 +9,19 @@ import TidyBarCore
 /// 真机探针只能证明"这次没事"，用录制型投递器才能断言"中止时一个事件都没发"
 /// 和"任何失败路径都抬起了 ⌘"。
 struct DragEventDisciplineTests {
+    func nativeCommandPacketsUseTheCommandKey() throws {
+        var captured: [CGEvent] = []
+        let poster = CGDragEventPoster(primaryScreenHeight: 1080, eventSink: { captured.append($0) })
+        expect(poster.post(.commandDown))
+        expect(poster.post(.commandUp))
+        expectEqual(captured.map { $0.getIntegerValueField(.keyboardEventKeycode) }, [0x37, 0x37])
+        // CoreGraphics 将修饰键的按下/抬起编码为 flagsChanged。
+        expectEqual(captured.map(\.type), [.flagsChanged, .flagsChanged])
+        expect(captured.first?.flags.contains(.maskCommand) == true)
+        expect(captured.last?.flags.contains(.maskCommand) == false)
+        expect(captured.allSatisfy { $0.getIntegerValueField(.eventSourceUserData) == CGDragEventPoster.syntheticEventTag })
+    }
+
     private func makeMover(
         poster: DragEventPosting,
         cursor: FakeCursor,
@@ -42,7 +55,7 @@ struct DragEventDisciplineTests {
         let poster = RecordingDragEventPoster()
         let mover = makeMover(poster: poster, cursor: FakeCursor(), items: [icon])
 
-        try mover.move(itemID: icon.id, toX: 600)
+        try mover.move(itemID: icon.id, toX: 620)
 
         let kinds = poster.posted.compactMap { event -> String? in
             switch event {
@@ -78,6 +91,16 @@ struct DragEventDisciplineTests {
     }
 
     // MARK: 一个事件都不发的路径
+
+    func samePositionDoesNotPostInputOrConfirmDrag() throws {
+        let poster = RecordingDragEventPoster()
+        let mover = makeMover(poster: poster, cursor: FakeCursor(), items: [icon])
+        let landing = try mover.move(itemID: icon.id, toX: icon.centerX + 0.25)
+        expectEqual(landing, CGPoint(x: icon.centerX, y: icon.frame.midY))
+        expect(poster.posted.isEmpty, "原地操作不能制造点击、拖拽或键盘输入")
+        expectEqual(mover.consecutiveSuccesses, 0, "原地返回不能累计真实拖拽闸门次数")
+        expect(!mover.isDragInFlight)
+    }
 
     func refusesToTouchAnythingOnUnsupportedOS() throws {
         let poster = RecordingDragEventPoster()
@@ -198,12 +221,12 @@ struct DragEventDisciplineTests {
         let cursor = FakeCursor()
         let poster = RecordingDragEventPoster()
         let mover = makeMover(poster: poster, cursor: cursor, items: [icon], stepCount: 2)
-        _ = try mover.move(itemID: icon.id, toX: 600)
+        _ = try mover.move(itemID: icon.id, toX: 620)
         expectEqual(mover.consecutiveSuccesses, 1)
 
         cursor.isPrimaryButtonPressed = true
         do {
-            _ = try mover.move(itemID: icon.id, toX: 600)
+            _ = try mover.move(itemID: icon.id, toX: 620)
         } catch is MenuBarMoveError {}
         expectEqual(mover.consecutiveSuccesses, 0, "一次中止就要打断连续计数，否则 100 次闸门形同虚设")
     }
@@ -342,8 +365,10 @@ extension DragEventDisciplineTests {
     static var testCases: [TestCase] {
         let suite = DragEventDisciplineTests()
         return [
+            TestCase("nativeCommandPacketsUseTheCommandKey", suite.nativeCommandPacketsUseTheCommandKey),
             TestCase("postsEventsInCorrectOrder", suite.postsEventsInCorrectOrder),
             TestCase("dragsLandOnRequestedTarget", suite.dragsLandOnRequestedTarget),
+            TestCase("samePositionDoesNotPostInputOrConfirmDrag", suite.samePositionDoesNotPostInputOrConfirmDrag),
             TestCase("refusesToTouchAnythingOnUnsupportedOS", suite.refusesToTouchAnythingOnUnsupportedOS),
             TestCase("refusesWhenItemGone", suite.refusesWhenItemGone),
             TestCase("yieldsWhenUserHoldsMouseButton", suite.yieldsWhenUserHoldsMouseButton),

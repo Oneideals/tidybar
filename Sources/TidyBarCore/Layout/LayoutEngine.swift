@@ -16,6 +16,8 @@ public final class LayoutEngine {
         /// 事件都按预期投出去了，图标却纹丝不动：macOS 对落在空隙里的拖拽是静默忽略的，
         /// 只有复核结果才能发现"没成"，绝不能当成成功写进已提交布局
         case noVisibleEffect(itemID: String)
+        /// 图标消失或读取失败，不能将未知结果当成确认成功。
+        case verificationUnavailable(itemID: String)
     }
 
     public enum Capability: String, Equatable, Sendable {
@@ -39,10 +41,33 @@ public final class LayoutEngine {
     /// 是否至少成功执行过一次「拖拽 + 哨兵复核」全绿的操作。
     /// M0 验收看这个：未确认前不应把完整接管开放给用户。
     public private(set) var hasConfirmedDragSupport = false
+    private var dragRejectedBySystem = false
     /// 目标 X 坐标解析器。分隔符/占位符的真实位置只有 UI 层知道，
     /// 因此由装配层注册一次；apply 未显式传 targetX 时回落到这里。
     /// 返回 nil 即视为「当前无法定位」，本次变更只在内存布局生效。
     public var targetProvider: ((String, MenuBarZone) -> CGFloat?)?
+
+    public func markDraggingUnsupported() {
+        dragRejectedBySystem = true
+        capability = .panelOnlyFallback
+        capabilityReason = "系统返回不支持拖拽，已降级为收纳面板模式"
+    }
+
+    @discardableResult
+    public func refreshAccessibilityCapability() -> Bool {
+        guard !dragRejectedBySystem else { return false }
+        let previous = capability
+        let validated = services.mover.map { !($0 is UnverifiedMenuBarMover) } ?? false
+        let permitted = services.accessibility.isTrusted
+        capability = validated && permitted ? .fullDrag : .panelOnlyFallback
+        capabilityReason = !permitted ? "尚未授予辅助功能权限，授权后会自动更新可用能力"
+            : validated ? nil : "当前系统版本下 ⌘ 拖拽机制尚未验证，已自动切换为收纳面板模式"
+        return previous != capability
+    }
+
+    public var canReplayNow: Bool {
+        capability != .fullDrag || (services.cursor.isSessionInteractive && !services.cursor.isPrimaryButtonPressed)
+    }
 
     private let services: SystemServices
     private let journal: LayoutJournal
@@ -83,16 +108,8 @@ public final class LayoutEngine {
         self.clock = clock
         self.verificationWindow = max(0, verificationWindow)
         self.verificationInterval = max(0.005, verificationInterval)
-        let dragCapable: Bool
-        if let mover = services.mover {
-            dragCapable = !(mover is UnverifiedMenuBarMover)
-        } else {
-            dragCapable = false
-        }
-        self.capability = dragCapable ? .fullDrag : .panelOnlyFallback
-        self.capabilityReason = dragCapable
-            ? nil
-            : "当前系统版本下 ⌘ 拖拽机制尚未验证，已自动切换为收纳面板模式"
+        self.capability = .panelOnlyFallback
+        refreshAccessibilityCapability()
     }
 
     /// 升级迁移结果（一次性），供装配层打日志。nil = 不需要迁移。
@@ -127,10 +144,12 @@ public final class LayoutEngine {
     /// 从系统重新读取图标并折叠进布局；新出现的图标按策略归位（报告 A7）。
     @discardableResult
     public func synchronize(newItemZone: MenuBarZone) -> [ManagedItem] {
-        let discovered = services.reader.discoverItems()
+        let discovered = discoverItems()
         fold(items: discovered, newItemZone: newItemZone)
         return discovered
     }
+
+    public func discoverItems() -> [ManagedItem] { services.reader.discoverItems() }
 
     /// 折叠「已在别处扫好」的图标集合。枚举真机耗时 2.6s，必须允许在后台线程做完再喂回来，
     /// 而不是强迫调用方在主线程里重扫一遍。
@@ -149,7 +168,25 @@ public final class LayoutEngine {
     /// 比丢一次配置更难查，也更伤信任。
     public func fold(items discovered: [ManagedItem], newItemZone: MenuBarZone) {
         var adopted = layout
-        let known = layout.allItemIDs
+        let pending = pendingIntent
+        let committed = journal.readCommittedLayout()
+        var restoration = committed
+        if let pending {
+            var reference = committed ?? MenuBarLayout()
+            if reference.zone(of: pending.itemID) == nil {
+                let matches = ledgerRecords.filter { $0.aliases.contains(pending.itemID) }
+                if matches.count == 1, let record = matches.first {
+                    let previousIDs = record.aliases.filter { reference.zone(of: $0) != nil }
+                    if previousIDs.count == 1, let previousID = previousIDs.first {
+                        reference.rename(id: previousID, to: pending.itemID)
+                    }
+                }
+            }
+            // pending 可能已经改名，提交仍用旧别名；同一项只保留一个顺序锚点。
+            restoration = LayoutJournal.applying(pending, to: reference)
+        }
+        repairFragmentedSingletons(in: &adopted, observed: discovered, committed: pending == nil ? committed : nil)
+        let known = adopted.allItemIDs
         let freshIDs = Set(discovered.map(\.id))
 
         // 第一层：台账。它记得"这个分配上次、上上次叫什么"，所以重启之后仍有线索；
@@ -157,22 +194,59 @@ public final class LayoutEngine {
         let ledgerFound = IdentityLedger.resolve(
             records: ledgerRecords,
             observed: discovered,
-            staleIDs: known.subtracting(freshIDs)
+            staleIDs: known.union(ledgerRecords.map(\.currentID)).subtracting(freshIDs)
         )
         var ledgerResolution = LedgerResolution()
-        ledgerResolution.renames = ledgerFound.renames.filter { adopted.zone(of: $0.from) != nil }
+        ledgerResolution.renames = ledgerFound.renames
         ledgerResolution.ambiguousOwners = ledgerFound.ambiguousOwners
         ledgerResolution.aliasHits = ledgerFound.aliasHits
         ledgerResolution.ordinalHits = ledgerFound.ordinalHits
         ledgerResolution.titleHits = ledgerFound.titleHits
         for move in ledgerResolution.renames {
-            adopted.rename(id: move.from, to: move.to)
+            let recordIndex = ledgerRecords.firstIndex { $0.currentID == move.from }
+            if adopted.zone(of: move.from) != nil {
+                adopted.rename(id: move.from, to: move.to)
+            } else if let recordIndex, let zone = MenuBarZone(rawValue: ledgerRecords[recordIndex].zoneRaw) {
+                restoreItem(move.to, to: zone, aliases: ledgerRecords[recordIndex].aliases,
+                            from: restoration, into: &adopted)
+            }
+            if let recordIndex, let item = discovered.first(where: { $0.id == move.to }) {
+                IdentityLedger.applyUpdate(to: &ledgerRecords[recordIndex], now: clock(),
+                                           observedItem: item, drifted: true)
+            }
+        }
+        // 现场缺席不等于用户删除分配。同一 ID 再次出现时也要从台账恢复，
+        // 不能只处理“旧 ID → 新 ID”的改名，否则 App 重开就回到默认区。
+        for item in discovered where adopted.zone(of: item.id) == nil {
+            let matches = ledgerRecords.filter {
+                $0.aliases.contains(item.id) && $0.ownerBundleID == (item.ownerBundleID ?? "nil")
+            }
+            if matches.count == 1, let record = matches.first,
+               let zone = MenuBarZone(rawValue: record.zoneRaw) {
+                var predecessors = record.aliases.filter {
+                    adopted.zone(of: $0) != nil && !freshIDs.contains($0)
+                }
+                // 提交仍可使用历史名称：先原位恢复，避免追加操作改变用户次序。
+                // 旧名超出别名上限时，只认领整个 owner 唯一且完整的一对一关系。
+                if predecessors.isEmpty, let owner = item.ownerBundleID,
+                   item.ownerItemCount == 1, !ledgerResolution.ambiguousOwners.contains(owner),
+                   ledgerRecords.filter({ $0.ownerBundleID == owner }).count == 1,
+                   discovered.filter({ $0.ownerBundleID == owner }).count == 1 {
+                    predecessors = adopted.configuredIDs(ofOwner: owner).filter { !freshIDs.contains($0) }
+                }
+                if predecessors.count == 1, let predecessor = predecessors.first {
+                    adopted.rename(id: predecessor, to: item.id)
+                } else {
+                    restoreItem(item.id, to: zone, aliases: record.aliases, from: restoration, into: &adopted)
+                }
+            }
         }
         lastLedgerResolution = ledgerResolution
 
         for owner in Set(discovered.compactMap(\.ownerBundleID)) {
+            guard !ledgerResolution.ambiguousOwners.contains(owner) else { continue }
             let stale = adopted.configuredIDs(ofOwner: owner).filter { !freshIDs.contains($0) }
-            let fresh = discovered.filter { $0.ownerBundleID == owner && !known.contains($0.id) }
+            let fresh = discovered.filter { $0.ownerBundleID == owner && adopted.zone(of: $0.id) == nil }
             guard stale.count == 1, fresh.count == 1, let from = stale.first, let to = fresh.first?.id else {
                 if stale.count > 1 && fresh.count > 1 {
                     // 多对多只在真发生时留一行痕，方便事后回答"为什么我的设置没了"
@@ -183,8 +257,96 @@ public final class LayoutEngine {
             adopted.rename(id: from, to: to)
         }
         layout = MenuBarLayout.folding(discovered: discovered.map(\.id), into: adopted, defaultZone: newItemZone)
+        // 空帧可能移除了待恢复项；它再次出现时仍服从在途意图，而不是旧台账的分区/次序。
+        if let pending, let currentID = observedID(for: pending.itemID, in: freshIDs) {
+            layout.move(itemID: currentID, to: pending.targetZone, position: pending.targetPosition)
+        }
         syncLedger(observed: discovered)
         try? ledgerStore?.save(ledgerRecords)
+        synchronizePendingIdentity(observedIDs: freshIDs)
+    }
+
+    /// 旧版本可能把单图标的每个未读标题记成独立的 inferred 记录。
+    /// 仅当已提交的唯一用户决定可以明确锚定时，收回这些推定碎片。
+    private func repairFragmentedSingletons(in adopted: inout MenuBarLayout, observed: [ManagedItem],
+                                            committed: MenuBarLayout?) {
+        guard let committed else { return }
+        for owner in Set(observed.compactMap(\.ownerBundleID)) {
+            let items = observed.filter { $0.ownerBundleID == owner }
+            let records = ledgerRecords.filter { $0.ownerBundleID == owner }
+            let users = records.filter { $0.pinnedBy == .user }
+            let configured = committed.configuredIDs(ofOwner: owner)
+            guard items.count == 1, let item = items.first,
+                  item.ownerItemCount == 1, item.ordinalInOwner == 0,
+                  records.count > 1, users.count == 1, var restored = users.first,
+                  records.allSatisfy({ $0.ownerItemCount == 1 && $0.observedOrdinal == 0
+                      && ($0.maximumObservedItemCount ?? 1) == 1 }),
+                  configured.count == 1, let savedID = configured.first,
+                  restored.aliases.contains(savedID), let zone = committed.zone(of: savedID) else { continue }
+
+            let changedID = restored.currentID != item.id
+            var seen: Set<String> = []
+            let aliases = records.sorted { $0.lastSeenAt < $1.lastSeenAt }.flatMap(\.aliases).filter {
+                $0 != savedID && $0 != item.id && seen.insert($0).inserted
+            }
+            // 保留提交的锚点，不能让大量旧未读数把用户决定挤出别名上限。
+            restored.aliases = Array(aliases.suffix(IdentityLedger.maxAliases - 2)) + [savedID]
+            restored.zoneRaw = zone.rawValue
+            IdentityLedger.applyUpdate(to: &restored, now: clock(), observedItem: item, drifted: changedID)
+            ledgerRecords.removeAll { $0.ownerBundleID == owner }
+            ledgerRecords.append(restored)
+
+            // 当前内存也可能已经误归入隐藏区，单纯 rename 不足以纠正它。
+            for id in adopted.configuredIDs(ofOwner: owner) { adopted.remove(itemID: id) }
+            restoreItem(item.id, to: zone, aliases: restored.aliases, from: committed, into: &adopted)
+        }
+    }
+
+    /// 只给重新出现的项恢复位置；仍在布局中的项（包括新用户决定）不随扫描重排。
+    private func restoreItem(_ itemID: String, to zone: MenuBarZone, aliases: [String],
+                             from committed: MenuBarLayout?, into adopted: inout MenuBarLayout) {
+        guard adopted.zone(of: itemID) == nil else { return }
+        let savedIDs = aliases.filter { committed?.zone(of: $0) == zone }
+        guard let committed, savedIDs.count == 1, let savedID = savedIDs.first,
+              let savedPosition = committed.position(of: savedID) else {
+            adopted.append(itemID, to: zone)
+            return
+        }
+        let members = adopted.items(in: zone)
+        let savedOrder = committed.items(in: zone)
+        func currentPosition(of id: String) -> Int? {
+            if let index = members.firstIndex(of: id) { return index }
+            let matches = ledgerRecords.filter { $0.aliases.contains(id) }
+            guard matches.count == 1, let record = matches.first else { return nil }
+            let indices = members.indices.filter { record.aliases.contains(members[$0]) }
+            return indices.count == 1 ? indices.first : nil
+        }
+        // 多项按任意枚举顺序返回时，已恢复的项也会成为下一项的前后锚点。
+        let next = savedOrder.dropFirst(savedPosition + 1).lazy.compactMap(currentPosition).first
+        let previous = savedOrder.prefix(savedPosition).reversed().lazy.compactMap(currentPosition).first
+        adopted.move(itemID: itemID, to: zone,
+                     position: next ?? previous.map { $0 + 1 } ?? min(savedPosition, members.count))
+    }
+
+    var pendingIntent: LayoutJournal.LayoutIntent? {
+        guard let intent = journal.readPendingIntent(), !journal.hasCommitted(intent) else { return nil }
+        return intent
+    }
+
+    /// 待恢复操作使用同一条已确认身份链；事务 ID、时间和重试次数保持不变。
+    private func synchronizePendingIdentity(observedIDs: Set<String>) {
+        guard let intent = journal.readPendingIntent(),
+              let currentID = observedID(for: intent.itemID, in: observedIDs), currentID != intent.itemID else { return }
+        do { try journal.writeIntent(intent.renamed(to: currentID)) }
+        catch { fprint("待恢复图标身份暂未保存：\(error)") }
+    }
+
+    private func observedID(for savedID: String, in observedIDs: Set<String>) -> String? {
+        if observedIDs.contains(savedID) { return savedID }
+        let matches = ledgerRecords.filter {
+            $0.aliases.contains(savedID) && observedIDs.contains($0.currentID)
+        }
+        return matches.count == 1 ? matches.first?.currentID : nil
     }
 
     /// 把这一帧观测并回台账：已认识的刷新观测值（并把旧名留在别名里），
@@ -239,11 +401,10 @@ public final class LayoutEngine {
         // 先在内存布局上落地意图：即便随后执行失败，重启后的 pending 重放也基于同一份真相
         layout.move(itemID: itemID, to: zone, position: targetPosition)
 
-        guard let mover = services.mover, !(mover is UnverifiedMenuBarMover) else {
+        guard capability == .fullDrag, let mover = services.mover else {
             capability = .panelOnlyFallback
             capabilityReason = "⌘ 拖拽不可用，布局仅在收纳面板内生效"
-            try journal.clearPendingIntent()
-            try journal.writeCommitted(layout)
+            try commit(intent)
             return
         }
 
@@ -260,13 +421,8 @@ public final class LayoutEngine {
 
         do {
             try performDrag(mover: mover, itemID: itemID, x: x)
-            try journal.clearPendingIntent()
-            try journal.writeCommitted(layout)
+            try commit(intent)
         } catch let error as MenuBarMoveError {
-            if case .unsupportedOS = error {
-                capability = .panelOnlyFallback
-                capabilityReason = "系统返回不支持拖拽，已降级为收纳面板模式"
-            }
             rollback(intent)
             throw EngineError.moveFailed(error)
         } catch let error as EngineError {
@@ -288,20 +444,35 @@ public final class LayoutEngine {
         if cursor.isPrimaryButtonPressed {
             throw EngineError.sentinelAborted(.userInteracting)
         }
-        let elapsed = Date().timeIntervalSince(lastOperationAt)
-        if elapsed < sentinel.minIntervalBetweenOperations {
-            throw EngineError.sentinelAborted(.throttled)
+        let elapsed = clock().timeIntervalSince(lastOperationAt)
+        let remaining = min(sentinel.minIntervalBetweenOperations,
+                            max(0, sentinel.minIntervalBetweenOperations - elapsed))
+        if remaining > 0 {
+            Thread.sleep(forTimeInterval: remaining)
+            if cursor.isPrimaryButtonPressed { throw EngineError.sentinelAborted(.userInteracting) }
         }
 
-        let beforeItem = services.reader.discoverItems().first { $0.id == itemID }
-        _ = try mover.move(itemID: itemID, toX: x)
+        let beforeItem = services.reader.item(withID: itemID)
+        do {
+            _ = try mover.move(itemID: itemID, toX: x)
+        } catch let error as MenuBarMoveError {
+            if error == .unsupportedOS {
+                markDraggingUnsupported()
+            }
+            throw error
+        }
 
-        if awaitMovementLanded(itemID: itemID, beforeItem: beforeItem, towardX: x) == false {
+        guard let landed = awaitMovementLanded(itemID: itemID, beforeItem: beforeItem, towardX: x) else {
+            throw EngineError.verificationUnavailable(itemID: itemID)
+        }
+        if !landed {
             throw EngineError.noVisibleEffect(itemID: itemID)
         }
 
-        lastOperationAt = Date()
-        hasConfirmedDragSupport = true
+        lastOperationAt = clock()
+        if let beforeItem, abs(x - beforeItem.centerX) > 3 {
+            hasConfirmedDragSupport = true
+        }
     }
 
     /// 复核的是**结果**（图标真的挪到位了吗），不是光标。
@@ -310,7 +481,7 @@ public final class LayoutEngine {
     /// 必须轮询而不是读一次：真机 35 图标在栏时，抬起后那一瞬间读到的常常还是旧位置
     /// （菜单栏重排是异步的），单次读帧会把"还没落位"误判成"系统没接受"。
     /// 一旦读到真的动了就立刻返回，所以**成功路径不付额外延迟**，只有失败/慢的情况才会用尽窗口。
-    /// 返回 nil 表示"无法判定"（前后帧读不到），按不误判失败处理。
+    /// 返回 nil 表示"无法判定"，调用方必须与已确认成功区分。
     private func awaitMovementLanded(
         itemID: String,
         beforeItem: ManagedItem?,
@@ -370,9 +541,44 @@ public final class LayoutEngine {
     /// 只记归属、不产生任何输入事件：分隔符被拖动后重算分区用它。
     /// 拖拽是"改分区"的一种实现手段，不是唯一一种——把边界挪了，归属自然跟着变，
     /// 这种时候不该再去搬别人的图标。
-    public func recordZoneOnly(itemID: String, zone: MenuBarZone) {
-        layout.move(itemID: itemID, to: zone, position: nil)
-        try? journal.writeCommitted(layout)
+    public func recordZoneOnly(itemID: String, zone: MenuBarZone, position: Int? = nil,
+                               supersedingPending: Bool = false) throws {
+        let previous = layout
+        let superseded = supersedingPending ? journal.readPendingIntent() : nil
+        if let superseded, !journal.hasCommitted(superseded) { restorePreviousLayout(superseded) }
+        layout.move(itemID: itemID, to: zone, position: position)
+        do { try persistCommittedLayout(completing: superseded) }
+        catch {
+            layout = previous
+            throw error
+        }
+        if superseded != nil {
+            do { try journal.clearPendingIntent() }
+            catch { fprint("分区已保存，旧恢复标记暂未清理：\(error)") }
+        }
+    }
+
+    /// 用户分配在提交时同步到台账，不能等下一帧扫描才补写。
+    /// pending 的清理由调用方在全部持久化成功之后执行。
+    private func persistCommittedLayout(completing intent: LayoutJournal.LayoutIntent? = nil) throws {
+        let handled = journal.readPendingIntent().flatMap { journal.hasCommitted($0) ? $0 : nil }
+        try journal.writeCommitted(layout, completing: intent ?? handled)
+        for index in ledgerRecords.indices {
+            if let zone = layout.zone(of: ledgerRecords[index].currentID) {
+                ledgerRecords[index].zoneRaw = zone.rawValue
+            }
+        }
+        do { try ledgerStore?.save(ledgerRecords) }
+        catch { fprint("布局已保存，身份台账暂未写入：\(error)") }
+    }
+
+    private func commit(_ intent: LayoutJournal.LayoutIntent) throws {
+        do { try persistCommittedLayout(completing: intent) }
+        catch {
+            restorePreviousLayout(intent)
+            throw error // 保留 pending，不能把写失败的分区当作成功发布。
+        }
+        try journal.clearPendingIntent()
     }
 
     // MARK: - 点击转发（报告 A3/A8：面板与搜索结果里的点击）
@@ -397,12 +603,16 @@ public final class LayoutEngine {
 
     /// 回滚：把内存布局恢复到意图执行前，并清除 pending
     public func rollback(_ intent: LayoutJournal.LayoutIntent) {
+        restorePreviousLayout(intent)
+        try? journal.clearPendingIntent()
+    }
+
+    private func restorePreviousLayout(_ intent: LayoutJournal.LayoutIntent) {
         if let previousZone = intent.previousZone {
             layout.move(itemID: intent.itemID, to: previousZone, position: intent.previousPosition)
         } else {
             layout.remove(itemID: intent.itemID)
         }
-        try? journal.clearPendingIntent()
     }
 
     // MARK: - 启动恢复
@@ -411,6 +621,15 @@ public final class LayoutEngine {
     public func recoverOnLaunch() -> LayoutJournal.Recovery {
         let committed = journal.readCommittedLayout()
         let pending = journal.readPendingIntent()
+        if let pending, journal.hasCommitted(pending), let committed {
+            layout = committed
+            try? journal.clearPendingIntent()
+            return .clean(committed)
+        }
+        if let pending, pending.replayFailures >= maxReplayAttempts {
+            discardPendingIntent()
+            return .clean(layout)
+        }
         let recovery = LayoutJournal.recover(committed: committed, pending: pending)
         switch recovery {
         case .clean(let layout):
@@ -423,10 +642,24 @@ public final class LayoutEngine {
 
     /// 用户显式放弃未完成变更时调用
     public func discardPendingIntent() {
-        if let committed = journal.readCommittedLayout() {
-            layout = committed
+        let pending = journal.readPendingIntent()
+        let committed = journal.readCommittedLayout() ?? MenuBarLayout()
+        layout = committed
+        // 已确认的改名仍有效，但被放弃的目标分区不能留在台账里。
+        for index in ledgerRecords.indices {
+            let configured = ledgerRecords[index].aliases.filter { committed.zone(of: $0) != nil }
+            guard configured.count == 1, let previousID = configured.first,
+                  let zone = committed.zone(of: previousID) else { continue }
+            ledgerRecords[index].zoneRaw = zone.rawValue
+            layout.rename(id: previousID, to: ledgerRecords[index].currentID)
         }
-        try? journal.clearPendingIntent()
+        do {
+            // “放弃”同样是已结束的事务，先保存结果再删除恢复依据。
+            try persistCommittedLayout(completing: pending)
+            try journal.clearPendingIntent()
+        } catch {
+            fprint("恢复已停止，放弃结果暂未完全保存：\(error)")
+        }
     }
 
     /// 把上次未完成的意图沿**产品主路径**重做一遍。
@@ -436,16 +669,21 @@ public final class LayoutEngine {
     /// 走 performDrag 而不是自己拼一遍流程，是为了让"重放成功"和"用户手动整理成功"
     /// 是同一条链路的同一个结论。
     public func replay(_ intent: LayoutJournal.LayoutIntent) throws {
+        if capability == .panelOnlyFallback {
+            layout.move(itemID: intent.itemID, to: intent.targetZone, position: intent.targetPosition)
+            try commit(intent)
+            return
+        }
         guard let mover = services.mover, !(mover is UnverifiedMenuBarMover) else {
             throw EngineError.noMovementCapability
         }
         guard let x = targetProvider?(intent.itemID, intent.targetZone) else {
             throw EngineError.noMovementCapability
         }
+        try journal.writeIntent(intent)
         try performDrag(mover: mover, itemID: intent.itemID, x: x)
         layout.move(itemID: intent.itemID, to: intent.targetZone, position: intent.targetPosition)
-        try journal.clearPendingIntent()
-        try journal.writeCommitted(layout)
+        try commit(intent)
     }
 
     /// 重放失败的记账结果
@@ -464,7 +702,7 @@ public final class LayoutEngine {
     public func noteReplayFailure() -> ReplayOutcome {
         guard journal.hasPendingIntent else { return .nothingPending }
         // Swift 5 起 try? 会把 Optional 返回值压平，所以这里 nil 有两种含义：
-        // 达到上限（journal 已自行清除 pending）或写盘异常。两种都不该继续重试。
+        // 达到上限或写盘异常。两种都先持久化放弃结果，再清除恢复依据。
         guard let updated = try? journal.noteReplayFailure(maxAttempts: maxReplayAttempts) else {
             discardPendingIntent()
             return .abandoned
@@ -472,11 +710,10 @@ public final class LayoutEngine {
         return .retryScheduled(failures: updated.replayFailures)
     }
 
-    /// 优雅退出前的收尾：抬起悬在半空的拖拽、把当前布局落盘。
-    /// 不承诺"清掉 pending"：若此刻真有变更在飞，它和崩溃留下的状态同样含糊，
-    /// 正确处理是交给下次启动的重放 + 上限，而不是假装成功。
+    /// 优雅退出只释放输入。明确分配、重放和取消已各自持久化；
+    /// 当前布局可能来自空扫描或部分扫描，退出不能用它覆盖上次已提交的分配。
+    /// 在途 pending 原样保留，交给下次启动恢复。
     public func prepareForTermination() {
         (services.mover as? DragReleasing)?.releaseInFlightDrag()
-        try? journal.writeCommitted(layout)
     }
 }

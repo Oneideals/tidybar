@@ -298,7 +298,7 @@ if wantDestructive {
     // 所以报"按下"时先补一次显式抬起再读：回落=读数被合成事件污染（无害），
     // 不回落=真的卡键（严重缺陷，必须当作事故处理）
     if isCommandStuck() {
-        CGEvent(keyboardEventSource: nil, virtualKey: 0x38, keyDown: false)?.post(tap: .cghidEventTap)
+        holder.post(.commandUp)
         usleep(80_000)
         let stillStuck = isCommandStuck()
         if stillStuck {

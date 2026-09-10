@@ -130,7 +130,7 @@ struct IdentityLedgerTests {
             record(key: "a-2", bundle: bundle, title: "P", aliases: [old1.id]),   // 两条记录都指向同一个旧 id
         ]
         let r = IdentityLedger.resolve(records: records, observed: [fresh], staleIDs: [old1.id])
-        expectEqual(r.renames.count, 1, "只允许第一条命中，第二条必须因已被占用而放弃")
+        expectEqual(r.renames.count, 1, "同一旧 ID 的等价重复记录应去重为一个对应")
     }
 
     /// 别名有上限：只记最近几个名字，不让文件无限膨胀
@@ -213,6 +213,243 @@ struct LedgerAcrossLaunchTests {
         expectNil(second.layout.zone(of: wxOld.id), "旧 id 要迁净，不能同占两坑")
         expect(second.lastLedgerResolution.ambiguousOwners.isEmpty)
     }
+
+    func committedOrderSurvivesAnEmptyScanAndUnorderedReturn() throws {
+        let a = icon("com.order.a", "A", ordinal: 0, of: 1)
+        let b = icon("com.order.b", "B", ordinal: 0, of: 1)
+        let c = icon("com.order.c", "C", ordinal: 0, of: 1)
+        let d = icon("com.order.d", "D", ordinal: 0, of: 1)
+        let e = icon("com.order.e", "E", ordinal: 0, of: 1)
+        let committed = MenuBarLayout(zones: ["visible": [a.id, b.id, c.id], "hidden": [d.id, e.id]])
+        let directory = TestPaths.journalDirectory("ledger-empty-order")
+        let journal = LayoutJournal(directory: directory)
+        try journal.writeCommitted(committed)
+        let store = IdentityLedgerStore(url: directory.appendingPathComponent("ledger.json"))
+        try store.save([a, b, c, d, e].map { item in
+            var entry = record(key: item.id, bundle: item.ownerBundleID!, title: item.title,
+                               aliases: [item.id], pinned: .user)
+            entry.zoneRaw = committed.zone(of: item.id)!.rawValue
+            return entry
+        })
+        let engine = LayoutEngine(layout: committed, services: makeServices(mover: nil), journal: journal, ledger: store)
+
+        engine.fold(items: [], newItemZone: .hidden)
+        expect(engine.layout.allItemIDs.isEmpty)
+        engine.fold(items: [c, e, a, d, b], newItemZone: .hidden)
+
+        expectEqual(engine.layout.items(in: .visible), [a.id, b.id, c.id],
+                    "授权前空帧不能让已提交顺序变成后续枚举顺序")
+        expectEqual(engine.layout.items(in: .hidden), [d.id, e.id])
+        expectEqual(journal.readCommittedLayout(), committed, "扫描恢复不应改写用户提交")
+    }
+
+    func committedOrderSurvivesPartialScansAndConfirmedRenames() throws {
+        for recordedAliases in [false, true] {
+            let a = icon("com.order.a", "A", ordinal: 0, of: 1)
+            let b = icon("com.order.b", "B", ordinal: 0, of: 1)
+            let c = icon("com.order.c", "C", ordinal: 0, of: 1)
+            let d = icon("com.order.d", "D", ordinal: 0, of: 1)
+            let renamedB = icon("com.order.b", "B 2", ordinal: 0, of: 1)
+            let renamedD = icon("com.order.d", "D 2", ordinal: 0, of: 1)
+            let committed = MenuBarLayout(zones: ["visible": [a.id, b.id, c.id, d.id]])
+            let directory = TestPaths.journalDirectory("ledger-partial-order")
+            let journal = LayoutJournal(directory: directory)
+            try journal.writeCommitted(committed)
+            let store = IdentityLedgerStore(url: directory.appendingPathComponent("ledger.json"))
+            try store.save([a, b, c, d].map { item in
+                var aliases = [item.id]
+                if recordedAliases, item.id == b.id { aliases.append(renamedB.id) }
+                if recordedAliases, item.id == d.id { aliases.append(renamedD.id) }
+                var entry = record(key: item.id, bundle: item.ownerBundleID!, title: item.title,
+                                   aliases: aliases, pinned: .user)
+                entry.zoneRaw = "visible"
+                return entry
+            })
+            let engine = LayoutEngine(layout: committed, services: makeServices(mover: nil), journal: journal, ledger: store)
+
+            engine.fold(items: [renamedD, a], newItemZone: .hidden)
+            expectEqual(engine.layout.items(in: .visible), [a.id, renamedD.id])
+            engine.fold(items: [c, renamedB, renamedD, a], newItemZone: .hidden)
+
+            expectEqual(engine.layout.items(in: .visible), [a.id, renamedB.id, c.id, renamedD.id],
+                        "多项分批返回时，确认别名的前后邻居仍须保持已提交的相对顺序")
+            expectEqual(journal.readCommittedLayout(), committed)
+        }
+    }
+
+    func restoredOrderPreservesPendingAndNewUserChoices() throws {
+        for hasPending in [true, false] {
+            let a = icon("com.order.a", "A", ordinal: 0, of: 1)
+            let b = icon("com.order.b", "B", ordinal: 0, of: 1)
+            let c = icon("com.order.c", "C", ordinal: 0, of: 1)
+            let d = icon("com.order.d", "D", ordinal: 0, of: 1)
+            let committed = MenuBarLayout(zones: ["visible": [a.id, b.id, c.id, d.id]])
+            let directory = TestPaths.journalDirectory("ledger-order-authority")
+            let journal = LayoutJournal(directory: directory)
+            try journal.writeCommitted(committed)
+            let store = IdentityLedgerStore(url: directory.appendingPathComponent("ledger.json"))
+            try store.save([a, b, c, d].map { item in
+                var entry = record(key: item.id, bundle: item.ownerBundleID!, title: item.title,
+                                   aliases: [item.id], pinned: .user)
+                entry.zoneRaw = "visible"
+                return entry
+            })
+            let engine = LayoutEngine(layout: committed, services: makeServices(mover: nil), journal: journal, ledger: store)
+            if hasPending {
+                try journal.writeIntent(.init(itemID: c.id, targetZone: .visible, targetPosition: 0,
+                                              previousZone: .visible, previousPosition: 2))
+                _ = engine.recoverOnLaunch()
+            } else {
+                try engine.recordZoneOnly(itemID: c.id, zone: .visible, position: 0)
+            }
+            let expected = [c.id, a.id, b.id, d.id]
+            let savedPending = journal.readPendingIntent()
+            let savedCommitted = journal.readCommittedLayout()
+
+            engine.fold(items: [c, a], newItemZone: .hidden)
+            engine.fold(items: [d, b, a, c], newItemZone: .hidden)
+            expectEqual(engine.layout.items(in: .visible), expected,
+                        "恢复缺席项不能覆盖待恢复的次序，也不能回到新用户决定之前的提交")
+            engine.fold(items: [], newItemZone: .hidden)
+            engine.fold(items: [d, b, a, c], newItemZone: .hidden)
+            expectEqual(engine.layout.items(in: .visible), expected)
+            expectEqual(journal.readPendingIntent(), savedPending, "只恢复观测，不消费或重写待恢复意图")
+            expectEqual(journal.readCommittedLayout(), savedCommitted)
+        }
+    }
+
+    func pendingRenameDoesNotDuplicateCommittedOrderAnchors() throws {
+        let a = icon("com.order.a", "A", ordinal: 0, of: 1)
+        let b = icon("com.order.b", "B", ordinal: 0, of: 1)
+        let old = icon("com.order.pending", "Old", ordinal: 0, of: 1)
+        let renamed = icon("com.order.pending", "New", ordinal: 0, of: 1)
+        let d = icon("com.order.d", "D", ordinal: 0, of: 1)
+        let committed = MenuBarLayout(zones: ["visible": [a.id, old.id, b.id, d.id]])
+        let directory = TestPaths.journalDirectory("ledger-renamed-pending-order")
+        let journal = LayoutJournal(directory: directory)
+        try journal.writeCommitted(committed)
+        try journal.writeIntent(.init(itemID: old.id, targetZone: .visible, targetPosition: 0,
+                                      previousZone: .visible, previousPosition: 1))
+        let store = IdentityLedgerStore(url: directory.appendingPathComponent("ledger.json"))
+        try store.save([a, old, b, d].map { item in
+            var entry = record(key: item.id, bundle: item.ownerBundleID!, title: item.title,
+                               aliases: [item.id], pinned: .user)
+            entry.zoneRaw = "visible"
+            return entry
+        })
+        let engine = LayoutEngine(layout: committed, services: makeServices(mover: nil), journal: journal, ledger: store)
+        _ = engine.recoverOnLaunch()
+        engine.fold(items: [a, renamed, b, d], newItemZone: .hidden)
+        expectEqual(journal.readPendingIntent()?.itemID, renamed.id)
+        let pending = journal.readPendingIntent()
+
+        engine.fold(items: [], newItemZone: .hidden)
+        engine.fold(items: [b, renamed, a, d], newItemZone: .hidden)
+
+        expectEqual(engine.layout.items(in: .visible), [renamed.id, a.id, b.id, d.id],
+                    "pending 已改名而 committed 仍用旧名时，同一图标不能变成两个前后锚点")
+        expectEqual(journal.readPendingIntent(), pending)
+        expectEqual(journal.readCommittedLayout(), committed)
+    }
+
+    func fragmentedSingletonLedgerKeepsCommittedUserChoice() throws {
+        for polluted in [false, true] {
+            let owner = "com.test.chat"
+            let oldID = owner + ".#item0"
+            let fresh = icon(owner, " 2", ordinal: 0, of: 1)
+            let before = TestItems.item("before"), after = TestItems.item("after")
+            let committed = MenuBarLayout(zones: ["visible": [before.id, oldID, after.id]])
+            let directory = TestPaths.journalDirectory("fragmented-\(UUID().uuidString)")
+            let journal = LayoutJournal(directory: directory)
+            try journal.writeCommitted(committed)
+            let store = IdentityLedgerStore(url: directory.appendingPathComponent("ledger.json"))
+            var pinned = record(key: "user-choice", bundle: owner, title: "Chat", aliases: [oldID], pinned: .user)
+            pinned.zoneRaw = "visible"
+            let inferred = record(key: "badge-2", bundle: owner, title: " 2", aliases: [fresh.id])
+            try store.save([inferred, pinned])
+            let initial = polluted
+                ? MenuBarLayout(zones: ["visible": [before.id, after.id], "hidden": [fresh.id]])
+                : committed
+            let engine = LayoutEngine(layout: initial, services: makeServices(), journal: journal, ledger: store)
+            for item in [fresh, icon(owner, " 3", ordinal: 0, of: 1),
+                         icon(owner, "Chat", ordinal: 0, of: 1, id: oldID)] {
+                engine.fold(items: [before, item, after], newItemZone: .hidden)
+                expectEqual(engine.layout.items(in: .visible), [before.id, item.id, after.id],
+                            "历史 inferred 别名不能覆盖已提交的用户分区或次序")
+                let records = store.load().filter { $0.ownerBundleID == owner }
+                expectEqual(records.count, 1, "单图标的推定碎片应归回唯一用户记录")
+                expectEqual(records.first?.assignmentKey, "user-choice")
+                expectEqual(records.first?.pinnedBy, .user)
+                expectEqual(records.first?.currentID, item.id)
+                expectEqual(records.first?.zoneRaw, "visible")
+            }
+            expectEqual(journal.readCommittedLayout(), committed, "修复观测台账不改写用户提交")
+        }
+    }
+
+    func fragmentedLedgerDoesNotMergeUncertainAssignments() throws {
+        for condition in ["twoUsers", "multipleItems", "otherOrdinal", "twoCommitted", "unanchored", "pending"] {
+            let owner = "com.test.chat", oldID = "com.test.chat.#item0"
+            let fresh = icon(owner, " 2", ordinal: 0, of: 1)
+            var pinned = record(key: "user-choice", bundle: owner, title: "Chat", aliases: [oldID], pinned: .user)
+            pinned.zoneRaw = "visible"
+            var inferred = record(key: "badge-2", bundle: owner, title: " 2", aliases: [fresh.id])
+            if condition == "twoUsers" { inferred.pinnedBy = .user }
+            if condition == "multipleItems" { inferred.ownerItemCount = 2 }
+            if condition == "otherOrdinal" { inferred.observedOrdinal = 1 }
+            var committed = MenuBarLayout(zones: ["visible": [oldID]])
+            if condition == "twoCommitted" { committed.append(owner + ".another", to: .visible) }
+            if condition == "unanchored" { committed = MenuBarLayout(zones: ["visible": [owner + ".unknown"]]) }
+            let directory = TestPaths.journalDirectory("fragmented-guard-\(UUID().uuidString)")
+            let journal = LayoutJournal(directory: directory)
+            try journal.writeCommitted(committed)
+            let store = IdentityLedgerStore(url: directory.appendingPathComponent("ledger.json"))
+            try store.save([pinned, inferred])
+            if condition == "pending" {
+                try journal.writeIntent(.init(itemID: fresh.id, targetZone: .alwaysHidden, targetPosition: nil,
+                                              previousZone: .hidden, previousPosition: 0))
+            }
+            let pending = journal.readPendingIntent()
+            var layout = MenuBarLayout(zones: ["hidden": [fresh.id]])
+            for _ in 0..<2 {
+                let engine = LayoutEngine(layout: layout, services: makeServices(), journal: journal, ledger: store)
+                engine.fold(items: [fresh], newItemZone: .hidden)
+                layout = engine.layout
+                expectEqual(Set(store.load().map(\.assignmentKey)), ["user-choice", "badge-2"],
+                            "\(condition) 时不能合并；后续单项观测及重启也不能抹掉已知多项证据")
+            }
+            expectEqual(journal.readPendingIntent(), pending)
+            expectEqual(journal.readCommittedLayout(), committed)
+        }
+    }
+
+    func fragmentedLedgerRestoresOrderAfterPartialDiscovery() throws {
+        for renamedSuccessor in [false, true] {
+            let owner = "com.test.chat", oldID = "com.test.chat.#item0"
+            let fresh = icon(owner, " 2", ordinal: 0, of: 1)
+            let rightID = "com.test.right.old"
+            let right = icon("com.test.right", "Right", ordinal: 0, of: 1,
+                             id: renamedSuccessor ? "com.test.right.new" : rightID)
+            let committed = MenuBarLayout(zones: ["visible": ["absent", oldID, rightID]])
+            let directory = TestPaths.journalDirectory("fragmented-partial-\(UUID().uuidString)")
+            let journal = LayoutJournal(directory: directory)
+            try journal.writeCommitted(committed)
+            let store = IdentityLedgerStore(url: directory.appendingPathComponent("ledger.json"))
+            var pinned = record(key: "user-choice", bundle: owner, title: "Chat", aliases: [oldID], pinned: .user)
+            pinned.zoneRaw = "visible"
+            var successor = record(key: "right-choice", bundle: "com.test.right", title: "Right",
+                                   aliases: renamedSuccessor ? [rightID, right.id] : [rightID], pinned: .user)
+            successor.zoneRaw = "visible"
+            try store.save([pinned, record(key: "badge-2", bundle: owner, title: " 2", aliases: [fresh.id]), successor])
+            let engine = LayoutEngine(layout: committed, services: makeServices(), journal: journal, ledger: store,
+                                      clock: { Date(timeIntervalSince1970: 1_000) })
+            engine.fold(items: [right], newItemZone: .hidden)
+            expectEqual(engine.layout.items(in: .visible), [right.id])
+            engine.fold(items: [right, fresh], newItemZone: .hidden)
+            expectEqual(engine.layout.items(in: .visible), [fresh.id, right.id],
+                        "前驱缺席、后继改名后仍须按已提交的相对顺序恢复")
+        }
+    }
 }
 
 extension IdentityLedgerTests {
@@ -235,7 +472,14 @@ extension IdentityLedgerTests {
 extension LedgerAcrossLaunchTests {
     static var testCases: [TestCase] {
         let suite = LedgerAcrossLaunchTests()
-        return [TestCase("assignmentSurvivesRestartAfterRename", suite.assignmentSurvivesRestartAfterRename)]
+        return [TestCase("assignmentSurvivesRestartAfterRename", suite.assignmentSurvivesRestartAfterRename),
+                TestCase("committedOrderSurvivesAnEmptyScanAndUnorderedReturn", suite.committedOrderSurvivesAnEmptyScanAndUnorderedReturn),
+                TestCase("committedOrderSurvivesPartialScansAndConfirmedRenames", suite.committedOrderSurvivesPartialScansAndConfirmedRenames),
+                TestCase("restoredOrderPreservesPendingAndNewUserChoices", suite.restoredOrderPreservesPendingAndNewUserChoices),
+                TestCase("pendingRenameDoesNotDuplicateCommittedOrderAnchors", suite.pendingRenameDoesNotDuplicateCommittedOrderAnchors),
+                TestCase("fragmentedSingletonLedgerKeepsCommittedUserChoice", suite.fragmentedSingletonLedgerKeepsCommittedUserChoice),
+                TestCase("fragmentedLedgerDoesNotMergeUncertainAssignments", suite.fragmentedLedgerDoesNotMergeUncertainAssignments),
+                TestCase("fragmentedLedgerRestoresOrderAfterPartialDiscovery", suite.fragmentedLedgerRestoresOrderAfterPartialDiscovery)]
     }
 }
 

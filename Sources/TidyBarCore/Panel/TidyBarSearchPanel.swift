@@ -1,11 +1,11 @@
 import AppKit
 
-/// 图标搜索面板（报告 A8）：键入名称 → 定位 → 激活。
+/// 图标搜索面板（对标 Ice / Spotlight 极简 HUD）：键入名称 → 定位 → 激活。
 /// 支持键盘 ↑/↓ 移动选中项、↵ 回车激活、⎋ Esc 退出。
 public final class TidyBarSearchPanel: NSPanel {
     public init() {
         super.init(
-            contentRect: CGRect(x: 0, y: 0, width: 340, height: 44),
+            contentRect: CGRect(x: 0, y: 0, width: 460, height: 54),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -27,8 +27,6 @@ public final class TidyBarSearchPanel: NSPanel {
     override public var canBecomeMain: Bool { false }
 }
 
-/// 搜索面板的装配与状态。查询与排序交给 `TidyBarController.search`（纯逻辑，已有单测），
-/// 这里只负责把结果摆出来、把激活传回去。
 /// 搜索结果选中项钳位。
 ///
 /// 越界时夹到端点而不是回绕：回绕会让"在第一条上按一下 ↑"直接跳到最后一条，
@@ -41,9 +39,14 @@ public enum SearchSelection {
     }
 }
 
+/// 搜索面板的高质感装配与状态驱动。
 public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     public let panel = TidyBarSearchPanel()
+    private let container = NSVisualEffectView()
     private let field = NSTextField()
+    private let searchIconView = NSImageView()
+    private let escHintLabel = NSTextField(labelWithString: "ESC 退出")
+    private let divider = NSBox()
     private let stack = NSStackView()
     private var rows: [ManagedItem] = []
     private var heightConstraint: NSLayoutConstraint!
@@ -53,15 +56,33 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     /// 激活某一项。返回的结果用于决定要不要给出"点不动"的提示。
     public var activateHandler: (ManagedItem) -> ActivationOutcome = { _ in .actionUnsupported }
     public var onDismiss: (() -> Void)?
+    public var zoneLabel: (String) -> String = { _ in "" }
 
     private let maxResults: Int
 
     public init(maxResults: Int = 8) {
         self.maxResults = maxResults
         super.init()
+        setupUI()
+    }
 
-        field.placeholderString = "搜索菜单栏图标…"
-        field.font = NSFont.systemFont(ofSize: 14)
+    private func setupUI() {
+        container.wantsLayer = true
+        container.material = .hudWindow
+        container.blendingMode = .behindWindow
+        container.state = .active
+        container.layer?.cornerRadius = 14
+        container.layer?.masksToBounds = true
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        searchIconView.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "搜索")
+        searchIconView.contentTintColor = .secondaryLabelColor
+        searchIconView.translatesAutoresizingMaskIntoConstraints = false
+
+        field.placeholderString = "搜索菜单栏图标或应用…"
+        field.font = NSFont.systemFont(ofSize: 15, weight: .regular)
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
@@ -70,43 +91,83 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
         field.target = self
         field.action = #selector(submit)
 
+        escHintLabel.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        escHintLabel.textColor = .tertiaryLabelColor
+        escHintLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.isHidden = true
+
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 2
+        stack.spacing = 3
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let root = NSView()
-        root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        root.layer?.cornerRadius = 10
-        root.addSubview(field)
-        root.addSubview(stack)
+        container.addSubview(searchIconView)
+        container.addSubview(field)
+        container.addSubview(escHintLabel)
+        container.addSubview(divider)
+        container.addSubview(stack)
+
         NSLayoutConstraint.activate([
-            field.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
-            field.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
-            field.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
-            stack.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 6),
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8),
+            searchIconView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            searchIconView.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
+            searchIconView.widthAnchor.constraint(equalToConstant: 18),
+            searchIconView.heightAnchor.constraint(equalToConstant: 18),
+
+            escHintLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            escHintLabel.centerYAnchor.constraint(equalTo: searchIconView.centerYAnchor),
+
+            field.leadingAnchor.constraint(equalTo: searchIconView.trailingAnchor, constant: 10),
+            field.trailingAnchor.constraint(equalTo: escHintLabel.leadingAnchor, constant: -10),
+            field.centerYAnchor.constraint(equalTo: searchIconView.centerYAnchor),
+
+            divider.topAnchor.constraint(equalTo: searchIconView.bottomAnchor, constant: 12),
+            divider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            divider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            divider.heightAnchor.constraint(equalToConstant: 1),
+
+            stack.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 6),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
         ])
-        panel.contentView = root
+
+        panel.contentView = container
         panel.initialFirstResponder = field
-        heightConstraint = root.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        heightConstraint = container.heightAnchor.constraint(greaterThanOrEqualToConstant: 50)
         heightConstraint.isActive = true
     }
 
     /// 当前结果行数。给真机自检用——不看内部视图树也能断言"确实渲染了几条"。
     public var resultRowCount: Int { stack.arrangedSubviews.count }
 
-    /// 在指定锚点上方呼出面板（贴着菜单栏下缘）。
+    /// 居中呼出 Spotlight HUD（屏幕水平中央偏上 28% 黄金视线）。
+    public func presentCentered(on screen: NSScreen? = nil) {
+        let targetScreen = screen ?? NSScreen.main ?? NSScreen.screens.first
+        let screenFrame = targetScreen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let width: CGFloat = 460
+        let height: CGFloat = 52
+        let x = screenFrame.midX - (width / 2)
+        let y = screenFrame.maxY - (screenFrame.height * 0.28) - height
+        panel.setFrame(CGRect(x: x, y: y, width: width, height: height), display: true)
+        openPanel()
+    }
+
+    /// 在指定锚点上方呼出面板（贴着菜单栏下缘）。兼容已有代码与自检脚本。
     public func present(anchorX: CGFloat, screenHeight: CGFloat) {
         panel.layoutIfNeeded()
-        let size = panel.contentView?.fittingSize ?? CGSize(width: 340, height: 44)
-        let width = max(340, size.width)
-        let height = max(44, min(size.height, 360))
-        let x = max(8, min(anchorX - width / 2, (NSScreen.main?.frame.maxX ?? width) - width - 8))
-        panel.setFrame(CGRect(x: x, y: screenHeight - height - 6, width: width, height: height), display: true)
+        let size = panel.contentView?.fittingSize ?? CGSize(width: 460, height: 50)
+        let width = max(460, size.width)
+        let height = max(50, min(size.height, 420))
+        let screenMaxX = NSScreen.main?.frame.maxX ?? width
+        let x = max(12, min(anchorX - width / 2, screenMaxX - width - 12))
+        panel.setFrame(CGRect(x: x, y: screenHeight - height - 8, width: width, height: height), display: true)
+        openPanel()
+    }
+
+    private func openPanel() {
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         field.stringValue = ""
@@ -123,8 +184,6 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     }
 
     /// 键盘导航用局部监视器接：↑↓ 移动选中、回车激活、Esc 关闭。
-    /// 不用 NSTableView 的 keyDown 转发是因为这里只有几行结果，
-    /// 而局部监视器能吃到"焦点在输入框里"时的方向键——那正是搜索时唯一有意义的按键。
     private var keyMonitor: Any?
 
     private func installKeyMonitor() {
@@ -141,11 +200,7 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
         }
     }
 
-    /// 抢键盘焦点。
-    ///
-    /// 真 app 自检复现过：activate 是异步的，同一帧里 `makeFirstResponder` 会静默失败，
-    /// 结果面板看得见但敲不进去（`输入框取得焦点=no`）。所以在窗口拿到 key 之后有限次重试，
-    /// 每次退让一点时间；上限到了就放弃——不靠 sleep 死等，也不假装成功。
+    /// 抢键盘焦点，带退让重试
     private func claimKeyboard(attempt: Int = 0) {
         if panel.makeFirstResponder(field) { return }
         guard attempt < 6 else { return }
@@ -154,10 +209,8 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
         }
     }
 
-    private var window: NSWindow? { panel }
-
     public func controlTextDidChange(_ notification: Notification) {
-        selection = 0        // 结果集换了，选中项必须回到第一条，否则回车会激活上一次选中的那一项
+        selection = 0
         refresh()
     }
 
@@ -181,12 +234,13 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     /// 当前选中项下标。键盘 ↑/↓ 改它，回车取它。
     public private(set) var selection: Int = 0
 
-    /// 结果行：标题 + 归属 + 当前分区。三项都要，因为 88% 图标没有可读标题，
-    /// 只显示 title 会看到一排"第 2 个"，分不清是谁。
+    /// 渲染结果列表项：带应用图标、分区胶囊与选中高亮
     private func refresh() {
         rows = Array(queryHandler(field.stringValue).prefix(maxResults))
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        if field.stringValue.isEmpty {
+        let hasQuery = !field.stringValue.isEmpty
+        divider.isHidden = !hasQuery
+        if !hasQuery {
             stack.isHidden = true
             return
         }
@@ -197,33 +251,92 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
         }
         for (index, item) in rows.enumerated() {
             let zone = zoneLabel(item.id)
-            let text = "\(item.title)　·　\(zone)"
-            let row = NSButton(title: index == 0 ? text + "　↵" : text, target: self, action: #selector(rowClicked(_:)))
-            row.isBordered = false
-            row.bezelStyle = .shadowlessSquare
-            row.font = NSFont.systemFont(ofSize: 12)
-            row.alignment = .left
-            row.image = AppIconResolver.resolve(for: item)
-            row.imagePosition = .imageLeft
-            row.imageScaling = .scaleProportionallyUpOrDown
-            row.identifier = NSUserInterfaceItemIdentifier(item.id)
-            if index == selection {
-                row.contentTintColor = .controlAccentColor
-            }
-
+            let isSelected = (index == selection)
+            let row = createRowView(for: item, zone: zone, isSelected: isSelected, index: index)
             stack.addItem(view: row)
         }
+    }
+
+    private func createRowView(for item: ManagedItem, zone: String, isSelected: Bool, index: Int) -> NSView {
+        let button = NSButton(title: "", target: self, action: #selector(rowClicked(_:)))
+        button.isBordered = false
+        button.bezelStyle = .shadowlessSquare
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 8
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.identifier = NSUserInterfaceItemIdentifier(item.id)
+        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+
+        if isSelected {
+            button.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+        } else {
+            button.layer?.backgroundColor = NSColor.clear.cgColor
+        }
+
+        let icon = NSImageView()
+        icon.image = AppIconResolver.resolve(for: item)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = NSTextField(labelWithString: item.title)
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: isSelected ? .semibold : .medium)
+        titleLabel.textColor = isSelected ? .controlAccentColor : .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let badge = NSTextField(labelWithString: " " + zone + " ")
+        badge.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        badge.textColor = .secondaryLabelColor
+        badge.wantsLayer = true
+        badge.layer?.cornerRadius = 4
+        badge.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.15).cgColor
+        badge.translatesAutoresizingMaskIntoConstraints = false
+
+        let actionHint = NSTextField(labelWithString: isSelected ? "↵ 激活" : "")
+        actionHint.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        actionHint.textColor = .controlAccentColor
+        actionHint.translatesAutoresizingMaskIntoConstraints = false
+
+        button.addSubview(icon)
+        button.addSubview(titleLabel)
+        button.addSubview(badge)
+        button.addSubview(actionHint)
+
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 10),
+            icon.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 20),
+            icon.heightAnchor.constraint(equalToConstant: 20),
+
+            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            titleLabel.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: badge.leadingAnchor, constant: -8),
+
+            badge.trailingAnchor.constraint(equalTo: actionHint.leadingAnchor, constant: -8),
+            badge.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+
+            actionHint.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -10),
+            actionHint.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+        ])
+
+        return button
     }
 
     private func labelRow(_ text: String) -> NSView {
         let label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: 12)
         label.textColor = .secondaryLabelColor
-        return label
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        return container
     }
-
-    /// 分区标签由装配层注入，避免这里再依赖布局对象
-    public var zoneLabel: (String) -> String = { _ in "" }
 
     @objc private func rowClicked(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue, let item = rows.first(where: { $0.id == id }) else { return }
@@ -239,9 +352,6 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
         finish(with: rows[selection])
     }
 
-    /// 键盘移动选中项。A8 验收要"键入名称定位并激活"，只支持鼠标点选等于把搜索结果
-    /// 变成一块必须用鼠标伺候的列表；越界时夹到端点而不是回绕，回绕在 8 条结果里
-    /// 会让人按一次就跳到最后一条，很难看也很难解释。
     public func moveSelection(_ delta: Int) {
         guard !rows.isEmpty else { return }
         selection = SearchSelection.clamped(current: selection, delta: delta, count: rows.count)
@@ -251,8 +361,6 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     private func finish(with item: ManagedItem) {
         let outcome = activateHandler(item)
         guard outcome.countsAsPressed else {
-            // 搜到了却点不动：在面板里就地说明并保持打开。
-            // 不用 NSAlert——模态框会把"非激活面板"的设计整个破坏掉，还会抢走焦点。
             stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
             stack.isHidden = false
             stack.addItem(view: labelRow("无法激活「" + item.title + "」：" + outcome.userReadable))

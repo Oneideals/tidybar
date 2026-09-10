@@ -21,11 +21,17 @@ public final class BackgroundEnumerator {
     private let clock: () -> Date
     private var lastStartedAt: Date?
     private var pendingReasons: [EnumerationCadence.Trigger] = []
+    private var generation = 0
 
     /// qos 用 utility：枚举是后台整理工作，不该抢用户交互的优先级
     public init(qos: DispatchQoS = .utility, clock: @escaping () -> Date = Date.init) {
         self.queue = DispatchQueue(label: "local.tidybar.enumeration", qos: qos)
         self.clock = clock
+    }
+
+    /// 用户刚改变了现场时，之前开始的扫描不能再覆盖新状态。
+    public func invalidatePendingResults() {
+        generation &+= 1
     }
 
     /// 请求一次刷新。同一去抖窗口内的多次请求会被合并（记进 stats）。
@@ -35,7 +41,7 @@ public final class BackgroundEnumerator {
     public func request(
         reason: EnumerationCadence.Trigger,
         scan: @escaping @Sendable () -> [ManagedItem],
-        apply: @escaping @Sendable ([ManagedItem]) -> Void
+        apply: @escaping @MainActor @Sendable ([ManagedItem]) -> Void
     ) {
         let now = clock()
         guard EnumerationCadence.shouldRefresh(lastRefreshAt: lastStartedAt, now: now) else {
@@ -47,13 +53,14 @@ public final class BackgroundEnumerator {
         run(scan: scan, apply: apply)
     }
 
-    private func run(scan: @escaping @Sendable () -> [ManagedItem], apply: @escaping @Sendable ([ManagedItem]) -> Void) {
+    private func run(scan: @escaping @Sendable () -> [ManagedItem], apply: @escaping @MainActor @Sendable ([ManagedItem]) -> Void) {
         lastStartedAt = clock()
         stats.runs += 1
+        let requestedGeneration = generation
         queue.async {
             let items = scan()
             DispatchQueue.main.async {
-                apply(items)
+                if requestedGeneration == self.generation { apply(items) }
                 if !self.pendingReasons.isEmpty {
                     self.pendingReasons.removeAll()
                     // 期间攒下来的请求说明状态确实变了，补扫一次，避免停留在旧快照
@@ -64,12 +71,11 @@ public final class BackgroundEnumerator {
     }
 
     /// 去抖窗口内被合并的请求，等窗口过后补扫
-    private func scheduleDeferred(scan: @escaping @Sendable () -> [ManagedItem], apply: @escaping @Sendable ([ManagedItem]) -> Void) {
+    private func scheduleDeferred(scan: @escaping @Sendable () -> [ManagedItem], apply: @escaping @MainActor @Sendable ([ManagedItem]) -> Void) {
         let remaining = EnumerationCadence.debounceInterval - (clock().timeIntervalSince(lastStartedAt ?? clock()))
         queue.asyncAfter(deadline: .now() + max(0.05, remaining)) { [weak self] in
-            guard let self, !self.pendingReasons.isEmpty else { return }
             DispatchQueue.main.async {
-                guard !self.pendingReasons.isEmpty else { return }
+                guard let self, !self.pendingReasons.isEmpty else { return }
                 self.pendingReasons.removeAll()
                 self.run(scan: scan, apply: apply)
             }

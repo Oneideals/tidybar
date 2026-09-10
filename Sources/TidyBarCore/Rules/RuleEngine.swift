@@ -12,11 +12,13 @@ public struct RuleEngine {
         public let from: MenuBarZone?
         public let to: MenuBarZone
         public let sourceRule: String
-        public init(itemID: String, from: MenuBarZone?, to: MenuBarZone, sourceRule: String) {
+        public let position: Int?
+        public init(itemID: String, from: MenuBarZone?, to: MenuBarZone, sourceRule: String, position: Int? = nil) {
             self.itemID = itemID
             self.from = from
             self.to = to
             self.sourceRule = sourceRule
+            self.position = position
         }
     }
 
@@ -37,53 +39,97 @@ public struct RuleEngine {
         rules: [DisplayRule],
         context: SystemContext,
         currentLayout: MenuBarLayout,
-        hasKnownWiFiState: Bool = true,
-        isScreenShareActive: Bool = false
+        hasKnownWiFiState: Bool? = nil,
+        isScreenShareActive: Bool = false,
+        profiles: [String: MenuBarLayout] = [:],
+        activeProfileName: String? = nil
     ) -> Batch {
         let sorted = rules
             .filter { $0.isEnabled && $0.isEvaluable }
             .sorted { $0.priority < $1.priority }
 
         var winnerByItem: [String: (change: Change, priority: Int)] = [:]
-        var profiles: [String] = []
+        var requestedProfiles: [String] = []
+
+        func propose(_ itemID: String, zone: MenuBarZone, position: Int? = nil, rule: DisplayRule) {
+            if let existing = winnerByItem[itemID], existing.priority <= rule.priority { return }
+            winnerByItem[itemID] = (
+                Change(itemID: itemID, from: currentLayout.zone(of: itemID), to: zone,
+                       sourceRule: rule.name, position: position), rule.priority
+            )
+        }
 
         for rule in sorted {
             let matched = rule.conditions.allSatisfy {
-                $0.evaluate(context, hasKnownWiFiState: hasKnownWiFiState, isScreenShareActive: isScreenShareActive)
+                $0.evaluate(context, hasKnownWiFiState: hasKnownWiFiState ?? context.hasKnownWiFiState,
+                            isScreenShareActive: isScreenShareActive)
             }
             guard matched else { continue }
 
             for action in rule.actions {
                 if action.kind == .applyProfile {
-                    if let name = action.profileName, !profiles.contains(name) { profiles.append(name) }
+                    guard let name = action.profileName else { continue }
+                    if !requestedProfiles.contains(name) { requestedProfiles.append(name) }
+                    if let profile = profiles[name] {
+                        for zone in MenuBarZone.allCases {
+                            for (position, id) in profile.items(in: zone).enumerated() {
+                                propose(id, zone: zone, position: position, rule: rule)
+                            }
+                        }
+                    }
                     continue
                 }
                 guard let itemID = action.itemID, let zone = action.kind.targetZone else { continue }
-
-                if let existing = winnerByItem[itemID], existing.priority <= rule.priority {
-                    continue // 已有同级或更高优先级规则占位
-                }
-                winnerByItem[itemID] = (
-                    Change(itemID: itemID, from: currentLayout.zone(of: itemID), to: zone, sourceRule: rule.name),
-                    rule.priority
-                )
+                propose(itemID, zone: zone, rule: rule)
             }
         }
 
-        // 幂等过滤：结果与现状一致的变更直接丢弃
-        let changes = winnerByItem.values
+        let plans = winnerByItem.values
             .map(\.change)
-            .filter { $0.from != $0.to }
-            .sorted { $0.itemID < $1.itemID }
+            .sorted {
+                if $0.to != $1.to { return $0.to < $1.to }
+                if $0.position != $1.position { return ($0.position ?? Int.max) < ($1.position ?? Int.max) }
+                return $0.itemID < $1.itemID
+            }
 
-        return Batch(changes: changes, appliedProfiles: profiles)
+        // 先形成最终布局，再求差异。高优先级规则把某项移走后，
+        // 档案中剩余项的序号必须收拢，否则会永远请求一个不存在的槽位。
+        var desired = currentLayout
+        for plan in plans where plan.position != nil || plan.from != plan.to {
+            desired.remove(itemID: plan.itemID)
+        }
+        var nextPosition: [MenuBarZone: Int] = [:]
+        for plan in plans where plan.position != nil {
+            let index = nextPosition[plan.to, default: 0]
+            desired.move(itemID: plan.itemID, to: plan.to, position: index)
+            nextPosition[plan.to] = index + 1
+        }
+        for plan in plans where plan.position == nil && plan.from != plan.to {
+            desired.move(itemID: plan.itemID, to: plan.to)
+        }
+        var rolling = currentLayout
+        var changes: [Change] = []
+        for zone in MenuBarZone.allCases {
+            for (index, id) in desired.items(in: zone).enumerated() {
+                guard let plan = winnerByItem[id]?.change else { continue }
+                let position = plan.position == nil ? nil : index
+                let from = rolling.zone(of: id)
+                guard from != zone || position.map({ rolling.position(of: id) != $0 }) == true else { continue }
+                changes.append(Change(itemID: id, from: from, to: zone,
+                                      sourceRule: plan.sourceRule, position: position))
+                rolling.move(itemID: id, to: zone, position: position)
+            }
+        }
+
+        let appliedProfiles = requestedProfiles.prefix(1).filter { $0 != activeProfileName || !changes.isEmpty }
+        return Batch(changes: changes, appliedProfiles: appliedProfiles)
     }
 
     /// 批次落地到布局（不落系统，仅内存真相源），供预览/撤销与单测使用
     public func applying(_ batch: Batch, to layout: MenuBarLayout) -> MenuBarLayout {
         var next = layout
         for change in batch.changes {
-            next.move(itemID: change.itemID, to: change.to, position: nil)
+            next.move(itemID: change.itemID, to: change.to, position: change.position)
         }
         return next
     }

@@ -23,14 +23,24 @@ public final class EventEngine {
     /// 点击菜单栏区域 = 呼出；点击别处 = 收起
     public var onEvent: ((Event) -> Void)?
     public var onConcealRequest: (() -> Void)?
+    public var onManualLayoutChange: (() -> Void)?
+    private var manualMenuBarDrag = false
 
     private var globalMonitors: [Any] = []
     private var localMonitors: [Any] = []
     private var lastHandled: [RevealTrigger: TimeInterval] = [:]
+    private let menuBarFrames: () -> [CGRect]
     public private(set) var isRunning = false
 
-    public init(throttleInterval: TimeInterval = 0.2) {
+    public init(throttleInterval: TimeInterval = 0.2, menuBarFrames: @escaping () -> [CGRect] = {
+        NSScreen.screens.map { screen in
+            let height = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+            return CGRect(x: screen.frame.minX, y: screen.frame.maxY - height,
+                          width: screen.frame.width, height: height)
+        }
+    }) {
         self.throttleInterval = throttleInterval
+        self.menuBarFrames = menuBarFrames
     }
 
     // MARK: - 生命周期
@@ -39,36 +49,16 @@ public final class EventEngine {
         guard !isRunning else { return }
         isRunning = true
 
-        globalMonitors = [
-            NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
-                guard let self else { return }
-                let mouseLoc = NSEvent.mouseLocation
-                let screen = NSScreen.screens.first { NSPointInRect(mouseLoc, $0.frame) } ?? NSScreen.main
-                let screenTopY = screen?.frame.maxY ?? 0
-                let menuBarHeight: CGFloat = 34
-                switch EventEngine.classifyMenuBarHit(eventLocationY: mouseLoc.y, screenTopY: screenTopY, menuBarHeight: menuBarHeight) {
-                case .insideMenuBar:
-                    self.handle(.init(trigger: .emptyBarClick, location: mouseLoc))
-                case .outsideMenuBar:
-                    self.onConcealRequest?()
-                }
-            },
-            NSEvent.addGlobalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event in
-                guard let self else { return }
-                // 右键只做收起判定，不触发 emptyBarClick——
-                // 否则右键点折叠图标弹菜单的同时会误开抽屉
-                self.onConcealRequest?()
-            },
-            NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-                guard let self else { return }
-                let location = NSEvent.mouseLocation
-                self.handle(.init(trigger: self.classify(hover: event), location: location), throttled: .hover)
-            },
-            NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .otherMouseDragged]) { [weak self] event in
-                guard let self else { return }
-                self.handle(.init(trigger: .scrollOrSwipe, location: NSEvent.mouseLocation), throttled: .scrollOrSwipe)
-            },
-        ].compactMap { $0 }
+        globalMonitors = [NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .mouseMoved, .scrollWheel,
+                       .otherMouseDragged, .leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            self?.receive(event)
+        }].compactMap { $0 }
+        localMonitors = [NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            self?.receive(event)
+            return event
+        }].compactMap { $0 }
     }
 
     public func stop() {
@@ -77,6 +67,37 @@ public final class EventEngine {
         globalMonitors = []
         localMonitors = []
         isRunning = false
+        manualMenuBarDrag = false
+    }
+
+    /// 原生事件统一入口：本工具的合成输入既不能触发手动整理，也不能改变显隐。
+    public func receive(_ event: NSEvent) {
+        guard event.cgEvent?.getIntegerValueField(.eventSourceUserData) != CGDragEventPoster.syntheticEventTag else { return }
+        switch event.type {
+        case .leftMouseDown:
+            receive(.init(trigger: .emptyBarClick, location: NSEvent.mouseLocation))
+        case .rightMouseDown:
+            onConcealRequest?()
+        case .mouseMoved:
+            receive(.init(trigger: .hover, location: NSEvent.mouseLocation))
+        case .scrollWheel, .otherMouseDragged:
+            receive(.init(trigger: .scrollOrSwipe, location: NSEvent.mouseLocation))
+        case .leftMouseDragged, .leftMouseUp:
+            observeLayoutDrag(event)
+        default:
+            break
+        }
+    }
+
+    private func observeLayoutDrag(_ event: NSEvent) {
+        if event.type == .leftMouseDragged, event.modifierFlags.contains(.command),
+           menuBarFrames().contains(where: { $0.contains(NSEvent.mouseLocation) }) {
+            manualMenuBarDrag = true
+        }
+        if event.type == .leftMouseUp, manualMenuBarDrag {
+            manualMenuBarDrag = false
+            onManualLayoutChange?()
+        }
     }
 
     // MARK: - 判定
@@ -90,10 +111,13 @@ public final class EventEngine {
         return true
     }
 
-    private func handle(_ event: Event, throttled trigger: RevealTrigger? = nil) {
-        if let trigger, !passesThrottle(trigger, now: ProcessInfo.processInfo.systemUptime) {
+    /// 全局监听与离线验证共用的入口：先命中菜单栏，再节流，最后发布。
+    public func receive(_ event: Event, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        if event.trigger != .hotkey, !menuBarFrames().contains(where: { $0.contains(event.location) }) {
+            if event.trigger == .emptyBarClick { onConcealRequest?() }
             return
         }
+        guard passesThrottle(event.trigger, now: uptime) else { return }
         onEvent?(event)
     }
 
@@ -101,7 +125,7 @@ public final class EventEngine {
     /// M1 接入真实图标快照后，会把判定细化到「命中哪个分隔符」。
     public static func classifyMenuBarHit(eventLocationY y: CGFloat, screenTopY: CGFloat?, menuBarHeight: CGFloat = 24) -> MenuBarHit {
         guard let screenTopY else { return .outsideMenuBar }
-        return y > screenTopY - menuBarHeight ? .insideMenuBar : .outsideMenuBar
+        return y > screenTopY - menuBarHeight && y <= screenTopY ? .insideMenuBar : .outsideMenuBar
     }
 
     public enum MenuBarHit: Equatable {
@@ -109,8 +133,4 @@ public final class EventEngine {
         case outsideMenuBar
     }
 
-    private func classify(hover event: NSEvent) -> RevealTrigger {
-        _ = event
-        return .hover
-    }
 }

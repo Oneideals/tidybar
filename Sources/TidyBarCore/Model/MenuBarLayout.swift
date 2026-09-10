@@ -61,15 +61,16 @@ public struct MenuBarLayout: Codable, Equatable, Sendable {
 
     // MARK: - 变更（全部返回变更结果，便于 Safety 层做前后对照与回滚）
 
-    /// 把图标放入指定分区指定位置；若原本在别处会先移除。
+    /// 把图标放入指定分区指定位置；同区且未指定位置时保留原顺序，跨区默认追加。
     /// 返回旧位置用于失败回滚。
     @discardableResult
     public mutating func move(itemID: String, to zone: MenuBarZone, position: Int? = nil) -> (zone: MenuBarZone, position: Int)? {
         let previous = location(of: itemID)
+        let requestedPosition = position ?? (previous?.0 == zone ? previous?.1 : nil)
         removeFromZones(itemID)
 
         var list = zones[zone.rawValue] ?? []
-        let index = position.map { min(max($0, 0), list.count) } ?? list.count
+        let index = requestedPosition.map { min(max($0, 0), list.count) } ?? list.count
         list.insert(itemID, at: index)
         zones[zone.rawValue] = list
         return previous

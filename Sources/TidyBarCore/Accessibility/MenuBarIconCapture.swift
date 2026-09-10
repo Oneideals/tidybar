@@ -5,8 +5,7 @@ import ScreenCaptureKit
 /// 图标位图：面板/搜索里要显示真实缩略图，只有一条路——把那块屏幕区域抓下来。
 /// macOS 14+ 的正规 API 是 ScreenCaptureKit，代价是**屏幕录制授权**（多一个系统弹窗）。
 ///
-/// 所以这一层被刻意做成可缺省的：拿不到授权时返回 `.notAuthorized`，
-/// 面板退回首字母占位，产品照样可用——权限是增强项，不是入场券。
+/// 拿不到授权时返回 `.notAuthorized`，面板明确显示占位与权限提示。
 public enum IconCaptureError: Error, Equatable, Sendable {
     /// 用户还没给屏幕录制权限（或明确拒绝）
     case notAuthorized
@@ -40,6 +39,11 @@ public final class UnverifiedMenuBarIconCapturer: MenuBarIconCapturing {
 /// 项目内部统一用 AppKit 坐标（左下原点、y 向上），而抓图与 AX 都是左上原点 y 向下。
 /// 这一步算错的表现是"缩略图对但整体上下翻转/偏移"，肉眼很容易当成截图 API 的锅。
 public enum IconCaptureGeometry {
+    public static func isVisibleMenuBarFrame(_ frame: CGRect, on screen: ScreenInfo) -> Bool {
+        frame.width > 0 && frame.height > 0 && frame.minX.isFinite && frame.minY.isFinite
+            && frame.width.isFinite && frame.height.isFinite && screen.frame.contains(frame)
+            && ScreenCoordinateSpace.isWithinMenuBar(frame, screen: screen)
+    }
     /// AppKit 矩形 → 所属屏幕内的左上原点矩形（抓图用的 cropRect 是"屏幕内坐标"，不是全局坐标）
     public static func rectInScreen(_ frame: CGRect, screenFrame: CGRect) -> CGRect {
         CGRect(
@@ -77,7 +81,13 @@ public enum IconCaptureGeometry {
         guard let rect = pixelRect(frame: frame, screenFrame: screenFrame, displayPixelSize: displayPixelSize) else {
             return nil
         }
-        return image.cropping(to: rect)
+        guard let cropped = image.cropping(to: rect),
+              let context = CGContext(data: nil, width: cropped.width, height: cropped.height,
+                  bitsPerComponent: 8, bytesPerRow: cropped.width * 4,
+                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        // 每个缓存项持有自己的像素，避免一张小裁图长期保留整条截图的底层存储。
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))
+        return context.makeImage()
     }
 
     /// 缓存字节估算：宽高像素 × 每像素字节。留一份"为什么要按像素而不是按点算"的说明——
@@ -87,11 +97,7 @@ public enum IconCaptureGeometry {
     }
 }
 
-/// 真实抓图：整屏抓一次再裁。
-///
-/// 为什么整屏抓：SCStreamConfiguration 的 cropRect 语义在不同显示器排布下不一致（副屏负原点、
-/// 缩放比混用），实测容易抓到黑块。整屏抓一次 + 本地裁切多花一点瞬时内存，但结果可预期；
-/// 位图进缓存后不再重复抓，所以这不是每帧成本。
+/// 真实抓图只使用菜单栏的 sourceRect。多图标由调用方按显示器合并区域后本地裁切。
 public final class ScreenCaptureKitIconCapturer: MenuBarIconCapturing {
     public init() {}
 
@@ -113,7 +119,11 @@ public final class ScreenCaptureKitIconCapturer: MenuBarIconCapturing {
             completion(.failure(.notAuthorized))
             return
         }
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(frame.center0) }),
+        guard scale.isFinite, scale > 0,
+              let screen = NSScreen.screens.first(where: {
+                  guard let info = ScreenInfo(from: $0) else { return false }
+                  return IconCaptureGeometry.isVisibleMenuBarFrame(frame, on: info)
+              }),
               let displayID = screen.displayID else {
             completion(.failure(.displayNotFound))
             return
@@ -152,8 +162,4 @@ private extension NSScreen {
     var displayID: CGDirectDisplayID? {
         (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
-}
-
-private extension CGRect {
-    var center0: CGPoint { CGPoint(x: midX, y: midY) }
 }

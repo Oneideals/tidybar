@@ -123,8 +123,9 @@ public enum MenuBarItemPolicy {
             let bandBottom = screen.frame.maxY - screen.menuBarHeight - config.menuBarTolerance
             guard center.y >= bandBottom && center.y <= bandTop else { return false }
             if screen.frame.contains(center) { return true }
-            // 允许主屏（minX == 0）菜单栏由于物理折叠被推至左侧离屏区域的合法图标（x 在 -4000 至 screen.maxX 之间）
-            if screen.frame.minX == 0 && center.x >= -4000 && center.x <= screen.frame.maxX {
+            // 两条分隔符可能同时展开为屏幕宽度；保留被推到左侧的真实图标供搜索。
+            let hiddenSpan = 2 * max(2000, screen.frame.width + 200)
+            if screen.frame.minX == 0 && center.x >= -hiddenSpan && center.x <= screen.frame.maxX {
                 return true
             }
             return false

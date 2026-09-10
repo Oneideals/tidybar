@@ -7,6 +7,120 @@ import Foundation
 /// 用户重排的是本工具的图标，不需要为了挪边界去搬动别人的图标。
 /// 位置也靠读回来（AX 帧），不靠我们自己记账——系统是最终真相，记住了反而出偏差。
 public enum DividerGeometry {
+    public struct Controls: Sendable {
+        public let leftDivider: String
+        public let rightDivider: String
+        public let toggle: String
+        public var ids: Set<String> { [leftDivider, rightDivider, toggle] }
+
+        public init(leftDivider: String, rightDivider: String, toggle: String) {
+            self.leftDivider = leftDivider
+            self.rightDivider = rightDivider
+            self.toggle = toggle
+        }
+    }
+
+    /// Control Center 会暴露包住第三方项的代理帧；它不能再占一个物理槽位。
+    public static func physicalItems(_ items: [ManagedItem]) -> [ManagedItem] {
+        let users = items.filter { !$0.isSystemOwned }
+        return MenuBarEnumeration.sortedLeftToRight(items.filter { item in
+            !item.isSystemOwned || !users.contains {
+                $0.ownerBundleID != item.ownerBundleID && item.frame.contains($0.frame)
+                    && abs(item.centerX - $0.centerX) < 1
+            }
+        })
+    }
+
+    /// 普通折叠只做稳定分组；档案中的显式次序仍由 arrangementOrder 处理。
+    public static func foldingOrder(items: [ManagedItem], layout: MenuBarLayout,
+                                    controls: Controls, defaultZone: MenuBarZone = .hidden) -> [String] {
+        let ordered = physicalItems(items).filter { !controls.ids.contains($0.id) }
+        func members(_ zone: MenuBarZone) -> [String] {
+            ordered.filter { ($0.isSystemOwned ? .visible : layout.zone(of: $0.id) ?? defaultZone) == zone }.map(\.id)
+        }
+        return members(.alwaysHidden) + [controls.leftDivider] + members(.hidden)
+            + [controls.rightDivider, controls.toggle] + members(.visible)
+    }
+
+    public static func isCorrectlyPartitioned(items: [ManagedItem], layout: MenuBarLayout,
+                                              controls: Controls, defaultZone: MenuBarZone = .hidden) -> Bool {
+        let ordered = physicalItems(items)
+        guard let left = ordered.first(where: { $0.id == controls.leftDivider })?.centerX,
+              let right = ordered.first(where: { $0.id == controls.rightDivider })?.centerX,
+              let toggle = ordered.first(where: { $0.id == controls.toggle })?.centerX,
+              left < right, right < toggle else { return false }
+        // 验收与进展采用同一分区顺序：隐藏项在按钮左侧，全部常显项在按钮右侧。
+        return partitionDisorder(items: ordered, layout: layout, controls: controls, defaultZone: defaultZone) == 0
+    }
+
+    /// 同区交换不算进展；只有整条分区级别序列的逆序减少才允许继续投递。
+    public static func partitionDisorder(items: [ManagedItem], layout: MenuBarLayout,
+                                         controls: Controls, defaultZone: MenuBarZone = .hidden) -> Int {
+        let ranks = physicalItems(items).map { item -> Int in
+            if item.id == controls.leftDivider { return 1 }
+            if item.id == controls.rightDivider { return 3 }
+            if item.id == controls.toggle { return 4 }
+            switch item.isSystemOwned ? .visible : layout.zone(of: item.id) ?? defaultZone {
+            case .alwaysHidden: return 0
+            case .hidden: return 2
+            case .visible: return 5
+            }
+        }
+        return inversionCount(ranks)
+    }
+
+    public static func orderDisorder(items: [ManagedItem], desiredOrder: [String]) -> Int {
+        let ids = physicalItems(items).map(\.id)
+        guard ids.count == desiredOrder.count, Set(ids) == Set(desiredOrder),
+              Set(desiredOrder).count == desiredOrder.count else { return .max }
+        let positions = Dictionary(uniqueKeysWithValues: desiredOrder.enumerated().map { ($0.element, $0.offset) })
+        return inversionCount(ids.compactMap { positions[$0] })
+    }
+
+    private static func inversionCount(_ ranks: [Int]) -> Int {
+        // ponytail: 菜单栏仅几十项，直接计数；规模显著增大后再换线性分桶。
+        return ranks.indices.reduce(0) { total, index in
+            total + ranks.dropFirst(index + 1).filter { $0 < ranks[index] }.count
+        }
+    }
+
+    /// 包括两条真实分界的完整顺序；系统项保持相对顺序且留在右侧。
+    public static func arrangementOrder(items: [ManagedItem], layout: MenuBarLayout,
+                                        leftDivider: String, rightDivider: String, toggle: String,
+                                        defaultZone: MenuBarZone = .hidden) -> [String] {
+        let controls: Set<String> = [leftDivider, rightDivider, toggle]
+        let users = items.filter { !$0.isSystemOwned && !controls.contains($0.id) }
+        let userIDs = Set(users.map(\.id))
+        func members(_ zone: MenuBarZone) -> [String] {
+            layout.items(in: zone).filter { userIDs.contains($0) }
+                + users.filter { layout.zone(of: $0.id) == nil && defaultZone == zone }.map(\.id)
+        }
+        let order = members(.alwaysHidden) + [leftDivider] + members(.hidden)
+            + [rightDivider, toggle] + members(.visible) + items.filter(\.isSystemOwned).map(\.id)
+        let live = Set(items.map(\.id))
+        var seen: Set<String> = []
+        return order.filter { live.contains($0) && seen.insert($0).inserted }
+    }
+
+    /// 空分区可以落在已验证的自有分界两侧，但必须按移动方向选正确的一侧。
+    public static func boundaryLandingX(for itemID: String, to zone: MenuBarZone, ordered: [ManagedItem],
+                                         leftEdge: CGFloat?, rightEdge: CGFloat?, dividerIDs: Set<String>) -> CGFloat? {
+        guard let leftEdge, let rightEdge, leftEdge < rightEdge,
+              let moving = ordered.firstIndex(where: { $0.id == itemID }) else { return nil }
+        let current = self.zone(forX: ordered[moving].centerX, leftEdge: leftEdge, rightEdge: rightEdge)
+        guard current != zone else { return nil }
+        let edge: CGFloat
+        switch zone {
+        case .visible: edge = rightEdge
+        case .alwaysHidden: edge = leftEdge
+        case .hidden: edge = current == .visible ? rightEdge : leftEdge
+        }
+        guard let target = ordered.firstIndex(where: {
+            dividerIDs.contains($0.id) && abs($0.centerX - edge) < 2
+        }) else { return nil }
+        return MenuBarDropTarget.targetX(in: ordered, moving: moving, to: target)
+    }
+
     /// 一条分隔符的 x（取帧中心，比较稳定：宽度会随长度变化）
     public static func center(of divider: ManagedItem) -> CGFloat { divider.frame.midX }
 

@@ -1,16 +1,49 @@
 import Foundation
+import AppKit
 import CoreGraphics
 import TidyBarCore
 
 // MARK: - 图标位图：几何与缓存（面板缩略图的地基）
 
 struct IconBitmapTests {
-    private func image(width: Int, height: Int) -> CGImage {
+    private final class Capturer: MenuBarIconCapturing {
+        var isAuthorized = true
+        var authorizationRequests = 0
+        var frames: [CGRect] = []
+        var completions: [(Result<CGImage, IconCaptureError>) -> Void] = []
+        func requestAuthorization() { authorizationRequests += 1 }
+        func capture(frame: CGRect, scale: CGFloat, completion: @escaping (Result<CGImage, IconCaptureError>) -> Void) {
+            frames.append(frame)
+            completions.append(completion)
+        }
+    }
+
+    @MainActor private func pump(until complete: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        while !complete(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        return complete()
+    }
+
+    @MainActor private func makePanel(reader: MenuBarReading, capturer: Capturer) -> TidyBarPanelController {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        return TidyBarPanelController(services: makeServices(reader: reader, mover: nil,
+            screens: FakeScreens(screenFrame: CGRect(x: 0, y: 0, width: 1440, height: 1200))), capturer: capturer)
+    }
+
+    private func image(width: Int, height: Int, fill: CGColor? = nil, foreground: CGColor? = nil) -> CGImage {
         let context = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )!
+        if let fill {
+            context.setFillColor(fill)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        if let foreground {
+            context.setFillColor(foreground)
+            context.fill(CGRect(x: width / 4, y: height / 4, width: width / 2, height: height / 2))
+        }
         return context.makeImage()!
     }
 
@@ -67,17 +100,16 @@ struct IconBitmapTests {
         TestItems.item(id, centerX: x, centerY: 1_188)
     }
 
-    /// 图标被挪动后，旧位图必须立刻失效。
-    /// 否则面板会继续显示它**旧位置**的截图——用户看到的正是"缩略图串位"。
-    func staleBitmapIsInvalidatedWhenFrameMoves() throws {
+    /// 已验证的截图属于图标身份；折叠到屏外后仍要用它，不能去抓屏外坐标。
+    func verifiedBitmapSurvivesMenuBarFolding() throws {
         let store = IconBitmapStore(limitBytes: 4 * 1024 * 1024)
         let before = item("com.test.a", x: 600)
         store.ingest(image(width: 48, height: 48), for: before)
         expect(store.image(for: before) != nil)
 
-        let moved = item("com.test.a", x: 700)
-        expect(store.image(for: moved) == nil, "位置变了还能取到位图 = 显示串位")
-        expectEqual(store.needsCapture([moved]).map(\.id), ["com.test.a"], "挪动后必须重抓")
+        let moved = item("com.test.a", x: -1400)
+        expect(store.image(for: moved) != nil, "物理折叠不能丢弃已验证的菜单栏截图")
+        expect(store.needsCapture([moved]).isEmpty, "同一图标移到屏外后应复用截图，不再抓屏外坐标")
     }
 
     /// 每 0.25s 一次心跳重绘，如果每次都判定"需要抓"，就等于持续做屏幕录制。
@@ -124,6 +156,193 @@ struct IconBitmapTests {
         expectEqual(store.count, 0, "单张超限却入缓存 = 一个图标撑爆预算")
     }
 
+    func panelClicksWaitForMatchingMouseUp() throws {
+        MainActor.assumeIsolated {
+            let view = TidyBarPanelView(frame: CGRect(x: 0, y: 0, width: 120, height: 42))
+            let a = item("a", x: 600), b = item("b", x: 640)
+            view.items = [a, b]
+            var left: [String] = [], right: [String] = []
+            view.onClick = { left.append($0.id) }
+            view.onRightClick = { right.append($0.id) }
+            func event(_ type: NSEvent.EventType, x: CGFloat) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: 21), modifierFlags: [],
+                                  timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0,
+                                  clickCount: 1, pressure: 0)!
+            }
+            view.mouseDown(with: event(.leftMouseDown, x: 21))
+            expect(left.isEmpty, "按下时不得打开真实软件菜单")
+            view.mouseUp(with: event(.leftMouseUp, x: 53))
+            expect(left.isEmpty, "移到另一项抬起必须取消激活")
+            view.mouseDown(with: event(.leftMouseDown, x: 21))
+            view.mouseUp(with: event(.leftMouseUp, x: 21))
+            expectEqual(left, ["a"])
+            view.mouseDown(with: event(.leftMouseDown, x: 21))
+            view.items = [b, a]
+            view.mouseUp(with: event(.leftMouseUp, x: 21))
+            expectEqual(left, ["a"], "列表更新后必须匹配原ID，不能按旧索引激活")
+            view.rightMouseDown(with: event(.rightMouseDown, x: 21))
+            expect(right.isEmpty)
+            view.rightMouseUp(with: event(.rightMouseUp, x: 21))
+            expectEqual(right, ["b"])
+        }
+    }
+
+    func panelDrawsTheCapturedMenuBarBitmap() throws {
+        MainActor.assumeIsolated {
+            NSApplication.shared.setActivationPolicy(.prohibited)
+            let view = TidyBarPanelView(frame: CGRect(x: 0, y: 0, width: 120, height: 42))
+            view.items = [item("captured", x: 600)]
+            let captured = image(width: 48, height: 48,
+                fill: CGColor(red: 0.3, green: 0.35, blue: 0.4, alpha: 1),
+                foreground: CGColor(red: 1, green: 0, blue: 1, alpha: 1))
+            view.images = ["captured": captured]
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 120, pixelsHigh: 42,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            view.draw(view.bounds)
+            NSGraphicsContext.restoreGraphicsState()
+            let color = bitmap.colorAt(x: 21, y: 21)!.usingColorSpace(.deviceRGB)!
+            // DeviceRGB 会依当前显示器色彩配置转换 sRGB；比较真实输入像素，不能假定转换后仍是 (1,0,1)。
+            let expected = NSBitmapImageRep(cgImage: captured).colorAt(x: 24, y: 24)!.usingColorSpace(.deviceRGB)!
+            expect(abs(color.redComponent - expected.redComponent) < 0.03
+                   && abs(color.greenComponent - expected.greenComponent) < 0.03
+                   && abs(color.blueComponent - expected.blueComponent) < 0.03,
+                   "抽屉必须绘制注入的真实菜单栏截图，不能换成应用图标")
+            let background = bitmap.colorAt(x: 100, y: 21)!.usingColorSpace(.deviceRGB)!
+            let sourceBackground = NSBitmapImageRep(cgImage: captured).colorAt(x: 0, y: 0)!.usingColorSpace(.deviceRGB)!
+            expect(abs(background.redComponent - sourceBackground.redComponent) < 0.03
+                   && abs(background.greenComponent - sourceBackground.greenComponent) < 0.03
+                   && abs(background.blueComponent - sourceBackground.blueComponent) < 0.03,
+                   "抽屉背景应沿用菜单栏底色，避免把带底色的截图贴成一块块灰色方砖")
+        }
+    }
+
+    func prewarmingCapturesOneMenuBarRegionAndKeepsCropsAfterFolding() throws {
+        MainActor.assumeIsolated {
+            let a = item("a", x: 600), b = item("b", x: 680)
+            let reader = FakeMenuBarReader(items: [a, b])
+            let capturer = Capturer()
+            let panel = makePanel(reader: reader, capturer: capturer)
+            var checks = 0, finished = false
+            panel.prewarmBitmaps(for: [a, b], isValid: { checks += 1; return true }) {
+                expect(Thread.isMainThread, "预热完成回调必须回到主线程")
+                finished = true
+            }
+            expect(panel.hasCaptureAuthorization)
+            expectEqual(capturer.frames, [CGRect(x: 588, y: 1176, width: 104, height: 24)],
+                        "同屏图标应合并抓菜单栏窄区域，而非逐项或整屏截图")
+            expect(!finished, "拿到图像之前不能让调用方折叠菜单栏")
+            let strip = image(width: 208, height: 48)
+            capturer.completions.forEach { $0(.success(strip)) }
+            expect(pump { finished })
+            expect(checks >= 2, "捕获前后均须检查调用方状态")
+            let folded = [item("a", x: -1400), item("b", x: -1320)]
+            let cached = panel.cachedImages(for: folded)
+            expectEqual(cached["a"]?.width, 48)
+            expectEqual(cached["b"]?.height, 48)
+            expectEqual(capturer.authorizationRequests, 0)
+        }
+    }
+
+    func rejectedCaptureFramesAreRefreshedOnceBeforeFolding() throws {
+        MainActor.assumeIsolated {
+            let a = item("a", x: 600), b = item("b", x: 680)
+            let freshA = item("a", x: 620)
+            let reader = FakeMenuBarReader(items: [freshA, b])
+            let capturer = Capturer()
+            let panel = makePanel(reader: reader, capturer: capturer)
+            var completed = 0
+            panel.prewarmBitmaps(for: [a, b], isValid: { true }) { completed += 1 }
+            expectEqual(capturer.frames, [b.frame])
+            capturer.completions.first?(.success(image(width: 48, height: 48)))
+            expect(pump { capturer.frames.count == 2 || completed > 0 })
+            expectEqual(capturer.frames, [b.frame, freshA.frame], "校验失效后必须重新观察该项，再抓正确位置")
+            expectEqual(completed, 0, "补抓结束之前不能让调用方折叠")
+            if capturer.completions.count == 2 { capturer.completions[1](.success(image(width: 48, height: 48))) }
+            expect(pump { completed == 1 })
+            expectEqual(panel.cachedImages(for: [a, b]).count, 2)
+        }
+    }
+
+    func invalidOrUnauthorizedPrewarmingAlwaysCompletesWithoutCapture() throws {
+        MainActor.assumeIsolated {
+            for authorized in [false, true] {
+                let a = item("a", x: 600)
+                let capturer = Capturer()
+                capturer.isAuthorized = authorized
+                let panel = makePanel(reader: FakeMenuBarReader(items: [a]), capturer: capturer)
+                var completed = 0, checks = 0
+                panel.prewarmBitmaps(for: [a], isValid: { checks += 1; return !authorized }) {
+                    expect(Thread.isMainThread)
+                    completed += 1
+                }
+                expectEqual(completed, 1)
+                expect(checks > 0, "启动捕获前必须检查调用方状态")
+                expect(capturer.frames.isEmpty)
+                expectEqual(capturer.authorizationRequests, 0, "预热不应触发授权弹窗")
+            }
+        }
+    }
+
+    func staleOrFailedCapturesCompleteWithoutReplacingBitmaps() throws {
+        MainActor.assumeIsolated {
+            for invalidation in ["state", "frame", "failure"] {
+                let a = item("a", x: 600)
+                let reader = FakeMenuBarReader(items: [a])
+                let capturer = Capturer()
+                let panel = makePanel(reader: reader, capturer: capturer)
+                var valid = true, completed = 0
+                panel.prewarmBitmaps(for: [a], isValid: { valid }) { completed += 1; expect(Thread.isMainThread) }
+                expectEqual(capturer.frames.count, 1)
+                if invalidation == "state" { valid = false }
+                if invalidation == "frame" { reader.items = [item("a", x: 700)] }
+                let result: Result<CGImage, IconCaptureError> = invalidation == "failure"
+                    ? .failure(.failed("fixture")) : .success(image(width: 48, height: 48))
+                capturer.completions.forEach { $0(result) }
+                if invalidation == "frame" {
+                    expect(pump { capturer.completions.count == 2 })
+                    expect(panel.cachedImages(for: [a]).isEmpty, "失效截图不得在补抓前进入缓存")
+                    if capturer.completions.count == 2 { capturer.completions[1](.failure(.failed("retry fixture"))) }
+                }
+                expect(pump { completed == 1 })
+                expect(panel.cachedImages(for: [a]).isEmpty, "\(invalidation) 的过期结果不得进入缓存")
+            }
+        }
+    }
+
+    func wideMenuIconsWrapWithoutLosingTheNotice() throws {
+        let layout = PanelGeometry.contentLayout(itemSizes: [CGSize(width: 24, height: 24),
+            CGSize(width: 146, height: 22), CGSize(width: 24, height: 24)], maximumWidth: 200, footerHeight: 24)
+        expectEqual(layout.itemFrames[1].width, 146, "宽文字状态项不能挤成方形应用图标")
+        expect(layout.itemFrames[2].minY < layout.itemFrames[0].minY, "超出屏幕可用宽度时应折行")
+        expect(layout.itemFrames.allSatisfy { CGRect(origin: .zero, size: layout.size).contains($0) })
+        expect(layout.footerFrame != nil)
+        expect(layout.itemFrames.allSatisfy { $0.minY > layout.footerFrame!.maxY })
+        MainActor.assumeIsolated {
+            let view = TidyBarPanelView(frame: CGRect(x: 0, y: 0, width: 200, height: 42))
+            view.items = [item("a", x: 600)]
+            view.notice = "这个软件不允许代点，请在菜单栏中直接操作"
+            let content = view.contentLayout(maximumWidth: 200)
+            expect(content.size.height > 42, "实际提示必须增加面板高度，不能被42pt固定高度丢弃")
+            expect(content.footerFrame?.height ?? 0 > 0)
+        }
+    }
+
+    func missingCaptureRequestsSkipOffscreenFrames() throws {
+        MainActor.assumeIsolated {
+            let hidden = item("a", x: -1400)
+            let capturer = Capturer()
+            let panel = makePanel(reader: FakeMenuBarReader(items: [hidden]), capturer: capturer)
+            var completed = 0
+            panel.requestMissingBitmaps(for: [hidden]) { completed += 1 }
+            panel.requestMissingBitmaps(for: [hidden]) { completed += 1 }
+            expectEqual(completed, 2)
+            expect(capturer.frames.isEmpty, "折叠后的负坐标不能触发反复抓屏")
+        }
+    }
+
     /// 没授权是常态路径：占位实现必须永远拒绝，面板才有稳定的回退分支
     func placeholderCapturerAlwaysRefuses() throws {
         let placeholder = UnverifiedMenuBarIconCapturer()
@@ -161,12 +380,20 @@ extension IconBitmapTests {
             TestCase("cropsWholeDisplayBitmapByPixelScale", suite.cropsWholeDisplayBitmapByPixelScale),
             TestCase("refusesPartialCropInsteadOfHalfAnIcon", suite.refusesPartialCropInsteadOfHalfAnIcon),
             TestCase("byteEstimateUsesPixels", suite.byteEstimateUsesPixels),
-            TestCase("staleBitmapIsInvalidatedWhenFrameMoves", suite.staleBitmapIsInvalidatedWhenFrameMoves),
+            TestCase("verifiedBitmapSurvivesMenuBarFolding", suite.verifiedBitmapSurvivesMenuBarFolding),
             TestCase("repeatedScanWithoutMovementNeedsNoCapture", suite.repeatedScanWithoutMovementNeedsNoCapture),
             TestCase("newItemsAreQueuedForCapture", suite.newItemsAreQueuedForCapture),
             TestCase("droppedItemsReleaseTheirBitmaps", suite.droppedItemsReleaseTheirBitmaps),
             TestCase("byteAccountingMatchesPixels", suite.byteAccountingMatchesPixels),
             TestCase("oversizedSingleBitmapIsSkippedNotCached", suite.oversizedSingleBitmapIsSkippedNotCached),
+            TestCase("panelClicksWaitForMatchingMouseUp", suite.panelClicksWaitForMatchingMouseUp),
+            TestCase("panelDrawsTheCapturedMenuBarBitmap", suite.panelDrawsTheCapturedMenuBarBitmap),
+            TestCase("prewarmingCapturesOneMenuBarRegionAndKeepsCropsAfterFolding", suite.prewarmingCapturesOneMenuBarRegionAndKeepsCropsAfterFolding),
+            TestCase("rejectedCaptureFramesAreRefreshedOnceBeforeFolding", suite.rejectedCaptureFramesAreRefreshedOnceBeforeFolding),
+            TestCase("invalidOrUnauthorizedPrewarmingAlwaysCompletesWithoutCapture", suite.invalidOrUnauthorizedPrewarmingAlwaysCompletesWithoutCapture),
+            TestCase("staleOrFailedCapturesCompleteWithoutReplacingBitmaps", suite.staleOrFailedCapturesCompleteWithoutReplacingBitmaps),
+            TestCase("wideMenuIconsWrapWithoutLosingTheNotice", suite.wideMenuIconsWrapWithoutLosingTheNotice),
+            TestCase("missingCaptureRequestsSkipOffscreenFrames", suite.missingCaptureRequestsSkipOffscreenFrames),
             TestCase("placeholderCapturerAlwaysRefuses", suite.placeholderCapturerAlwaysRefuses),
             TestCase("captureDemandsMainThread", suite.captureDemandsMainThread),
         ]
@@ -421,6 +648,20 @@ struct ResidualPairingTests {
         expectEqual(SearchSelection.clamped(current: 0, delta: 1, count: 0), 0, "空结果集不该产生负下标")
     }
 
+    func searchUIRendersCenteredAndNavigates() throws {
+        let search = TidyBarSearchUI(maxResults: 5)
+        let item = TestItems.item("com.apple.test", centerX: 100, centerY: 1188)
+        search.queryHandler = { query in query.isEmpty ? [] : [item] }
+        search.zoneLabel = { _ in "隐藏区" }
+        search.presentCentered()
+        expect(search.panel.isVisible, "Spotlight 居中呼出后面板应可见")
+        expectEqual(search.resultRowCount, 0, "未键入时不渲染结果行")
+        search.moveSelection(1)
+        expectEqual(search.selection, 0)
+        search.dismiss()
+        expect(!search.panel.isVisible, "dismiss 后面板应关闭")
+    }
+
     /// 开机自启状态必须读系统，而不是我们自己记的那份
     func launchAtLoginStateIsReadable() throws {
         let state = LaunchAtLogin.state()
@@ -440,6 +681,7 @@ extension ResidualPairingTests {
             TestCase("singleRenameInsideMultiIconOwnerIsAdopted", suite.singleRenameInsideMultiIconOwnerIsAdopted),
             TestCase("ambiguousPairingIsRefused", suite.ambiguousPairingIsRefused),
             TestCase("selectionNeverWrapsAround", suite.selectionNeverWrapsAround),
+            TestCase("searchUIRendersCenteredAndNavigates", suite.searchUIRendersCenteredAndNavigates),
             TestCase("launchAtLoginStateIsReadable", suite.launchAtLoginStateIsReadable),
         ]
     }

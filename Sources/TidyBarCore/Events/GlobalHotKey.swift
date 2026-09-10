@@ -28,7 +28,7 @@ public final class GlobalHotKey {
     /// Carbon 的 C 回调拿不到 self，只能经进程内登记表转一手。
     /// 全局长度 = 同时注册的热键数（本工具只有一个）。
     nonisolated(unsafe) private static var handlers: [UInt32: () -> Void] = [:]
-    nonisolated(unsafe) private static let lock = NSLock()
+    private static let lock = NSLock()
 
     public init(onPress: @escaping () -> Void) {
         self.onPress = onPress

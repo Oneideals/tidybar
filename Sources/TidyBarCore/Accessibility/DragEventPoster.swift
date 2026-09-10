@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import Carbon
 
 /// 一次 ⌘ 拖拽所需的最小事件词汇表。
 ///
@@ -32,23 +33,28 @@ public protocol DragEventPosting: AnyObject {
 ///   2. ⌘ 必须成对，异常路径下也要抬起，否则系统进入"⌘ 一直按着"的状态，
 ///      用户接下来每次点击都在触发快捷键——这是比拖错更严重的伤害。
 public final class CGDragEventPoster: DragEventPosting {
+    public static let syntheticEventTag: Int64 = 0x54494459424152
     /// 鼠标事件是否自带 maskCommand。
     /// true = 双份信号（真实 ⌘ 键 + 每个鼠标事件的 flags）；
     /// false = 只靠真实 ⌘ 键事件。用于判别"⌘ 读数残留"究竟是卡键还是 flagsState 污染。
     public var carriesCommandFlagsOnMouseEvents: Bool
-    private let primaryScreenHeight: CGFloat
+    /// nil 使用当前主屏高度，显示器切换后不沿用启动时的坐标原点。
+    private let primaryScreenHeight: CGFloat?
     private let eventSource: CGEventSource?
+    private let eventSink: (CGEvent) -> Void
     /// 记录最后一次由我们放下的位置，供哨兵复核
     public private(set) var lastEmittedPoint: CGPoint?
 
     public init(
-        primaryScreenHeight: CGFloat,
+        primaryScreenHeight: CGFloat? = nil,
         eventSource: CGEventSource? = CGEventSource(stateID: .combinedSessionState),
-        carriesCommandFlagsOnMouseEvents: Bool = true
+        carriesCommandFlagsOnMouseEvents: Bool = true,
+        eventSink: @escaping (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) }
     ) {
         self.primaryScreenHeight = primaryScreenHeight
         self.eventSource = eventSource
         self.carriesCommandFlagsOnMouseEvents = carriesCommandFlagsOnMouseEvents
+        self.eventSink = eventSink
     }
 
     @discardableResult
@@ -88,7 +94,7 @@ public final class CGDragEventPoster: DragEventPosting {
     }
 
     private func appKitToCG(_ point: CGPoint) -> CGPoint {
-        CGDragEventPoster.cgPoint(for: point, primaryScreenHeight: primaryScreenHeight)
+        CGDragEventPoster.cgPoint(for: point, primaryScreenHeight: primaryScreenHeight ?? CGDisplayBounds(CGMainDisplayID()).height)
     }
 
     /// AppKit(左下原点) → CG(左上原点) 的单点换算。
@@ -99,14 +105,15 @@ public final class CGDragEventPoster: DragEventPosting {
     }
 
     private func postKey(down: Bool) -> Bool {
-        // 0x38 = 左 Command（kVK_Command）
+        // 使用平台常量；0x38 实际是 Shift，左 Command 是 0x37。
         guard let event = CGEvent(
             keyboardEventSource: eventSource,
-            virtualKey: 0x38,
+            virtualKey: CGKeyCode(kVK_Command),
             keyDown: down
         ) else { return false }
         event.flags = down ? [.maskCommand] : []
-        event.post(tap: .cghidEventTap)
+        event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
+        eventSink(event)
         return true
     }
 
@@ -122,7 +129,8 @@ public final class CGDragEventPoster: DragEventPosting {
         // （连没发过任何按键的新进程都读到 ⌘ 按下），若以 ⌘ 结尾，
         // 用户之后的普通点击就会变成 ⌘ 点击——这是必须收掉的尾巴。
         event.flags = (type == .leftMouseUp || !carriesCommandFlagsOnMouseEvents) ? [] : [.maskCommand]
-        event.post(tap: .cghidEventTap)
+        event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
+        eventSink(event)
         return true
     }
 }

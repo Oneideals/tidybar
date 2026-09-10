@@ -58,6 +58,7 @@ final class FakeMenuBarMover: MenuBarMoving {
 final class FakeCursor: CursorReading {
     var currentLocation: CGPoint
     var isPrimaryButtonPressed: Bool
+    var displayConfiguration: [CGDirectDisplayID: CGRect]?
 
     init(location: CGPoint = CGPoint(x: 600, y: 1_188), pressed: Bool = false) {
         currentLocation = location

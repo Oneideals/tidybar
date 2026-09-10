@@ -17,6 +17,7 @@ public struct LayoutJournal: Sendable {
 
     /// 一次待执行的布局变更
     public struct LayoutIntent: Codable, Equatable, Sendable {
+        public let id: String
         public let itemID: String
         public let targetZone: MenuBarZone
         public let targetPosition: Int?
@@ -34,8 +35,10 @@ public struct LayoutJournal: Sendable {
             previousZone: MenuBarZone?,
             previousPosition: Int?,
             startedAt: Date = .init(),
-            replayFailures: Int = 0
+            replayFailures: Int = 0,
+            id: String = UUID().uuidString
         ) {
+            self.id = id
             self.itemID = itemID
             self.targetZone = targetZone
             self.targetPosition = targetPosition
@@ -46,7 +49,7 @@ public struct LayoutJournal: Sendable {
         }
 
         enum CodingKeys: String, CodingKey {
-            case itemID, targetZone, targetPosition, previousZone, previousPosition, startedAt, replayFailures
+            case id, itemID, targetZone, targetPosition, previousZone, previousPosition, startedAt, replayFailures
         }
 
         public init(from decoder: Decoder) throws {
@@ -56,8 +59,22 @@ public struct LayoutJournal: Sendable {
             targetPosition = try container.decodeIfPresent(Int.self, forKey: .targetPosition)
             previousZone = try container.decodeIfPresent(MenuBarZone.self, forKey: .previousZone)
             previousPosition = try container.decodeIfPresent(Int.self, forKey: .previousPosition)
-            startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
+            startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? .distantPast
             replayFailures = try container.decodeIfPresent(Int.self, forKey: .replayFailures) ?? 0
+            if let storedID = try container.decodeIfPresent(String.self, forKey: .id) {
+                id = storedID
+            } else {
+                let fields = [itemID, targetZone.rawValue, String(targetPosition ?? -1),
+                              previousZone?.rawValue ?? "", String(previousPosition ?? -1),
+                              String(startedAt.timeIntervalSince1970)]
+                id = "legacy:" + fields.map { "\($0.utf8.count):\($0)" }.joined()
+            }
+        }
+
+        func renamed(to itemID: String) -> LayoutIntent {
+            LayoutIntent(itemID: itemID, targetZone: targetZone, targetPosition: targetPosition,
+                         previousZone: previousZone, previousPosition: previousPosition,
+                         startedAt: startedAt, replayFailures: replayFailures, id: id)
         }
     }
 
@@ -90,9 +107,21 @@ public struct LayoutJournal: Sendable {
 
     // MARK: - 落盘
 
-    public func writeCommitted(_ layout: MenuBarLayout) throws {
+    private struct CommittedLayout: Codable {
+        let zones: [String: [String]]
+        let completedIntentID: String?
+    }
+
+    public func writeCommitted(_ layout: MenuBarLayout, completing intent: LayoutIntent? = nil) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try encoder.encode(layout).write(to: committedURL, options: .atomic)
+        try encoder.encode(CommittedLayout(zones: layout.zones, completedIntentID: intent?.id))
+            .write(to: committedURL, options: .atomic)
+    }
+
+    public func hasCommitted(_ intent: LayoutIntent) -> Bool {
+        guard let data = try? Data(contentsOf: committedURL),
+              let committed = try? decoder.decode(CommittedLayout.self, from: data) else { return false }
+        return committed.completedIntentID == intent.id
     }
 
     public func writeIntent(_ intent: LayoutIntent) throws {
@@ -124,15 +153,14 @@ public struct LayoutJournal: Sendable {
 
     /// 记一次重放失败。
     /// - Returns: 累加后的意图（pending 仍在，下次启动继续重试）；`nil` 表示已达上限、
-    ///   pending 已清除，或本来就没有 pending。
+    ///   pending 等待调用方提交放弃结果，或本来就没有 pending。
     public func noteReplayFailure(maxAttempts: Int = LayoutJournal.defaultMaxReplayAttempts) throws -> LayoutIntent? {
         guard var intent = readPendingIntent() else { return nil }
         intent.replayFailures += 1
+        try writeIntent(intent)
         if intent.replayFailures >= max(1, maxAttempts) {
-            try clearPendingIntent()
             return nil
         }
-        try writeIntent(intent)
         return intent
     }
 

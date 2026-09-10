@@ -9,6 +9,21 @@ import CoreGraphics
 ///
 /// 所以目标 X 必须由"当前图标顺序"推导出来，绝不能是"往左/往右 N 像素"这种任意值。
 public enum MenuBarDropTarget {
+    /// 菜单切换后锚点还会移动或改宽；保留插入方向，用同一 AX 元素的最新帧重算。
+    public static func refreshedTargetX(_ plannedX: CGFloat, anchor: ManagedItem, currentFrame: CGRect) -> CGFloat? {
+        if abs(plannedX - anchor.centerX) <= 0.5 { return currentFrame.midX }
+        if abs(plannedX - (anchor.frame.maxX + 2)) <= 0.5 { return currentFrame.maxX + 2 }
+        return nil
+    }
+
+    /// 实际投递点必须仍属于这些已识别的槽位。右缘+2可能命中紧邻项的左侧内边距。
+    public static func expectedHitTargets(in ordered: [ManagedItem], moving source: Int, to destination: Int) -> [ManagedItem] {
+        guard ordered.indices.contains(source), ordered.indices.contains(destination), source != destination else { return [] }
+        var targets = [ordered[destination]]
+        if source < destination, ordered.indices.contains(destination + 1) { targets.append(ordered[destination + 1]) }
+        return targets
+    }
+
     /// 在从左到右排列的可见图标中，把某项移到 toIndex 位置，返回应拖到的 X（目标邻居中心）。
     /// - Parameters:
     ///   - ordered: 同一区域内**已经可见**的图标，按 x 升序（reader 结果直接可用）

@@ -95,15 +95,64 @@ public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
 
     @discardableResult
     public func move(itemID: String, toX targetX: CGFloat) throws -> CGPoint {
+        try move(itemID: itemID, toX: targetX, expectedTargets: nil, isCancelled: { false })
+    }
+
+    @discardableResult
+    public func move(itemID: String, toX targetX: CGFloat, expectedTargets: [ManagedItem]?, isCancelled: () -> Bool) throws -> CGPoint {
         totalAttempts += 1
 
         guard config.isConfirmedSupportedOS else { throw MenuBarMoveError.unsupportedOS }
+        let displayConfiguration = cursor.displayConfiguration
+        func checkInterruption() throws {
+            try requireInteractiveSession()
+            guard displayConfiguration?.isEmpty != true, !isCancelled(),
+                  cursor.displayConfiguration == displayConfiguration else {
+                consecutiveSuccesses = 0
+                totalAborts += 1
+                throw MenuBarMoveError.dragInterrupted
+            }
+        }
+        try checkInterruption()
 
-        guard let item = reader.discoverItems().first(where: { $0.id == itemID }) else {
+        guard let item = reader.item(withID: itemID) else {
             throw MenuBarMoveError.itemVanished(itemID)
         }
         let source = CGPoint(x: item.centerX, y: item.frame.midY)
-        let target = CGPoint(x: targetX, y: source.y)
+        var refreshedTargetX = targetX
+        if let anchor = expectedTargets?.first {
+            guard let frame = reader.currentFrame(of: anchor), abs(frame.midY - source.y) < 8,
+                  let x = MenuBarDropTarget.refreshedTargetX(targetX, anchor: anchor, currentFrame: frame) else {
+                throw MenuBarMoveError.targetNotInteractable
+            }
+            refreshedTargetX = x
+        }
+        let target = CGPoint(x: refreshedTargetX, y: source.y)
+        func validateEndpoints() throws {
+            // AX 锚点可能换到另一屏而显示器拓扑未变；刷新后的两端仍须同屏。
+            if let displays = displayConfiguration {
+                guard let primary = displays.values.first(where: { $0.origin == .zero }),
+                      displays.values.contains(where: {
+                          let frame = ScreenCoordinateSpace.cgToAppKit($0, primaryScreenHeight: primary.height)
+                          return frame.contains(source) && frame.contains(target)
+                      }) else {
+                    totalAborts += 1; consecutiveSuccesses = 0
+                    throw MenuBarMoveError.targetNotInteractable
+                }
+            }
+            guard reader.hitTest(expected: item, at: source) == .verified else {
+                totalAborts += 1; consecutiveSuccesses = 0
+                throw MenuBarMoveError.sourceNotInteractable(itemID)
+            }
+            let targetVerified = expectedTargets.map { candidates in
+                candidates.contains { reader.hitTest(expected: $0, at: target) == .verified }
+            } ?? (reader.hitTest(expected: nil, at: target) == .verified)
+            guard targetVerified else {
+                totalAborts += 1; consecutiveSuccesses = 0
+                throw MenuBarMoveError.targetNotInteractable
+            }
+        }
+        try checkInterruption()
 
         // 1) 动手前只看一件事：用户是否正在按着鼠标。
         //    此刻一个事件都不能发——抢在用户之前按下就是"幽灵点击"。
@@ -111,11 +160,19 @@ public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
             record(itemID: itemID, source: source, target: target, events: 0, aborted: .userInteracting, rejected: false, landing: nil)
             throw MenuBarMoveError.abortedBySentinel(.userInteracting)
         }
+        if abs(target.x - source.x) <= 0.5 { return source }
+        try validateEndpoints()
 
         // 2) 先把光标放到图标上，再复核它是否真的到位。
         //    注意顺序：光标"本来在哪"不是放弃的理由（用户可能正在用鼠标做别的事），
         //    真正的安全条件是"我们放过去之后，它还在那儿"。若把预检写成
         //    "当前光标 == 图标中心"，那几乎永远不成立，整个功能等于永远中止。
+        try checkInterruption()
+        if cursor.isPrimaryButtonPressed {
+            record(itemID: itemID, source: source, target: target, events: 0,
+                   aborted: .userInteracting, rejected: false, landing: nil)
+            throw MenuBarMoveError.abortedBySentinel(.userInteracting)
+        }
         poster.post(.warp(source))
         poster.post(.settle(config.settleInterval))
 
@@ -132,10 +189,29 @@ public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
         //    只要 ⌘ 按下去了，无论成功、中止还是系统拒绝，defer 都必须把它抬起来。
         //    同一份状态对外暴露 releaseInFlightDrag()，让信号收尾能插手悬在半空的拖拽；
         //    登记放在 commandDown **之前**：真发生竞争时宁可多发一次抬起，也不能留下卡住的键。
+        try checkInterruption()
+        try validateEndpoints()
         beginFlight(commandHeld: config.postsPhysicalCommandKey)
         defer { releaseInFlightDrag() }
         if config.postsPhysicalCommandKey { poster.post(.commandDown) }
 
+        try checkInterruption()
+        if config.postsPhysicalCommandKey { try validateEndpoints() }
+        // AX 查询可能阻塞；最后一次查询之后必须重新让位，不能沿用查询前的输入状态。
+        try checkInterruption()
+        if cursor.isPrimaryButtonPressed {
+            record(itemID: itemID, source: source, target: target, events: config.postsPhysicalCommandKey ? 3 : 2,
+                   aborted: .userInteracting, rejected: false, landing: nil)
+            throw MenuBarMoveError.abortedBySentinel(.userInteracting)
+        }
+        let latest = cursor.currentLocation
+        let latestDrift = EventSentinel.distance(from: source, to: latest)
+        if latestDrift > config.maxPlacementDriftPoints {
+            record(itemID: itemID, source: source, target: target, events: config.postsPhysicalCommandKey ? 3 : 2,
+                   aborted: .cursorDrift(latestDrift, latest), rejected: false, landing: latest)
+            throw MenuBarMoveError.abortedBySentinel(.cursorDrift(latestDrift, latest))
+        }
+        try checkInterruption()
         if !post(.mouseDown(source)) {
             record(itemID: itemID, source: source, target: target, events: 3, aborted: nil, rejected: true, landing: nil)
             throw MenuBarMoveError.abortedBySentinel(.userInteracting)
@@ -146,6 +222,7 @@ public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
 
         // 4) 插值拖到目标，每步复核
         for step in 1...config.stepCount {
+            try checkInterruption()
             let progress = CGFloat(step) / CGFloat(config.stepCount)
             let point = CGPoint(
                 x: source.x + (target.x - source.x) * progress,
@@ -177,6 +254,7 @@ public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
         }
 
         // 5) 收尾
+        try checkInterruption()
         if !post(.mouseUp(target)) {
             record(itemID: itemID, source: source, target: target, events: 4 + config.stepCount, aborted: nil, rejected: true, landing: nil)
             throw MenuBarMoveError.abortedBySentinel(.userInteracting)
@@ -193,6 +271,14 @@ public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
     }
 
     // MARK: - 在架拖拽状态（信号收尾的插手点）
+
+    private func requireInteractiveSession() throws {
+        guard cursor.isSessionInteractive else {
+            consecutiveSuccesses = 0
+            totalAborts += 1
+            throw MenuBarMoveError.sessionUnavailable
+        }
+    }
 
     /// 一次"已经按下、尚未抬起"的拖拽。拆开记是因为两段的风险不对称：
     /// 只发了 commandDown 就被打断，最需要抬起的是 ⌘；已经 mouseDown 则两个都要抬。

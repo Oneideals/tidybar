@@ -4,14 +4,32 @@ import CoreGraphics
 /// 组合根：把布局引擎、事件状态机、规则求值、设置与持久化粘在一起。
 /// 不直接触碰 AppKit 视图，因此可在命令行环境下完整测试。
 public final class TidyBarController {
+    public enum PhysicalLayoutState: Equatable, Sendable {
+        case idle, queued, arranging, completed, failed(String)
+
+        public var message: String? {
+            switch self {
+            case .idle: return nil
+            case .queued: return "分区已保存，等待整理菜单栏"
+            case .arranging: return "正在整理菜单栏…"
+            case .completed: return "菜单栏物理整理已完成"
+            case .failed(let message): return message
+            }
+        }
+
+        public var isFailure: Bool { if case .failed = self { return true }; return false }
+    }
+
     public struct Snapshot: Equatable, Sendable {
         public let layout: MenuBarLayout
         public let isRevealed: Bool
+        public let isMenuBarExpanded: Bool
         public let capability: LayoutEngine.Capability
         public let items: [ManagedItem]
-        public init(layout: MenuBarLayout, isRevealed: Bool, capability: LayoutEngine.Capability, items: [ManagedItem]) {
+        public init(layout: MenuBarLayout, isRevealed: Bool, capability: LayoutEngine.Capability, items: [ManagedItem], isMenuBarExpanded: Bool = false) {
             self.layout = layout
             self.isRevealed = isRevealed
+            self.isMenuBarExpanded = isMenuBarExpanded
             self.capability = capability
             self.items = items
         }
@@ -28,6 +46,12 @@ public final class TidyBarController {
     private let store: SettingsStoring
     private let contextProvider: SystemContextProviding
     private var items: [ManagedItem] = []
+    private var pendingReplayID: String?
+    private var demoReturnSurface: RevealStateMachine.Surface?
+    private var isPreparingMovement = false
+    public private(set) var physicalLayoutState: PhysicalLayoutState = .idle
+    public var isPhysicalLayoutBusy: Bool { physicalLayoutState == .arranging }
+    private let ownBundleID = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
 
     public init(
         engine: LayoutEngine,
@@ -47,11 +71,89 @@ public final class TidyBarController {
 
     public var snapshot: Snapshot {
         Snapshot(
-            layout: engine.layout,
-            isRevealed: reveal.isRevealed,
+            layout: presentationLayout,
+            isRevealed: reveal.isRevealed && reveal.surface == .drawer,
             capability: engine.capability,
-            items: items
+            items: items,
+            isMenuBarExpanded: !isMenuBarFolded
         )
+    }
+
+    /// 演示只是临时显示策略。永久分配与恢复日志始终保留用户原来的布局。
+    private var presentationLayout: MenuBarLayout {
+        guard reveal.isDemoMode else { return engine.layout }
+        var layout = engine.layout
+        let userIDs = Set(assignableItems.map(\.id))
+        for id in [MenuBarZone.alwaysHidden, .hidden, .visible].flatMap({ engine.layout.items(in: $0) }) where userIDs.contains(id) {
+            layout.move(itemID: id, to: .hidden, position: layout.items(in: .hidden).count)
+        }
+        return layout
+    }
+
+    public var isMenuBarFolded: Bool { !reveal.isRevealed || reveal.surface != .menuBar }
+
+    public var assignableItems: [ManagedItem] {
+        items.filter {
+            !$0.isSystemOwned && !owns($0)
+        }
+    }
+
+    public var managedZoneAssignments: [String: MenuBarZone] {
+        assignableItems.reduce(into: [:]) { result, item in
+            result[item.id] = presentationLayout.zone(of: item.id) ?? settings.newItemZone
+        }
+    }
+
+    public func setPhysicalLayoutBusy(_ busy: Bool) {
+        guard isPhysicalLayoutBusy != busy else { return }
+        reportPhysicalLayout(busy ? .arranging : .idle)
+    }
+
+    public func reportPhysicalLayout(_ state: PhysicalLayoutState) {
+        let changed = physicalLayoutState != state
+        physicalLayoutState = state
+        if changed, let message = state.message { record(message) }
+        publish()
+    }
+
+    func owns(_ item: ManagedItem) -> Bool {
+        item.ownerBundleID == ownBundleID || dividerIDs.contains(item.id)
+    }
+
+    // 本进程已尝试过不等于恢复完成；失败后磁盘上的意图仍须保护到下次启动。
+    var isAwaitingRecovery: Bool { engine.pendingIntent != nil }
+
+    public var drawerItems: [ManagedItem] {
+        guard !isDemoMode else { return [] }
+        let available = assignableItems
+        return presentationLayout.items(in: .hidden).compactMap { id in
+            available.first { $0.id == id }
+        }
+    }
+
+    public func setMenuBarFolded(_ folded: Bool, at date: Date = Date()) {
+        if folded { reveal.conceal() }
+        else {
+            if isDemoMode { toggleDemoMode(at: date) }
+            reveal.reveal(by: .dividerClick, surface: .menuBar, at: date)
+        }
+        publish()
+    }
+
+    public func toggleDrawer(at date: Date = Date()) {
+        guard !isDemoMode, !isPhysicalLayoutBusy else { return }
+        if snapshot.isRevealed { reveal.conceal() }
+        else { reveal.reveal(by: .dividerClick, surface: .drawer, at: date) }
+        publish()
+    }
+
+    public func setInteractionActive(_ active: Bool, at date: Date = Date()) {
+        if reveal.setInteractionActive(active, at: date) { publish() }
+    }
+
+    public func noteInteraction(at date: Date = Date()) {
+        reveal.noteInteraction(at: date)
+        publish()
     }
 
     /// 当前接管能力（完整模式 / 收纳面板降级），供 UI 与诊断展示
@@ -73,10 +175,12 @@ public final class TidyBarController {
     /// 启动即恢复上次状态；孤儿意图按设置决定重放还是丢弃（报告 B4）
     @discardableResult
     public func start(now: Date = Date(), scansSynchronously: Bool = true) -> LayoutJournal.Recovery {
+        pendingReplayID = nil
         let recovery = engine.recoverOnLaunch()
         if case .interrupted(let intent, _) = recovery {
             if settings.autoRecoverPendingIntent {
-                replay(intent)
+                pendingReplayID = intent.id
+                replayWhenReady()
             } else {
                 engine.discardPendingIntent()
                 record("放弃上次未完成的布局变更：\(intent.itemID) → \(intent.targetZone.displayLabel)")
@@ -91,7 +195,10 @@ public final class TidyBarController {
     /// 分隔符自身的图标 id：重算归属时必须跳过，否则会把边界自己"收起来"
     public var dividerIDs: Set<String> = []
     public var dividerCenters: (left: CGFloat?, right: CGFloat?) = (nil, nil) {
-        didSet { installTargetProvider() }
+        didSet {
+            installTargetProvider()
+            if replayWhenReady() { publish() }
+        }
     }
     /// 供设置窗口或菜单触发/查询菜单栏物理分隔符与折叠状态
     public var onToggleDividers: (() -> Void)?
@@ -99,13 +206,24 @@ public final class TidyBarController {
     public var onToggleMenuBarFold: (() -> Void)?
     public var isMenuBarFoldedQuery: (() -> Bool)?
     public var onToggleDrawer: (() -> Void)?
-    public var onExecuteSmartFold: (() -> Void)?
+    /// 保存期望后由装配层排队整理；参数表示还须恢复分区内部的保存顺序。
+    public var onRequestPhysicalArrangement: ((_ restoreSavedOrder: Bool) -> Void)?
+    /// 装配层暂时展开自有分隔符，返回可用于实际移动的最新坐标。
+    public var onBeginLayoutAdjustment: (() -> [ManagedItem])?
+    public var onEndLayoutAdjustment: (() -> Void)?
+
+    private func beginLayoutAdjustment() {
+        guard let begin = onBeginLayoutAdjustment else { return }
+        isPreparingMovement = true
+        items = begin()
+        isPreparingMovement = false
+    }
 
     private var targetProviderInstalled = false
     private func installTargetProviderOnce() {
         guard !targetProviderInstalled else { return }
         targetProviderInstalled = true
-        installTargetProvider()
+        if engine.targetProvider == nil { installTargetProvider() }
     }
 
     /// 给引擎装上"合法落点"的来源。
@@ -116,20 +234,46 @@ public final class TidyBarController {
     private func installTargetProvider() {
         engine.targetProvider = { [weak self] itemID, zone in
             guard let self else { return nil }
-            let ordered = MenuBarEnumeration.sortedLeftToRight(self.items)
+            let ordered = DividerGeometry.physicalItems(self.items)
+            if let item = ordered.first(where: { $0.id == itemID }),
+               self.visibleBoundary != nil,
+               DividerGeometry.zone(forX: item.centerX, leftEdge: self.dividerCenters.left,
+                                    rightEdge: self.visibleBoundary) == zone,
+               self.engine.pendingIntent?.targetPosition == nil {
+                return item.centerX // 已在目标分区，无须制造一次拖拽。
+            }
+            let boundaries = ordered.filter { self.dividerIDs.contains($0.id) }
+            if boundaries.count == 2,
+               let toggle = ordered.first(where: { self.owns($0) && !self.dividerIDs.contains($0.id) }),
+               let moving = ordered.firstIndex(where: { $0.id == itemID }) {
+                let desired = self.engine.pendingIntent?.targetPosition != nil
+                    ? DividerGeometry.arrangementOrder(items: ordered, layout: self.engine.layout,
+                        leftDivider: boundaries[0].id, rightDivider: boundaries[1].id, toggle: toggle.id,
+                        defaultZone: self.settings.newItemZone)
+                    : DividerGeometry.foldingOrder(items: ordered, layout: self.engine.layout,
+                        controls: .init(leftDivider: boundaries[0].id, rightDivider: boundaries[1].id, toggle: toggle.id),
+                        defaultZone: self.settings.newItemZone)
+                if let target = desired.firstIndex(of: itemID) {
+                    if moving == target { return ordered[moving].centerX }
+                    return MenuBarDropTarget.targetX(in: ordered, moving: moving, to: target)
+                }
+            }
             let edges = self.dividerCenters.left != nil && self.dividerCenters.right != nil
                 ? self.dividerCenters
                 : self.inferredEdges(ordered: ordered, zone: zone)
             if let x = DividerGeometry.landingX(
                 for: itemID, to: zone, ordered: ordered,
-                leftEdge: edges.left, rightEdge: edges.right
+                leftEdge: edges.left, rightEdge: edges.right, dividerIDs: self.dividerIDs
             ) { return x }
+            if let x = DividerGeometry.boundaryLandingX(for: itemID, to: zone, ordered: ordered,
+                leftEdge: self.dividerCenters.left, rightEdge: self.dividerCenters.right, dividerIDs: self.dividerIDs) { return x }
             // 分隔符还没摆出来时，退到"按当前分区归属找邻居"
-            let peers = self.items.filter { $0.id != itemID && self.engine.layout.zone(of: $0.id) == zone }
+            let peers = self.items.filter { $0.id != itemID && !self.owns($0) && self.engine.layout.zone(of: $0.id) == zone }
             guard !peers.isEmpty else { return nil }
             return DividerGeometry.landingX(
                 for: itemID, to: zone, ordered: ordered,
-                leftEdge: peers.map { $0.frame.midX }.min(), rightEdge: peers.map { $0.frame.midX }.max()
+                leftEdge: peers.map { $0.frame.midX }.min(), rightEdge: peers.map { $0.frame.midX }.max(),
+                dividerIDs: self.dividerIDs
             )
         }
     }
@@ -143,16 +287,28 @@ public final class TidyBarController {
         }
     }
 
-    /// 把"分区归属"整体按分隔符重算（用户拖完分隔符后调用）。
+    /// 按钮是常显区的可见边界，右分隔符只是折叠机构。
+    private var visibleBoundary: CGFloat? {
+        items.first(where: { owns($0) && !dividerIDs.contains($0.id) })?.centerX ?? dividerCenters.right
+    }
+
+    /// 用户手动拖动后按按钮位置重算，再将折叠分隔符归位。
     public func realignToDividers() {
-        guard let rightEdge = dividerCenters.right else { return }
-        for item in items where !item.isSystemOwned && !dividerIDs.contains(item.id) {
-            let zone = DividerGeometry.zone(forX: item.frame.midX, leftEdge: dividerCenters.left, rightEdge: rightEdge)
-            if engine.layout.zone(of: item.id) != zone {
-                engine.recordZoneOnly(itemID: item.id, zone: zone)
+        guard let rightEdge = visibleBoundary, !isDemoMode, !isAwaitingRecovery, !isPhysicalLayoutBusy else { return }
+        let ordered = MenuBarEnumeration.sortedLeftToRight(assignableItems)
+        for zone in MenuBarZone.allCases {
+            let members = ordered.filter { DividerGeometry.zone(forX: $0.centerX, leftEdge: dividerCenters.left, rightEdge: rightEdge) == zone }
+            for (index, item) in members.enumerated() {
+                if engine.layout.zone(of: item.id) != zone || engine.layout.position(of: item.id) != index {
+                    do {
+                        try engine.recordZoneOnly(itemID: item.id, zone: zone, position: index)
+                        engine.pinAsUser(itemID: item.id)
+                    } catch { record("分区保存失败：\(error)") }
+                }
             }
         }
         publish()
+        onRequestPhysicalArrangement?(false)
     }
 
     /// 把上次没做完的变更真的再做一次。
@@ -161,13 +317,11 @@ public final class TidyBarController {
     /// `recoverOnLaunch` 折叠完就已经是最终状态了——此时去拖图标等于凭猜测制造副作用。
     private func replay(_ intent: LayoutJournal.LayoutIntent) {
         let label = "\(intent.itemID) → \(intent.targetZone.displayLabel)"
-        guard engine.capability == .fullDrag else {
-            record("收纳面板模式，无需重放上次变更：\(label)")
-            return
-        }
         do {
             try engine.replay(intent)
-            record("已重放上次未完成的变更：\(label)")
+            record(engine.capability == .fullDrag
+                   ? "已重放上次未完成的变更：\(label)"
+                   : "收纳面板模式，无需重放物理操作，已恢复上次分配：\(label)")
         } catch {
             switch engine.noteReplayFailure() {
             case .retryScheduled(let failures):
@@ -180,26 +334,57 @@ public final class TidyBarController {
         }
     }
 
-    /// 退出前收尾（正常退出与 SIGTERM/SIGHUP 共用）：抬起半空拖拽 + 布局落盘
+    /// 初始扫描和分隔符位置可能尚未准备好；等待不消耗恢复次数。
+    @discardableResult
+    private func replayWhenReady() -> Bool {
+        guard !isPreparingMovement, !isPhysicalLayoutBusy else { return false }
+        guard let id = pendingReplayID else { return false }
+        guard engine.canReplayNow else { return false }
+        beginLayoutAdjustment()
+        defer { onEndLayoutAdjustment?() }
+        guard let intent = engine.pendingIntent, intent.id == id else {
+            pendingReplayID = nil // 已被后续用户操作提交、取消或替代。
+            return false
+        }
+        if engine.capability == .fullDrag,
+           engine.targetProvider?(intent.itemID, intent.targetZone) == nil { return false }
+        pendingReplayID = nil // 真正尝试后，本次进程不因后续快照反复重放。
+        replay(intent)
+        return true
+    }
+
+    /// 退出前收尾（正常退出与 SIGTERM/SIGHUP 共用）：释放输入，保留已持久化状态。
     public func flushForTermination() {
         engine.prepareForTermination()
     }
 
     public func refreshItems() {
-        items = engine.synchronize(newItemZone: settings.newItemZone)
-        publish()
+        guard !isPhysicalLayoutBusy else { return }
+        applyScan(engine.discoverItems())
+    }
+
+    /// 整理完成的坐标用于预热截图；在截图完成前继续保持输入互斥。
+    public func acceptArrangementResult(_ scanned: [ManagedItem]) {
+        guard isPhysicalLayoutBusy else { return }
+        adoptScan(scanned)
     }
 
     /// 落地一次后台扫描的结果（调用方负责在主线程回调）
     public func applyScan(_ scanned: [ManagedItem]) {
+        guard !isPhysicalLayoutBusy else { return }
+        adoptScan(scanned)
+    }
+
+    private func adoptScan(_ scanned: [ManagedItem]) {
+        engine.refreshAccessibilityCapability()
         let known = Set(items.map(\.id))
         items = scanned
         installTargetProviderOnce()
-        engine.fold(items: scanned, newItemZone: settings.newItemZone)
+        engine.fold(items: scanned.filter { !owns($0) }, newItemZone: settings.newItemZone)
         // A7「先问我」：默认策略照样先落一个确定的分区（不能让新图标悬着，
         // 否则它到底显不显示取决于 UI 有没有画那条问题），但把选择权挂出来等用户回答。
         if settings.askAboutNewItems {
-            for fresh in scanned where !known.contains(fresh.id) && !fresh.isSystemOwned {
+            for fresh in assignableItems where !known.contains(fresh.id) {
                 if !pendingNewItems.contains(where: { $0.id == fresh.id }) {
                     pendingNewItems.append(fresh)
                 }
@@ -210,6 +395,7 @@ public final class TidyBarController {
         } else if !pendingNewItems.isEmpty {
             pendingNewItems.removeAll()
         }
+        replayWhenReady()
         publish()
     }
 
@@ -239,37 +425,54 @@ public final class TidyBarController {
     /// 没真的生效时问题必须留在队列里——"答过了却什么都没变"是最难自证的坑。
     @discardableResult
     public func answerNewItem(_ itemID: String, zone: MenuBarZone) -> Bool {
-        guard move(itemID, to: zone) else { return false }
+        let accepted = onRequestPhysicalArrangement == nil ? move(itemID, to: zone) : reassignZone(itemID, to: zone)
+        guard accepted else { return false }
         pendingNewItems.removeAll { $0.id == itemID }
-        record("新图标 " + itemID + " 已按你的选择归入" + TidyBarController.zoneLabel(zone))
+        record("新图标 " + itemID + " 的分区已保存为" + TidyBarController.zoneLabel(zone))
         publish()
         return true
     }
 
     // MARK: - 显隐
 
+    /// 空白处点击触发的外部动作（如原地折叠/展开或呼出抽屉）
+    public var onEmptyBarClick: (() -> Void)?
+    /// 菜单栏滚轮/轻扫触发的外部动作
+    public var onScrollOrSwipe: (() -> Void)?
+
     /// 事件层入口：只响应用户开启的呼出方式
     public func handle(event: EventEngine.Event, at date: Date = Date()) {
-        guard settings.revealTriggers.contains(event.trigger) || event.trigger == .emptyBarClick else { return }
+        guard settings.revealTriggers.contains(event.trigger) else { return }
+        if isDemoMode, event.trigger == .hotkey {
+            toggleDemoMode(at: date)
+            return
+        }
+        guard !isPhysicalLayoutBusy else { return }
         if event.trigger == .emptyBarClick {
             let hitItem = items.first {
                 $0.frame.contains(event.location)
                 && !dividerIDs.contains($0.id)
-                && !($0.ownerBundleID?.contains("tidybar") == true)
-                && !($0.title == "▶" || $0.title == "◀" || $0.title == "☰" || $0.title == "│")
+                && !owns($0)
             }
             if hitItem != nil {
-                if reveal.isRevealed {
+                if snapshot.isRevealed {
                     reveal.conceal()
                     publish()
                 }
                 return
             }
-            if reveal.isRevealed {
-                reveal.conceal()
-                publish()
+            if let onEmptyBarClick {
+                onEmptyBarClick()
             } else {
-                if reveal.reveal(by: .emptyBarClick, at: date) { publish() }
+                toggleDrawer(at: date)
+            }
+            return
+        }
+        if event.trigger == .scrollOrSwipe {
+            if let onScrollOrSwipe {
+                onScrollOrSwipe()
+            } else if reveal.reveal(by: event.trigger, at: date) {
+                publish()
             }
             return
         }
@@ -298,12 +501,13 @@ public final class TidyBarController {
 
     /// 一键演示模式（报告 C3）
     public func toggleDemoMode(at date: Date = Date()) {
-        reveal.setDemoMode(!reveal.isDemoMode)
-        if reveal.isDemoMode {
-            // 进入演示模式：把隐藏区整体收起，仅保留系统项
-            for item in items where !item.isSystemOwned {
-                move(item.id, to: .hidden, at: date)
-            }
+        if isDemoMode {
+            reveal.setDemoMode(false)
+            if let surface = demoReturnSurface { reveal.reveal(by: .hotkey, surface: surface, at: date) }
+            demoReturnSurface = nil
+        } else {
+            demoReturnSurface = reveal.isRevealed ? reveal.surface : nil
+            reveal.setDemoMode(true)
         }
         publish()
     }
@@ -321,6 +525,7 @@ public final class TidyBarController {
         case rule
     }
 
+    @discardableResult
     public func move(
         _ itemID: String,
         to zone: MenuBarZone,
@@ -329,18 +534,45 @@ public final class TidyBarController {
         origin: ChangeOrigin = .user,
         at date: Date = Date()
     ) -> Bool {
-        do {
-            try engine.apply(itemID: itemID, to: zone, targetX: targetX, targetPosition: position)
-        } catch let error as LayoutEngine.EngineError {
-            // "没有合法落点"要和别的失败分开说：前者是接管模式下还缺分隔符/坐标（A2 没做），
-            // 混进一句"布局变更未生效"就等于让用户自己猜为什么没动。
-            if case .noMovementCapability = error {
-                record("改分区未生效：接管模式下需要一个合法落点（分隔符尚未实现）")
-            } else {
-                record("布局变更未生效：\(error)")
-            }
-            publish()
+        applyAssignment(itemID, to: zone, targetX: targetX, position: position,
+                        origin: origin, allowLogicalFallback: false)
+    }
+
+    private func applyAssignment(
+        _ itemID: String, to zone: MenuBarZone, targetX: CGFloat?, position: Int?,
+        origin: ChangeOrigin, allowLogicalFallback: Bool
+    ) -> Bool {
+        guard !isPhysicalLayoutBusy else {
+            record("菜单栏正在整理，请稍后再调整分区")
             return false
+        }
+        guard origin == .user || !isAwaitingRecovery else { return false }
+        let prepare = !isDemoMode
+        if prepare { beginLayoutAdjustment() }
+        defer { if prepare { onEndLayoutAdjustment?() } }
+        var usedLogicalFallback = false
+        do {
+            if isDemoMode { try engine.recordZoneOnly(itemID: itemID, zone: zone, position: position,
+                                                     supersedingPending: origin == .user) }
+            else { try engine.apply(itemID: itemID, to: zone, targetX: targetX, targetPosition: position) }
+        } catch let error as LayoutEngine.EngineError {
+            if case .noMovementCapability = error, allowLogicalFallback {
+                do {
+                    try engine.recordZoneOnly(itemID: itemID, zone: zone, position: position,
+                                              supersedingPending: origin == .user)
+                    usedLogicalFallback = true
+                } catch {
+                    record("分区保存失败：\(error)")
+                    publish()
+                    return false
+                }
+            } else {
+                record(error == .noMovementCapability
+                       ? "改分区未生效：接管模式下需要一个合法落点"
+                       : "布局变更未生效：\(error)")
+                publish()
+                return false
+            }
         } catch {
             record("布局变更未生效：\(error)")
             publish()
@@ -350,56 +582,118 @@ public final class TidyBarController {
         // "规则不走这条路"，那是错的：真走。若不区分来源，规则就会把用户的图标
         // 一个个钉成"用户决定"，免修剪保护于是变成一堆误钉。
         if origin == .user {
+            pendingReplayID = nil
             engine.pinAsUser(itemID: itemID)
-            record("图标已归入\(TidyBarController.zoneLabel(zone))")
+            record("图标已归入\(TidyBarController.zoneLabel(zone))"
+                   + (usedLogicalFallback ? "（暂无合法落点，已保存面板分配）" : ""))
         }
         publish()
         return true
     }
 
-    /// 重新设定图标分区（优先尝试物理 ⌘ 拖拽；若未摆放物理分隔符或目标区无邻居，则保全逻辑分区与持久化，并在收纳面板中生效）
+    /// 已装配后台整理时，true 表示用户期望保存成功；实际移动结果由 physicalLayoutState 单独报告。
+    /// 独立 CLI / 未装配环境继续使用原来的同步验证路径。
     @discardableResult
-    public func reassignZone(_ itemID: String, to zone: MenuBarZone, origin: ChangeOrigin = .user) -> Bool {
-        if move(itemID, to: zone, origin: origin) {
-            return true
+    public func reassignZone(_ itemID: String, to zone: MenuBarZone, position: Int? = nil, origin: ChangeOrigin = .user) -> Bool {
+        guard let request = onRequestPhysicalArrangement, capability == .fullDrag, !isDemoMode else {
+            return applyAssignment(itemID, to: zone, targetX: nil, position: position,
+                                   origin: origin, allowLogicalFallback: true)
         }
-        // 若物理拖拽因缺少落点未能执行，绝不能让用户的设置操作静默失败并丢失！
-        engine.recordZoneOnly(itemID: itemID, zone: zone)
+        guard !isPhysicalLayoutBusy, origin == .user || !isAwaitingRecovery else { return false }
+        do {
+            try engine.recordZoneOnly(itemID: itemID, zone: zone, position: position,
+                                      supersedingPending: origin == .user)
+        } catch {
+            reportPhysicalLayout(.failed("分区未保存：\(error.localizedDescription)"))
+            return false
+        }
         if origin == .user {
+            pendingReplayID = nil
             engine.pinAsUser(itemID: itemID)
-            record("图标已归入\(TidyBarController.zoneLabel(zone))（未摆放物理分隔符，已在收纳面板中生效）")
         }
-        publish()
+        reportPhysicalLayout(.queued)
+        request(position != nil)
         return true
     }
 
     /// 规则批次落地
     @discardableResult
     public func evaluateRules(context: SystemContext, isScreenShareActive: Bool = false, at date: Date = Date()) -> RuleEngine.Batch {
-        guard settings.rulesEnabled else { return .init(changes: []) }
+        guard settings.rulesEnabled, !isDemoMode, !isAwaitingRecovery, !isPhysicalLayoutBusy else { return .init(changes: []) }
+        let resolvedProfiles = settings.profiles.mapValues(resolveProfile)
+        let rules = settings.rules.map { saved -> DisplayRule in
+            var rule = saved
+            rule.actions = saved.actions.compactMap { action in
+                if action.kind == .applyProfile {
+                    return action.profileName.flatMap { resolvedProfiles[$0] == nil ? nil : action }
+                }
+                guard let savedID = action.itemID, let currentID = resolveItemID(savedID) else { return nil }
+                return RuleAction(kind: action.kind, itemID: currentID)
+            }
+            return rule
+        }
         let batch = ruleEngine.evaluate(
-            rules: settings.rules,
+            rules: rules,
             context: context,
             currentLayout: engine.layout,
-            isScreenShareActive: isScreenShareActive
+            isScreenShareActive: isScreenShareActive,
+            profiles: resolvedProfiles,
+            activeProfileName: settings.activeProfileName
         )
+        let prepare = !batch.changes.isEmpty && onRequestPhysicalArrangement == nil
+        if prepare { beginLayoutAdjustment() }
+        defer { if prepare { onEndLayoutAdjustment?() } }
         for change in batch.changes {
-            move(change.itemID, to: change.to, origin: .rule, at: date)
+            if engine.layout.zone(of: change.itemID) == change.to,
+               change.position == nil || engine.layout.position(of: change.itemID) == change.position { continue }
+            guard reassignZone(change.itemID, to: change.to, position: change.position, origin: .rule) else { return batch }
+        }
+        if let profile = batch.appliedProfiles.first, settings.activeProfileName != profile {
+            settings.activeProfileName = profile
+            store.save(settings)
+            publish()
         }
         return batch
+    }
+
+    /// 规则和档案沿用已确认的身份台账，不把历史标题当作永远不变的 ID。
+    public func resolveItemID(_ savedID: String) -> String? {
+        let live = Set(assignableItems.map(\.id))
+        if live.contains(savedID) { return savedID }
+        let matches = engine.ledgerRecordsSnapshot.filter { $0.aliases.contains(savedID) && live.contains($0.currentID) }
+        return matches.count == 1 ? matches.first?.currentID : nil
+    }
+
+    private func resolveProfile(_ profile: MenuBarLayout) -> MenuBarLayout {
+        var resolved = MenuBarLayout()
+        for zone in MenuBarZone.allCases {
+            for id in profile.items(in: zone) {
+                if let current = resolveItemID(id) { resolved.append(current, to: zone) }
+            }
+        }
+        return resolved
     }
 
     /// 使用当前真实环境上下文自动求值并落地规则
     @discardableResult
     public func evaluateRulesWithCurrentContext(isScreenShareActive: Bool = false, at date: Date = Date()) -> RuleEngine.Batch {
-        evaluateRules(context: contextProvider.currentContext(), isScreenShareActive: isScreenShareActive, at: date)
+        guard settings.rulesEnabled, !isDemoMode, !isAwaitingRecovery, !isPhysicalLayoutBusy,
+              settings.rules.contains(where: { $0.isEnabled && $0.isEvaluable }) else { return .init(changes: []) }
+        return evaluateRules(context: contextProvider.currentContext(), isScreenShareActive: isScreenShareActive, at: date)
     }
 
     // MARK: - 设置
 
+    public var hasAutomaticRules: Bool {
+        settings.rulesEnabled && !isDemoMode && !isPhysicalLayoutBusy && settings.rules.contains {
+            $0.isEnabled && $0.isEvaluable && $0.conditions.allSatisfy(\.supportsAutomaticEvaluation)
+        }
+    }
+
     public func update(_ mutate: (inout AppSettings) -> Void) {
         mutate(&settings)
         settings = settings.sanitized()
+        reveal.updateDelay(settings.rehideDelay)
         store.save(settings)
         publish()
     }
@@ -410,21 +704,30 @@ public final class TidyBarController {
     }
 
     /// 应用某个布局档案（报告 C2）
-    public func applyProfile(named name: String) {
-        guard let profile = settings.profiles[name] else { return }
-        settings.activeProfileName = name
-        store.save(settings)
+    @discardableResult
+    public func applyProfile(named name: String) -> Bool {
+        guard !isPhysicalLayoutBusy else { return false }
+        guard let stored = settings.profiles[name] else { return false }
+        let profile = resolveProfile(stored)
+        let prepare = !isDemoMode && onRequestPhysicalArrangement == nil
+        if prepare { beginLayoutAdjustment() }
+        defer { if prepare { onEndLayoutAdjustment?() } }
         for zone in MenuBarZone.allCases {
-            for itemID in profile.items(in: zone) {
-                move(itemID, to: zone)
+            for (position, itemID) in profile.items(in: zone).enumerated() {
+                guard reassignZone(itemID, to: zone, position: position) else { return false }
             }
         }
+        settings.activeProfileName = name
+        store.save(settings)
+        publish()
+        return true
     }
 
     /// 当前菜单栏状态存为档案
     public func saveProfile(named name: String) {
+        let profile = resolveProfile(engine.layout)
         update {
-            $0.profiles[name] = engine.layout
+            $0.profiles[name] = profile
             $0.activeProfileName = name
         }
     }
@@ -451,6 +754,7 @@ public final class TidyBarController {
     /// 返回结果是为了让 UI 能给反馈（"这个 App 不允许代点"必须让用户看见，而不是图标默默不动）。
     @discardableResult
     public func activate(itemID: String, at date: Date = Date()) -> ActivationOutcome {
+        guard !isPhysicalLayoutBusy else { return .busy }
         if engine.layout.zone(of: itemID) == .alwaysHidden {
             reveal.reveal(by: .hotkey, at: date)
         }
@@ -464,20 +768,25 @@ public final class TidyBarController {
         return outcome
     }
 
-    /// 面板/搜索里右键弹菜单：先呼出隐藏区，再在真实图标上触发 AXShowMenu。
+    /// CLI/简易装配的 AX 右键路径；不允许回退为左键。
     @discardableResult
     public func showMenu(itemID: String, at date: Date = Date()) -> ActivationOutcome {
+        guard !isPhysicalLayoutBusy else { return .busy }
         if engine.layout.zone(of: itemID) == .alwaysHidden {
             reveal.reveal(by: .hotkey, at: date)
         }
         let outcome = engine.showMenu(itemID: itemID)
         if outcome.countsAsPressed {
-            record("已弹菜单 \(itemID)（\(outcome.userReadable)）")
+            record("已发送菜单请求 \(itemID)（\(outcome.userReadable)）")
         } else {
             record("弹菜单失败 \(itemID)：\(outcome.userReadable)")
         }
         publish()
         return outcome
+    }
+
+    public func reportActivation(itemID: String, outcome: ActivationOutcome) {
+        record("菜单栏点击 \(itemID)：\(outcome.userReadable)")
     }
 
     // MARK: - 私有

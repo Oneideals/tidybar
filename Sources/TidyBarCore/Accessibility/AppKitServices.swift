@@ -9,11 +9,35 @@ public final class AppKitCursorReader: CursorReading {
     public init() {}
 
     public var currentLocation: CGPoint {
-        NSEvent.mouseLocation
+        let point = CGEvent(source: nil)?.location ?? .zero
+        return CGPoint(x: point.x, y: CGDisplayBounds(CGMainDisplayID()).height - point.y)
     }
 
     public var isPrimaryButtonPressed: Bool {
-        NSEvent.pressedMouseButtons & (1 << 0) != 0
+        CGEventSource.buttonState(.combinedSessionState, button: .left)
+    }
+
+    public var isSecondaryButtonPressed: Bool {
+        CGEventSource.buttonState(.combinedSessionState, button: .right)
+    }
+
+    public var userIdleTime: TimeInterval {
+        [CGEventType.keyDown, .flagsChanged, .mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
+            .map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }.min() ?? 0
+    }
+
+    public var isSessionInteractive: Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return session[kCGSessionOnConsoleKey as String] as? Bool == true
+            && session["CGSSessionScreenIsLocked"] as? Bool != true
+    }
+
+    public var displayConfiguration: [CGDirectDisplayID: CGRect]? {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [:] }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return [:] }
+        return Dictionary(uniqueKeysWithValues: displays.prefix(Int(count)).map { ($0, CGDisplayBounds($0)) })
     }
 }
 

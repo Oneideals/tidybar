@@ -14,6 +14,8 @@ public struct IdentityRecord: Codable, Equatable, Sendable {
     public var observedOrdinal: Int
     /// 登记时该进程一共几个图标。序号只有在这个数没变时才代表同一个位置。
     public var ownerItemCount: Int
+    /// 保留已经见过的多图标证据；可选以兼容没有此字段的旧台账。
+    public var maximumObservedItemCount: Int?
     /// 观测到的 AX id，最新一条在末尾；超出上限丢弃最旧的。
     public var aliases: [String]
     public var zoneRaw: String
@@ -45,6 +47,7 @@ public struct IdentityRecord: Codable, Equatable, Sendable {
         self.observedTitle = observedTitle
         self.observedOrdinal = observedOrdinal
         self.ownerItemCount = ownerItemCount
+        self.maximumObservedItemCount = max(ownerItemCount, observedOrdinal + 1)
         self.aliases = aliases
         self.zoneRaw = zoneRaw
         self.pinnedBy = pinnedBy
@@ -95,7 +98,9 @@ public enum IdentityLedger {
     ) -> LedgerResolution {
         var result = LedgerResolution()
         let liveIDs = Set(observed.map(\.id))
-        var claimed: Set<String> = []
+        let liveRecordIDs = Set(records.map(\.currentID)).intersection(liveIDs)
+        var proposals: [(from: String, to: String, kind: Int, owner: String)] = []
+        var claimants: [String: Set<String>] = [:]
 
         for record in records {
             let currentID = record.currentID
@@ -138,19 +143,31 @@ public enum IdentityLedger {
             }
 
             let unique = Set(matches)
+            for candidate in unique {
+                claimants[candidate, default: []].insert(currentID)
+            }
             guard unique.count == 1, let candidate = unique.first else {
                 if !unique.isEmpty || matches.count > 1 { result.ambiguousOwners.insert(record.ownerBundleID) }
                 continue
             }
-            // 一个新 id 不能被两条旧记录同时认领
-            guard !claimed.contains(candidate) else {
+            guard !liveRecordIDs.contains(candidate) else {
                 result.ambiguousOwners.insert(record.ownerBundleID)
                 continue
             }
+            proposals.append((currentID, candidate, kind, record.ownerBundleID))
+        }
 
-            claimed.insert(candidate)
-            result.renames.append((currentID, candidate))
-            switch kind {
+        // 两遍处理：先收集全部认领，再提交双方唯一的对应。
+        // 不能留下“先到者”，否则分区取决于台账文件的排列顺序。
+        var accepted: Set<String> = []
+        for proposal in proposals {
+            guard claimants[proposal.to]?.count == 1 else {
+                result.ambiguousOwners.insert(proposal.owner)
+                continue
+            }
+            guard accepted.insert(proposal.to).inserted else { continue }
+            result.renames.append((proposal.from, proposal.to))
+            switch proposal.kind {
             case 1: result.aliasHits += 1
             case 2: result.ordinalHits += 1
             default: result.titleHits += 1
@@ -166,11 +183,12 @@ public enum IdentityLedger {
         observedItem: ManagedItem,
         drifted: Bool
     ) {
-        if !record.aliases.contains(observedItem.id) {
-            record.aliases.append(observedItem.id)
-            if record.aliases.count > maxAliases {
-                record.aliases.removeFirst(record.aliases.count - maxAliases)
-            }
+        record.maximumObservedItemCount = max(record.maximumObservedItemCount ?? 0,
+            record.ownerItemCount, record.observedOrdinal + 1, observedItem.ownerItemCount)
+        record.aliases.removeAll { $0 == observedItem.id }
+        record.aliases.append(observedItem.id)
+        if record.aliases.count > maxAliases {
+            record.aliases.removeFirst(record.aliases.count - maxAliases)
         }
         record.observedTitle = observedItem.title
         record.observedOrdinal = observedItem.ordinalInOwner

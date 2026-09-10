@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import IOKit.ps
+import CoreWLAN
 
 /// 系统上下文提供者协议：为规则引擎提供当前硬件与环境快照。
 public protocol SystemContextProviding: Sendable {
@@ -19,16 +20,26 @@ public struct LiveSystemContextProvider: SystemContextProviding {
 
     public func currentContext() -> SystemContext {
         let (battery, charging) = readBatteryState()
+        let wifi = readWiFiState()
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         return SystemContext(
             batteryLevel: battery,
             isCharging: charging,
-            connectedWiFiSSID: nil,
+            connectedWiFiSSID: wifi.ssid,
             activeFocusMode: nil,
             frontmostAppBundleID: frontmost,
             now: Date(),
-            calendar: .current
+            calendar: .current,
+            hasKnownWiFiState: wifi.known
         )
+    }
+
+    private func readWiFiState() -> (ssid: String?, known: Bool) {
+        guard let interface = CWWiFiClient.shared().interface() else { return (nil, false) }
+        if !interface.powerOn() { return (nil, true) }
+        if let ssid = interface.ssid() { return (ssid, true) }
+        // 新版 macOS 可能隐去 SSID；不申请权限，也不把隐去误判为断网。
+        return (nil, false)
     }
 
     private func readBatteryState() -> (level: Double?, isCharging: Bool) {
