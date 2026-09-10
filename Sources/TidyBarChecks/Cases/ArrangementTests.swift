@@ -229,6 +229,38 @@ struct MenuBarArrangementTests {
         }
     }
 
+    private final class TransientSettlingMover: MenuBarMoving {
+        let reader: FakeMenuBarReader
+        let transient: [ManagedItem]
+        let settled: [ManagedItem]
+        var moves = 0
+        init(reader: FakeMenuBarReader, transient: [ManagedItem], settled: [ManagedItem]) {
+            self.reader = reader; self.transient = transient; self.settled = settled
+        }
+        func move(itemID: String, toX x: CGFloat) throws -> CGPoint {
+            moves += 1
+            reader.items = transient
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                self.reader.items = self.settled
+            }
+            return CGPoint(x: x, y: 1188)
+        }
+    }
+
+    func settlingDuringMoveDoesNotThrowUnsupportedDisplayLayout() throws {
+        MainActor.assumeIsolated {
+            let reader = FakeMenuBarReader(items: before)
+            // 移动后瞬间图标尚未完全到位（50ms 内归位）
+            let mover = TransientSettlingMover(reader: reader, transient: before, settled: after)
+            let operation = MenuBarArrangement(reader: reader, mover: mover, cursor: FakeCursor())
+            var outcome: Result<[ManagedItem], MenuBarArrangement.Failure>?
+            expect(operation.start(layout: layout, controls: controls, expectedItems: ["hidden", "visible"],
+                                   defaultZone: .hidden, screens: [screen]) { outcome = $0 })
+            expect(pump { outcome != nil })
+            if case .success = outcome {} else { expect(false, "移动后短暂沉降不应误报 unsupportedDisplayLayout：\(String(describing: outcome))") }
+        }
+    }
+
     private final class PartialMover: MenuBarMoving {
         let reader: FakeMenuBarReader
         let swapsSameZonePeers: Bool
@@ -489,6 +521,7 @@ extension MenuBarArrangementTests {
             TestCase("controllerRejectsConflictingOperationsWhileArranging", suite.controllerRejectsConflictingOperationsWhileArranging),
             TestCase("crossScreenItemsNeverEnterTheSameArrangement", suite.crossScreenItemsNeverEnterTheSameArrangement),
             TestCase("settlingItemsSettleBeforeArrangement", suite.settlingItemsSettleBeforeArrangement),
+            TestCase("settlingDuringMoveDoesNotThrowUnsupportedDisplayLayout", suite.settlingDuringMoveDoesNotThrowUnsupportedDisplayLayout),
             TestCase("sameZoneSwapsCannotKeepArrangementRunning", suite.sameZoneSwapsCannotKeepArrangementRunning),
             TestCase("partialMovesMustImproveTheWholePartition", suite.partialMovesMustImproveTheWholePartition),
             TestCase("toggleSeparatesVisibleAndHiddenItemsInBothModes", suite.toggleSeparatesVisibleAndHiddenItemsInBothModes),

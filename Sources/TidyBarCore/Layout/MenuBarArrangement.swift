@@ -96,7 +96,7 @@ public final class MenuBarArrangement {
                                             expectedItems: Set<String>, defaultZone: MenuBarZone,
                                             screens: [ScreenInfo], restoreSavedOrder: Bool, progress: Progress) throws -> [ManagedItem] {
         func readMenuBar(waitSettled: Bool = false) throws -> (raw: [ManagedItem], current: [ManagedItem]) {
-            let deadline = waitSettled ? ProcessInfo.processInfo.systemUptime + 1.2 : ProcessInfo.processInfo.systemUptime
+            let deadline = waitSettled ? ProcessInfo.processInfo.systemUptime + 3.0 : ProcessInfo.processInfo.systemUptime + 0.8
             while true {
                 let raw = reader.discoverItems()
                 let physical = DividerGeometry.physicalItems(raw)
@@ -139,16 +139,8 @@ public final class MenuBarArrangement {
                     return (raw, physical.filter { ScreenCoordinateSpace.isWithinMenuBar($0.frame, screen: screen) })
                 }
 
-                // 如果部分图标还在被展开/折叠推开的负坐标带或正在归位，且尚未超时，则等待回弹稳定
-                let hasSettlingItems = itemsToCheck.contains { item in
-                    let center = CGPoint(x: item.frame.midX, y: item.frame.midY)
-                    let bandTop = screen.frame.maxY
-                    let bandBottom = screen.frame.maxY - screen.menuBarHeight - 12
-                    let inBand = center.y >= bandBottom && center.y <= bandTop
-                    let isDisplaced = center.x < screen.frame.minX
-                    return inBand && isDisplaced
-                }
-                if hasSettlingItems && ProcessInfo.processInfo.systemUptime < deadline {
+                // 如果尚未全部归位且未超时，等待系统移动或动画稳定
+                if ProcessInfo.processInfo.systemUptime < deadline {
                     Thread.sleep(forTimeInterval: 0.05)
                     continue
                 }

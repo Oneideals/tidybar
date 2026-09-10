@@ -125,6 +125,19 @@ struct ScreenCoordinateSpaceTests {
             "换算后的坐标应落进菜单栏带，否则策略会误杀全部图标"
         )
     }
+
+    func menuBarToleranceAcceptsSlightYOffset() throws {
+        let screen = ScreenInfo(
+            identifier: 1,
+            frame: CGRect(x: 0, y: 0, width: 1_920, height: 1_080),
+            menuBarHeight: 30,
+            notchWidth: nil,
+            isBuiltin: false
+        )
+        // 菜单栏下沿是 1050，某状态项中心在 1048（略伸出 2pt），应在 12pt 容差内被接受
+        let slightlyLow = CGRect(x: 500, y: 1_036, width: 24, height: 24)
+        expect(ScreenCoordinateSpace.isWithinMenuBar(slightlyLow, screen: screen))
+    }
 }
 
 struct ItemIdentityTests {
@@ -277,6 +290,7 @@ extension ScreenCoordinateSpaceTests {
             TestCase("cgToAppKitFlipsVerticallyAroundPrimaryHeight", suite.cgToAppKitFlipsVerticallyAroundPrimaryHeight),
             TestCase("roundTripIsLossless", suite.roundTripIsLossless),
             TestCase("menuBarItemsLandInTheMenuBarBand", suite.menuBarItemsLandInTheMenuBarBand),
+            TestCase("menuBarToleranceAcceptsSlightYOffset", suite.menuBarToleranceAcceptsSlightYOffset),
         ]
     }
 }

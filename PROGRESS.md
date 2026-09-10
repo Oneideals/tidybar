@@ -1,7 +1,7 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-09-10T15:49:02Z (read-only projection)
-> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 133
+> **Last Updated:** 2026-09-10T16:28:49Z (read-only projection)
+> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 136
 
 ---
 
@@ -10,11 +10,11 @@
 - [DONE] `native-fold-acceptance-20260909` — 最终63716565包自身两项权限已生效，完整原生验收完成：AdGuard抽屉右键、4.2秒保活、主动关闭后复位；主按钮展开与折叠时8常显/19隐藏分界正确；真实图标19/19及悬停收起通过。Debug与Release各312条41套件通过，配置保持。详见docs/findings/17-final-drawer-acceptance.md。
 - [DONE] `native-test-permission-20260908` — 用户已为b82694测试包授权；同包重启PID25636启动日志确认辅助功能已授予、完整接管，读取35至38项。权限阻塞已消除，后续锁屏及原生交互验收另行记录。
 - [DONE] `review-1935331` — 原始16项审查问题及复核追加的恢复保护、同区保序、手动扫描时序、事件隔离和UI结果链问题已修复。Debug与最终Release回归均253/253、38套件通过；全目标编译、应用打包、签名及plist校验通过。详见docs/findings/10-review-fixes.md；真实菜单栏拖拽未做现场验证。
+- [DONE] (agy, 2026-09-10) 修复折叠负坐标等待沉降与多屏容错，316条用例全绿通过并热重启新实例PID 44899
 - [DONE] (agy, 2026-09-10) 诊断完成：发现折叠负坐标与等待沉降问题
 - [DONE] (agy, 2026-09-10) 设置面板现代布局彻底修复：消除沉底与空白，通过全量测试并启动新实例PID 96625
 - [DONE] (agy, 2026-09-10) 现代侧边栏设置面板与卡片重构完成，打包装配并已启动新版进程(PID 91296)
 - [DONE] (agy, 2026-09-10) 完成第一阶段优化：多维手势触发体系与Spotlight搜索HUD升级全部落地，315条用例全绿通过
-- [DONE] (codex, 2026-09-10) 完成原生面板存活修复及最终63716565包真机验收：右键保活关闭、主按钮左右分区、19/19图标与悬停收起均通过；Debug/Release各312条，设置保持，App运行，报告17已保存。
 
 ## 📋 Open Issues & Backlog ([TODO])
 
@@ -22,11 +22,11 @@ _No open issues._
 
 ## 🔄 Active Leases & In-Progress Work
 
-- **agy** (`44ceb2e3-2fd7-4a0e-b14d-c7796f1f9c52`): 修复折叠负坐标等待沉降与多屏容错 *(files: sources/tidybarcore/app/tidybarapplication.swift, sources/tidybarcore/layout/menubararrangement.swift)*
+- **agy** (`44ceb2e3-2fd7-4a0e-b14d-c7796f1f9c52`): 彻底修复菜单栏重排 unsupportedDisplayLayout 误报问题 *(files: sources/tidybarcore/layout/menubararrangement.swift)*
 
 ## 📝 Working Tree Changes
 
-_Working tree is clean._
+- `.M` `Sources/TidyBarProbe/main.swift`
 
 ## 💡 Handoff Instructions for Next Agent
 

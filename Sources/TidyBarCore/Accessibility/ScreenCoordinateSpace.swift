@@ -32,13 +32,13 @@ public enum ScreenCoordinateSpace {
     }
 
     /// 该图标是否落在某块屏幕的菜单栏带内（AppKit 坐标）
-    public static func isWithinMenuBar(_ rect: CGRect, screen: ScreenInfo) -> Bool {
-        guard screen.frame.intersects(rect) else { return false }
+    public static func isWithinMenuBar(_ rect: CGRect, screen: ScreenInfo, tolerance: CGFloat = 12) -> Bool {
+        guard rect.width > 0, rect.height > 0 else { return false }
         let menuBarBand = CGRect(
             x: screen.frame.minX,
-            y: screen.frame.maxY - screen.menuBarHeight,
+            y: screen.frame.maxY - screen.menuBarHeight - tolerance,
             width: screen.frame.width,
-            height: screen.menuBarHeight
+            height: screen.menuBarHeight + tolerance * 2
         )
         // 菜单栏图标高度可能略大于 menuBarHeight（含阴影），用中心点判定更稳
         return menuBarBand.contains(CGPoint(x: rect.midX, y: rect.midY))
