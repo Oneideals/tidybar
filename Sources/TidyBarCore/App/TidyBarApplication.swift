@@ -934,13 +934,25 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
         let shouldShowAlwaysHidden = permanentlyHidden && !revealsAlwaysHiddenForClick
-        alwaysHiddenSeparator?.length = shouldShowAlwaysHidden ? length : 0
-        alwaysHiddenSeparator?.isVisible = shouldShowAlwaysHidden
+        // 顺序关键：先 isVisible 再 length。AppKit 要求 status item 先挂回窗口层，
+        // 否则 length 赋值被丢弃；隐藏时反过来，先归零 length 再注销。
+        if shouldShowAlwaysHidden {
+            alwaysHiddenSeparator?.isVisible = true
+            alwaysHiddenSeparator?.length = length
+        } else {
+            alwaysHiddenSeparator?.length = 0
+            alwaysHiddenSeparator?.isVisible = false
+        }
         alwaysHiddenSeparator?.button?.title = ""
         alwaysHiddenSeparator?.button?.action = #selector(toggleDrawer)
 
-        separator?.length = isMenuBarFolded ? length : 0
-        separator?.isVisible = isMenuBarFolded
+        if isMenuBarFolded {
+            separator?.isVisible = true
+            separator?.length = length
+        } else {
+            separator?.length = 0
+            separator?.isVisible = false
+        }
         separator?.button?.title = ""
         separator?.button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
 
