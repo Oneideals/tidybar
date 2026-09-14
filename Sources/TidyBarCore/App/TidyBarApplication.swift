@@ -158,10 +158,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let panel = TidyBarPanelController(services: services, capturer: capturer)
         lastCaptureAuthorization = capturer.isAuthorized
         panel.onItemClick = { [weak self] item in
-            self?.handleDrawerItemClick(item, button: .primary)
+            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: false)
         }
         panel.onRightClick = { [weak self] item in
-            self?.handleDrawerItemClick(item, button: .secondary)
+            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: true)
         }
         panel.onRequestCaptureAuthorization = { [weak self] in
             if capturer.isAuthorized { self?.scheduleAlignment() }
@@ -179,8 +179,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let search = TidyBarSearchUI()
         search.queryHandler = { [weak barController] query in barController?.search(query) ?? [] }
         search.activateHandler = { [weak self] item in
-            self?.handleDrawerItemClick(item, button: .primary)
-            return .queued
+            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: false)
+            return .menuPresented
         }
         search.zoneLabel = { [weak barController] id in
             guard let zone = barController?.snapshot.layout.zone(of: id) else { return "未分类" }
@@ -701,15 +701,6 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 抽屉/搜索面板点击图标的统一入口：通过 MenuBarClickRelay 精确代理点击到目标图标，
-    /// 不再展开全部隐藏图标再用遮罩窗口覆盖（那个方案因 frame 为 .zero 导致遮罩计算失败）。
-    private func handleDrawerItemClick(_ item: ManagedItem, button: MenuBarClickRelay.Button) {
-        let outcome = requestProxyClick(item, button: button)
-        if !outcome.countsAsPressed && outcome != .queued {
-            panelController?.setActivationNotice(outcome.userReadable)
-        }
-    }
-
     private func requestProxyClick(_ item: ManagedItem, button: MenuBarClickRelay.Button) -> ActivationOutcome {
         guard let controller, !terminationRequested, !isReconcilingLayout, !isRelayingClick,
               !controller.isPhysicalLayoutBusy else { return .busy }
@@ -925,6 +916,37 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         controller?.toggleDrawer()
     }
 
+/// 菜单栏单图标隔离遮罩视图：以与系统菜单栏像素级一致的纯净底色与底边细线，
+/// 遮盖目标图标两侧的所有其他收纳项，实现「仅被选中的图标单独浮现在菜单栏」。
+/// 点击遮罩区域将立即取消隔离并重新折叠菜单栏。
+private final class MenuBarIsolationMaskView: NSView {
+    var onClick: (() -> Void)?
+
+    override func draw(_ dirtyRect: NSRect) {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let bgColor = isDark
+            ? NSColor(calibratedWhite: 0.12, alpha: 1.0)
+            : NSColor(calibratedWhite: 0.96, alpha: 1.0)
+        bgColor.setFill()
+        dirtyRect.fill()
+
+        // 菜单栏底部分隔细线
+        let separatorColor = isDark
+            ? NSColor.white.withAlphaComponent(0.12)
+            : NSColor.black.withAlphaComponent(0.12)
+        separatorColor.setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: 1.0).fill()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onClick?()
+    }
+}
+
     private func removeIsolationMasks() {
         isolationMaskWindows.forEach { $0.orderOut(nil) }
         isolationMaskWindows.removeAll()
@@ -932,101 +954,131 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private func createIsolationMaskWindow(frame: CGRect, screen: NSScreen?) -> NSWindow {
         let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false, screen: screen)
-        window.level = NSWindow.Level(Int(CGWindowLevelForKey(.statusWindow)) + 1)
-        window.isOpaque = false
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
+        window.isOpaque = true
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.ignoresMouseEvents = true
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
-        let effect = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
-        effect.autoresizingMask = [.width, .height]
-        effect.material = .menu
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        window.contentView = effect
+        window.ignoresMouseEvents = false
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+
+        let maskView = MenuBarIsolationMaskView(frame: NSRect(origin: .zero, size: frame.size))
+        maskView.onClick = { [weak self] in
+            self?.endSingleItemIsolation()
+        }
+        window.contentView = maskView
         return window
     }
 
-    /// 采用 Bartender 方式：点击抽屉中某 App 图标后，仅将该被点击的图标临时在菜单栏单独显现（利用遮罩隐去其他收纳项），
-    /// 同时将鼠标指针吸附至该图标在菜单栏的真实位置。若 autoTriggerRightClick 为 true，自动触发右键唤出该 App 原生菜单。
-    public func revealSingleItemInMenuBar(_ item: ManagedItem, autoTriggerRightClick: Bool = false, duration: TimeInterval = 7.0) {
+    private func endSingleItemIsolation() {
+        removeIsolationMasks()
+        setMenuBarFolded(true)
+    }
+
+    /// 采用严格物理遮罩方式：点击抽屉中某 App 图标后，将折叠推杆归零，
+    /// 同时在目标图标左侧与右侧立即布置两条完全不透明的菜单栏背景遮罩，
+    /// 遮蔽除目标图标与 TidyBar 控制按钮之外的全部收纳项。
+    /// 同时将鼠标指针吸附至该图标在菜单栏的真实位置；若 autoTriggerRightClick 为 true，自动触发右键唤出该 App 原生菜单。
+    public func revealSingleItemInMenuBar(_ item: ManagedItem, autoTriggerRightClick: Bool = false, duration: TimeInterval = 6.0) {
         guard !terminationRequested else { return }
         removeIsolationMasks()
         panelController?.hide()
         searchUI?.dismiss()
         endHeldMenuAccess()
 
-        // 展开菜单栏（推杆归零，目标图标与收纳项物理回到菜单栏）
+        // 展开菜单栏（推杆归零，目标图标与收纳项物理回到菜单栏可见带内）
         setMenuBarFolded(false)
         controller?.setInteractionActive(true)
 
         let effectiveDuration = max(controller?.settings.rehideDelay ?? duration, duration)
+        findAndIsolateItem(item, autoTriggerRightClick: autoTriggerRightClick, duration: effectiveDuration)
+    }
 
-        // 稍等 AppKit 物理帧刷新完成后，定位目标图标与全部隐藏项物理范围
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            guard let self, !self.terminationRequested else { return }
-            let live = self.services.reader.discoverItems()
-            guard let target = live.first(where: { $0.id == item.id || ($0.ownerBundleID == item.ownerBundleID && $0.title == item.title) }),
-                  target.centerX > 0 else {
-                self.controller?.setInteractionActive(false)
-                self.scheduleAutoConceal(barController: self.controller!, duration: effectiveDuration)
-                return
+    private func findAndIsolateItem(_ item: ManagedItem, autoTriggerRightClick: Bool, duration: TimeInterval, attempt: Int = 0) {
+        guard !terminationRequested else { return }
+        let live = services.reader.discoverItems()
+        let target = live.first(where: {
+            ($0.id == item.id || ($0.ownerBundleID == item.ownerBundleID && $0.title == item.title))
+            && $0.frame.width > 0 && $0.centerX > 0
+        })
+
+        if let target {
+            applySingleItemIsolation(target: target, autoTriggerRightClick: autoTriggerRightClick, duration: duration)
+        } else if attempt < 12 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+                self?.findAndIsolateItem(item, autoTriggerRightClick: autoTriggerRightClick, duration: duration, attempt: attempt + 1)
             }
+        } else {
+            controller?.setInteractionActive(false)
+            scheduleAutoConceal(barController: controller!, duration: duration)
+        }
+    }
 
-            let primaryScreen = self.services.screens.primaryScreen
-            let targetFrame = target.frame
-            let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: target.centerX, y: target.frame.midY)) } ?? NSScreen.main
-            let menuBarHeight = NSStatusBar.system.thickness
-            let menuBarY = (screen?.frame.maxY ?? 1080) - menuBarHeight
+    private func applySingleItemIsolation(target: ManagedItem, autoTriggerRightClick: Bool, duration: TimeInterval) {
+        guard !terminationRequested else { return }
+        removeIsolationMasks()
 
-            // 获取所有属于抽屉收纳项在当前屏幕上的真实可见坐标
-            let drawerItems = self.controller?.drawerItems ?? []
-            let liveDrawerFrames = live.filter { liveItem in
-                drawerItems.contains { $0.id == liveItem.id || ($0.ownerBundleID == liveItem.ownerBundleID && $0.title == liveItem.title) }
-            }.map(\.frame).filter { $0.minX > 0 && $0.maxX < (screen?.frame.maxX ?? 2000) }
+        let primaryScreen = services.screens.primaryScreen
+        let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: target.centerX, y: target.frame.midY)) } ?? NSScreen.main
+        let screenFrame = screen?.frame ?? primaryScreen?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let visibleFrame = screen?.visibleFrame ?? screenFrame
+        let menuBarHeight = max(24, screenFrame.maxY - visibleFrame.maxY)
+        let menuBarY = screenFrame.maxY - menuBarHeight
 
-            if !liveDrawerFrames.isEmpty {
-                let minHiddenX = liveDrawerFrames.map(\.minX).min() ?? targetFrame.minX
-                let maxHiddenX = liveDrawerFrames.map(\.maxX).max() ?? targetFrame.maxX
+        let targetFrame = target.frame
 
-                // 遮罩 A：目标图标左侧的其他抽屉隐藏项
-                if targetFrame.minX > minHiddenX + 2 {
-                    let leftMaskFrame = CGRect(x: minHiddenX, y: menuBarY, width: targetFrame.minX - minHiddenX, height: menuBarHeight)
-                    let leftWindow = self.createIsolationMaskWindow(frame: leftMaskFrame, screen: screen)
-                    leftWindow.orderFrontRegardless()
-                    self.isolationMaskWindows.append(leftWindow)
-                }
+        // 查找 TidyBar 自身折叠控制按钮的真实屏幕边界（所有被展开的隐藏项均位于其左侧）
+        let live = services.reader.discoverItems()
+        let toggle = live.first { isTidyBarOwnItem($0) && $0.frame.width <= 32 && $0.centerX > 0 }
+        let toggleLeftBound = toggle?.frame.minX ?? (statusItem?.button?.window?.frame.minX ?? (screenFrame.maxX - 60))
+        let screenLeftBound = visibleFrame.minX
 
-                // 遮罩 B：目标图标右侧的其他抽屉隐藏项
-                if maxHiddenX > targetFrame.maxX + 2 {
-                    let rightMaskFrame = CGRect(x: targetFrame.maxX, y: menuBarY, width: maxHiddenX - targetFrame.maxX, height: menuBarHeight)
-                    let rightWindow = self.createIsolationMaskWindow(frame: rightMaskFrame, screen: screen)
-                    rightWindow.orderFrontRegardless()
-                    self.isolationMaskWindows.append(rightWindow)
-                }
-            }
+        // 遮罩 A：从屏幕左边缘到目标图标左边缘之间的所有隐藏项
+        if targetFrame.minX > screenLeftBound + 2 {
+            let leftFrame = CGRect(x: screenLeftBound, y: menuBarY, width: targetFrame.minX - screenLeftBound, height: menuBarHeight)
+            let leftWindow = createIsolationMaskWindow(frame: leftFrame, screen: screen)
+            leftWindow.orderFrontRegardless()
+            isolationMaskWindows.append(leftWindow)
+        }
 
-            // 光标平滑吸附至目标图标物理中心
-            let primaryHeight = primaryScreen?.frame.height ?? CGDisplayBounds(CGMainDisplayID()).height
-            let cgPoint = CGPoint(x: target.centerX, y: primaryHeight - target.frame.midY)
-            CGWarpMouseCursorPosition(cgPoint)
+        // 遮罩 B：从目标图标右边缘到 TidyBar 控制按钮之间的所有隐藏项
+        if toggleLeftBound > targetFrame.maxX + 2 {
+            let rightFrame = CGRect(x: targetFrame.maxX, y: menuBarY, width: toggleLeftBound - targetFrame.maxX, height: menuBarHeight)
+            let rightWindow = createIsolationMaskWindow(frame: rightFrame, screen: screen)
+            rightWindow.orderFrontRegardless()
+            isolationMaskWindows.append(rightWindow)
+        }
 
-            // 若用户在抽屉里点击了右键，就位后自动触发原生右键
-            if autoTriggerRightClick {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                    guard let self, !self.terminationRequested else { return }
-                    let source = CGEventSource(stateID: .combinedSessionState)
-                    if let down = CGEvent(mouseEventSource: source, mouseType: .rightMouseDown, mouseCursorPosition: cgPoint, mouseButton: .right),
-                       let up = CGEvent(mouseEventSource: source, mouseType: .rightMouseUp, mouseCursorPosition: cgPoint, mouseButton: .right) {
-                        down.post(tap: .cghidEventTap)
+        // 光标平滑吸附至目标图标物理中心
+        let primaryHeight = primaryScreen?.frame.height ?? CGDisplayBounds(CGMainDisplayID()).height
+        let cgPoint = CGPoint(x: target.centerX, y: primaryHeight - target.frame.midY)
+        CGWarpMouseCursorPosition(cgPoint)
+
+        // 若需触发右键，就位后自动派发原生右键点击事件
+        if autoTriggerRightClick {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+                guard let self, !self.terminationRequested else { return }
+                let source = CGEventSource(stateID: .combinedSessionState)
+                if let down = CGEvent(mouseEventSource: source, mouseType: .rightMouseDown, mouseCursorPosition: cgPoint, mouseButton: .right),
+                   let up = CGEvent(mouseEventSource: source, mouseType: .rightMouseUp, mouseCursorPosition: cgPoint, mouseButton: .right) {
+                    down.setIntegerValueField(.mouseEventClickState, value: 1)
+                    up.setIntegerValueField(.mouseEventClickState, value: 1)
+                    down.post(tap: .cghidEventTap)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
                         up.post(tap: .cghidEventTap)
                     }
                 }
             }
-
-            self.controller?.setInteractionActive(false)
-            self.scheduleAutoConceal(barController: self.controller!, duration: effectiveDuration)
         }
+
+        // 顺便趁目标图标可见，为位图缓存抓取最新的菜单栏截图
+        if panelController?.hasCaptureAuthorization == true {
+            panelController?.requestMissingBitmaps(for: [target]) { [weak self] in
+                self?.settingsWindow?.refresh()
+            }
+        }
+
+        controller?.setInteractionActive(false)
+        scheduleAutoConceal(barController: controller!, duration: duration)
     }
 
     /// 呼出搜索面板。
@@ -1074,6 +1126,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         NSLog("TIDYBAR: setMenuBarFolded to \(folded)")
         controller.setMenuBarFolded(folded)
         applyMenuBarFoldState()
+        if !folded, panelController?.hasCaptureAuthorization == true {
+            panelController?.requestMissingBitmaps(for: controller.drawerItems) { [weak self] in
+                self?.settingsWindow?.refresh()
+            }
+        }
     }
 
     private func fetchHorizontalConstraint(for divider: NSStatusItem) -> NSLayoutConstraint? {
