@@ -171,7 +171,11 @@ public final class IconOverviewView: NSView {
             let appName = item.title.isEmpty ? (item.ownerBundleID ?? "未知应用") : item.title
             let bundle = item.ownerBundleID ?? "未知来源"
             let posHint = item.isPositionalIdentity ? " · [位置匹配]" : ""
-            inspectorIconView.image = AppIconResolver.resolve(for: item)
+            if let cached = imageProvider?(item) {
+                inspectorIconView.image = NSImage(cgImage: cached, size: CGSize(width: cached.width, height: cached.height))
+            } else {
+                inspectorIconView.image = AppIconResolver.resolve(for: item)
+            }
             inspectorIconView.contentTintColor = nil
             inspectorIconView.isHidden = false
             inspectorTextLabel.stringValue = "\(appName)（\(bundle)）\(posHint) ｜ 当前：\(zone.displayLabel)"

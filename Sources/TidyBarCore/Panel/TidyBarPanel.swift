@@ -343,7 +343,7 @@ public final class TidyBarPanelController: NSObject {
             var delivered = false
             let timeout = DispatchWorkItem { if !delivered { delivered = true; completion() } }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let observed = reader.discoverItems()
                 DispatchQueue.main.async { [weak self] in
                     guard !delivered else { return }

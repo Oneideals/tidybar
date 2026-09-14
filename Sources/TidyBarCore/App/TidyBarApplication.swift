@@ -927,7 +927,7 @@ private final class MenuBarIsolationMaskView: NSView {
             ? NSColor(calibratedWhite: 0.12, alpha: 1.0)
             : NSColor(calibratedWhite: 0.96, alpha: 1.0)
         bgColor.setFill()
-        dirtyRect.fill()
+        bounds.fill()
 
         // 菜单栏底部分隔细线
         let separatorColor = isDark
@@ -1001,7 +1001,7 @@ private final class MenuBarIsolationMaskView: NSView {
         })
 
         if let target {
-            applySingleItemIsolation(target: target, autoTriggerRightClick: autoTriggerRightClick, duration: duration)
+            applySingleItemIsolation(target: target, liveItems: live, autoTriggerRightClick: autoTriggerRightClick, duration: duration)
         } else if attempt < 12 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
                 self?.findAndIsolateItem(item, autoTriggerRightClick: autoTriggerRightClick, duration: duration, attempt: attempt + 1)
@@ -1012,7 +1012,7 @@ private final class MenuBarIsolationMaskView: NSView {
         }
     }
 
-    private func applySingleItemIsolation(target: ManagedItem, autoTriggerRightClick: Bool, duration: TimeInterval) {
+    private func applySingleItemIsolation(target: ManagedItem, liveItems: [ManagedItem], autoTriggerRightClick: Bool, duration: TimeInterval) {
         guard !terminationRequested else { return }
         removeIsolationMasks()
 
@@ -1026,20 +1026,22 @@ private final class MenuBarIsolationMaskView: NSView {
         let targetFrame = target.frame
 
         // 查找 TidyBar 自身折叠控制按钮的真实屏幕边界（所有被展开的隐藏项均位于其左侧）
-        let live = services.reader.discoverItems()
-        let toggle = live.first { isTidyBarOwnItem($0) && $0.frame.width <= 32 && $0.centerX > 0 }
-        let toggleLeftBound = toggle?.frame.minX ?? (statusItem?.button?.window?.frame.minX ?? (screenFrame.maxX - 60))
-        let screenLeftBound = visibleFrame.minX
+        let toggleLeftBound = statusItem?.button?.window?.frame.minX ?? (screenFrame.maxX - 60)
+        
+        // 计算被展开的收纳项的最左边界，遮罩精准遮蔽隐藏项，不遮挡屏幕左侧的苹果与应用主菜单
+        let hiddenItems = liveItems.filter { $0.centerX < toggleLeftBound && !isTidyBarOwnItem($0) && $0.centerX > 0 }
+        let leftmostHiddenX = hiddenItems.map(\.frame.minX).min() ?? targetFrame.minX
+        let leftStart = max(leftmostHiddenX - 4, visibleFrame.minX)
 
-        // 遮罩 A：从屏幕左边缘到目标图标左边缘之间的所有隐藏项
-        if targetFrame.minX > screenLeftBound + 2 {
-            let leftFrame = CGRect(x: screenLeftBound, y: menuBarY, width: targetFrame.minX - screenLeftBound, height: menuBarHeight)
+        // 遮罩 A：从收纳区左边缘到目标图标左边缘之间，遮蔽目标左侧的其他收纳项
+        if targetFrame.minX > leftStart + 2 {
+            let leftFrame = CGRect(x: leftStart, y: menuBarY, width: targetFrame.minX - leftStart, height: menuBarHeight)
             let leftWindow = createIsolationMaskWindow(frame: leftFrame, screen: screen)
             leftWindow.orderFrontRegardless()
             isolationMaskWindows.append(leftWindow)
         }
 
-        // 遮罩 B：从目标图标右边缘到 TidyBar 控制按钮之间的所有隐藏项
+        // 遮罩 B：从目标图标右边缘到 TidyBar 控制按钮之间，遮蔽目标右侧的其他收纳项
         if toggleLeftBound > targetFrame.maxX + 2 {
             let rightFrame = CGRect(x: targetFrame.maxX, y: menuBarY, width: toggleLeftBound - targetFrame.maxX, height: menuBarHeight)
             let rightWindow = createIsolationMaskWindow(frame: rightFrame, screen: screen)
