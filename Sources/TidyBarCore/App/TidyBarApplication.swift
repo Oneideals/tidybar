@@ -827,7 +827,6 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "呼出收纳抽屉", action: #selector(toggleDrawer), keyEquivalent: "")
         menu.addItem(withTitle: panelController?.hasCaptureAuthorization == true ? "刷新菜单栏缩略图" : "允许显示真实菜单栏图标…",
                      action: #selector(requestMenuBarIconCapture), keyEquivalent: "")
-        menu.addItem(withTitle: "🪄 智能推荐收纳所有图标", action: #selector(smartCategorizeFromMenu), keyEquivalent: "")
         // 分区分配先走菜单：跨区拖拽要等接管闸门开放，而"把某个图标收进隐藏区"
         // 这个意图本身不依赖拖拽，不必让它陪着闸门一起等着。
         menu.addItem(withTitle: "搜索图标…", action: #selector(presentSearch), keyEquivalent: "f")
@@ -1504,20 +1503,6 @@ private final class MenuBarIsolationMaskView: NSView {
         } else {
             controller?.dividerCenters = (nil, nil)
         }
-    }
-
-    @objc private func smartCategorizeFromMenu() {
-        guard let controller else { return }
-        let items = controller.assignableItems
-        let recommendations = SmartItemClassifier.classifyAll(items: items)
-        for rec in recommendations {
-            guard controller.reassignZone(rec.itemID, to: rec.recommendedZone) else {
-                openSettings()
-                return
-            }
-        }
-        executeFoldingByCalculatedZones()
-        openSettings()
     }
 
     @objc public func openSettings() {

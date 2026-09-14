@@ -37,7 +37,6 @@ public final class IconOverviewView: NSView {
     private let inspectorCard = NSView()
     private let inspectorIconView = NSImageView()
     private let inspectorTextLabel = NSTextField(labelWithString: "")
-    private let smartApplyButton = NSButton()
     private var persistentNotice: String?
     private var noticeIsFailure = false
     /// 外部提供的位图缓存查找器：输入 ManagedItem，输出其截图缓存图像（如有）。
@@ -118,15 +117,6 @@ public final class IconOverviewView: NSView {
         inspectorTextLabel.translatesAutoresizingMaskIntoConstraints = false
         inspectorCard.addSubview(inspectorTextLabel)
 
-        smartApplyButton.title = "🪄 一键智能推荐收纳"
-        smartApplyButton.bezelStyle = .rounded
-        smartApplyButton.controlSize = .small
-        smartApplyButton.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        smartApplyButton.target = self
-        smartApplyButton.action = #selector(applySmartRecommendations)
-        smartApplyButton.translatesAutoresizingMaskIntoConstraints = false
-        inspectorCard.addSubview(smartApplyButton)
-
         NSLayoutConstraint.activate([
             inspectorIconView.leadingAnchor.constraint(equalTo: inspectorCard.leadingAnchor, constant: 10),
             inspectorIconView.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
@@ -134,11 +124,8 @@ public final class IconOverviewView: NSView {
             inspectorIconView.heightAnchor.constraint(equalToConstant: 18),
 
             inspectorTextLabel.leadingAnchor.constraint(equalTo: inspectorIconView.trailingAnchor, constant: 8),
-            inspectorTextLabel.trailingAnchor.constraint(lessThanOrEqualTo: smartApplyButton.leadingAnchor, constant: -8),
+            inspectorTextLabel.trailingAnchor.constraint(lessThanOrEqualTo: inspectorCard.trailingAnchor, constant: -10),
             inspectorTextLabel.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
-
-            smartApplyButton.trailingAnchor.constraint(equalTo: inspectorCard.trailingAnchor, constant: -8),
-            smartApplyButton.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
         ])
 
         updateInspector(item: nil, zone: nil)
@@ -165,7 +152,7 @@ public final class IconOverviewView: NSView {
         let alwaysHiddenCount = rows.filter { $0.zone == .alwaysHidden }.count
         persistentNotice = interrupted
             ? "已更新 \(changedCount) 项，其余项未完成；请查看设置中的操作原因。"
-            : "智能收纳已更新 \(changedCount) 项：常驻 \(visibleCount) 个 ｜ 收纳 \(hiddenCount) 个 ｜ 始终隐藏 \(alwaysHiddenCount) 个。"
+            : "已更新 \(changedCount) 项：常驻 \(visibleCount) 个 ｜ 收纳 \(hiddenCount) 个 ｜ 始终隐藏 \(alwaysHiddenCount) 个。"
         noticeIsFailure = interrupted
         updateInspector(item: nil, zone: nil)
         return !interrupted
@@ -184,11 +171,10 @@ public final class IconOverviewView: NSView {
             let appName = item.title.isEmpty ? (item.ownerBundleID ?? "未知应用") : item.title
             let bundle = item.ownerBundleID ?? "未知来源"
             let posHint = item.isPositionalIdentity ? " · [位置匹配]" : ""
-            let rec = SmartItemClassifier.classify(item: item)
             inspectorIconView.image = AppIconResolver.resolve(for: item)
             inspectorIconView.contentTintColor = nil
             inspectorIconView.isHidden = false
-            inspectorTextLabel.stringValue = "\(appName)（\(bundle)）\(posHint) ｜ 当前：\(zone.displayLabel) ｜ 智能推荐：\(rec.recommendedZone.displayLabel)（\(rec.category.rawValue) · \(rec.reason)）"
+            inspectorTextLabel.stringValue = "\(appName)（\(bundle)）\(posHint) ｜ 当前：\(zone.displayLabel)"
             inspectorTextLabel.textColor = .labelColor
         } else if let notice = physicalLayoutState.message ?? persistentNotice {
             let failed = physicalLayoutState.message == nil ? noticeIsFailure : physicalLayoutState.isFailure
@@ -200,10 +186,10 @@ public final class IconOverviewView: NSView {
             inspectorTextLabel.stringValue = notice
             inspectorTextLabel.textColor = .labelColor
         } else {
-            inspectorIconView.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "提示")
+            inspectorIconView.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "提示")
             inspectorIconView.contentTintColor = nil
             inspectorIconView.isHidden = false
-            inspectorTextLabel.stringValue = "💡 提示：支持图标直接跨托盘拖拽，也可点击右侧「一键智能推荐收纳」按人机交互规则一键分类。"
+            inspectorTextLabel.stringValue = "💡 提示：支持图标直接跨托盘拖拽，也可单击或右键图标在托盘间移动。"
             inspectorTextLabel.textColor = .secondaryLabelColor
         }
     }

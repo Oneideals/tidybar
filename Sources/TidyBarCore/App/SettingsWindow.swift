@@ -256,13 +256,6 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(subtitleLabel)
 
-        let smartButton = NSButton(title: "🪄 智能推荐收纳", target: self, action: #selector(triggerSmartCategorize))
-        smartButton.bezelStyle = .rounded
-        smartButton.contentTintColor = .controlAccentColor
-        smartButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        smartButton.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(smartButton)
-
         foldButton.bezelStyle = .rounded
         foldButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         foldButton.target = self
@@ -294,10 +287,6 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             foldButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             foldButton.trailingAnchor.constraint(equalTo: dividerButton.leadingAnchor, constant: -8),
             foldButton.heightAnchor.constraint(equalToConstant: 28),
-
-            smartButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            smartButton.trailingAnchor.constraint(equalTo: foldButton.leadingAnchor, constant: -8),
-            smartButton.heightAnchor.constraint(equalToConstant: 28),
 
             overview.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             overview.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -646,11 +635,6 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     @objc private func changeScrollAction() {
         let action: GestureAction = scrollActionPopup.indexOfSelectedItem == 0 ? .toggleFold : .toggleDrawer
         controller.update { $0.scrollOrSwipeAction = action }
-    }
-
-    @objc private func triggerSmartCategorize() {
-        if overview.applySmartRecommendations() { controller.onRequestPhysicalArrangement?(false) }
-        refresh()
     }
 
     @objc private func toggleFoldFromSettings() {
