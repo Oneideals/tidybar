@@ -123,7 +123,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
         barController.isMenuBarFoldedQuery = { [weak self] in
             guard let self else { return false }
-            return self.hasPerformedInitialFold && self.dividerItems.count == 2 && self.isMenuBarFolded
+            return self.isMenuBarFolded
         }
         barController.onToggleDrawer = { [weak self] in
             self?.toggleDrawer()
@@ -373,6 +373,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         statusItem = makeStatusItem(controller: barController)
         setupDividers()
+        applyMenuBarFoldState()
         presentWizardIfNeeded(barController: barController)
         barController.start(scansSynchronously: false)
 
@@ -744,7 +745,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private func makeStatusItem(controller barController: TidyBarController) -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.autosaveName = "tidybar_toggle"
-        item.button?.title = isMenuBarFolded ? "◀" : "☰"
+        item.button?.title = isMenuBarFolded ? "◀" : "▶"
         item.button?.toolTip = "TidyBar：点击展开/折叠或打开抽屉，右键弹出菜单"
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked(_:))
@@ -782,7 +783,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         self.foldMenuItem = foldItem
-        foldItem.isEnabled = barController.capability == .fullDrag && hasPerformedInitialFold
+        foldItem.isEnabled = true
         menu.addItem(foldItem)
 
         menu.addItem(withTitle: "呼出收纳抽屉", action: #selector(toggleDrawer), keyEquivalent: "")
@@ -911,15 +912,6 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     @objc public func toggleMenuBarFold() {
         guard !isRelayingClick else { return }
         endHeldMenuAccess()
-        if controller?.capability == .panelOnlyFallback {
-            toggleDrawer()
-            return
-        }
-        guard hasPerformedInitialFold else {
-            controller?.setMenuBarFolded(true)
-            executeFoldingByCalculatedZones()
-            return
-        }
         setMenuBarFolded(!isMenuBarFolded)
     }
 
@@ -929,25 +921,28 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             setupDividers()
         }
         controller.setMenuBarFolded(folded)
+        applyMenuBarFoldState()
     }
 
     private func applyMenuBarFoldState() {
         guard layoutAdjustmentDepth == 0 else { return }
         let width = services.screens.screens.map(\.frame.width).max() ?? 1920
         let length = max(2000, width + 200)
-        let ready = controller?.capability == .fullDrag && hasPerformedInitialFold && controller?.isAwaitingRecovery == false
-        let dividers = dividerItems.sorted { ($0.button?.window?.frame.maxX ?? 0) < ($1.button?.window?.frame.maxX ?? 0) }
-        if dividers.count == 2 {
-            let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
-            dividers[0].length = ready && permanentlyHidden && !revealsAlwaysHiddenForClick ? length : 0
-            dividers[1].length = ready && isMenuBarFolded ? length : 0
-            dividers[0].button?.title = (dividers[0].length > 0) ? Self.alwaysHiddenDividerGlyph : ""
-            dividers[1].button?.title = (dividers[1].length > 0) ? Self.dividerGlyph : ""
-            dividers[1].button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
-        }
-        statusItem?.button?.title = ready ? (isMenuBarFolded ? "◀" : "▶") : "☰"
-        statusItem?.button?.toolTip = lastLayoutError ?? (ready ? "TidyBar：点击展开/折叠菜单栏，右键打开菜单"
-            : controller?.capability == .fullDrag ? "TidyBar：点击整理并折叠菜单栏" : "TidyBar：点击打开收纳抽屉")
+
+        let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
+        let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
+
+        let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
+        alwaysHiddenSeparator?.length = (permanentlyHidden && !revealsAlwaysHiddenForClick) ? length : 0
+        alwaysHiddenSeparator?.button?.title = ""
+        alwaysHiddenSeparator?.button?.action = #selector(toggleDrawer)
+
+        separator?.length = isMenuBarFolded ? length : 0
+        separator?.button?.title = ""
+        separator?.button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
+
+        statusItem?.button?.title = isMenuBarFolded ? "◀" : "▶"
+        statusItem?.button?.toolTip = lastLayoutError ?? "TidyBar：点击展开/折叠菜单栏，右键打开菜单"
         foldMenuItem?.title = isMenuBarFolded ? "展开菜单栏图标" : "折叠菜单栏图标"
     }
 
@@ -978,14 +973,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         layoutAdjustmentDepth += 1
         if layoutAdjustmentDepth == 1 {
             setupDividers()
-            if dividerItems.count == 2 {
-                dividerItems[0].button?.title = Self.alwaysHiddenDividerGlyph
-                dividerItems[0].length = 8
-                dividerItems[1].button?.title = Self.dividerGlyph
-                dividerItems[1].length = 8
-            } else {
-                dividerItems.forEach { $0.length = 8 }
-            }
+            let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
+            let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
+            alwaysHiddenSeparator?.button?.title = Self.alwaysHiddenDividerGlyph
+            alwaysHiddenSeparator?.length = 8
+            separator?.button?.title = Self.dividerGlyph
+            separator?.length = 8
         }
     }
 

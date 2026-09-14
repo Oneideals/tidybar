@@ -106,6 +106,30 @@ public struct ManagedItem: Identifiable, Codable, Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
+
+    /// 从稳定 id 中解析归属 App 的 Bundle ID
+    public static func ownerFromID(_ id: String) -> String? {
+        if let range = id.range(of: ".#item") {
+            return String(id[..<range.lowerBound])
+        }
+        if let lastDot = id.lastIndex(of: ".") {
+            return String(id[..<lastDot])
+        }
+        return id
+    }
+
+    /// 从稳定 id 中解析标题/可读名
+    public static func titleFromID(_ id: String) -> String {
+        if let range = id.range(of: ".#item") {
+            let owner = String(id[..<range.lowerBound])
+            return owner.components(separatedBy: ".").last ?? owner
+        }
+        if let lastDot = id.lastIndex(of: ".") {
+            let titlePart = String(id[id.index(after: lastDot)...])
+            return titlePart.isEmpty ? id : titlePart
+        }
+        return id
+    }
 }
 
 extension ManagedItem {

@@ -127,7 +127,20 @@ public final class TidyBarController {
         guard !isDemoMode else { return [] }
         let available = assignableItems
         return presentationLayout.items(in: .hidden).compactMap { id in
-            available.first { $0.id == id }
+            if let found = available.first(where: { $0.id == id }) {
+                return found
+            }
+            let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
+                ?? ManagedItem.ownerFromID(id)
+            let title = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.observedTitle
+                ?? ManagedItem.titleFromID(id)
+            return ManagedItem(
+                id: id,
+                ownerBundleID: owner,
+                title: title,
+                frame: .zero,
+                isSystemOwned: false
+            )
         }
     }
 

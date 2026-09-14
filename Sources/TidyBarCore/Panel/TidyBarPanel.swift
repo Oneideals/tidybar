@@ -105,11 +105,12 @@ public final class TidyBarPanelView: NSView {
     public func contentLayout(maximumWidth: CGFloat) -> PanelGeometry.ContentLayout {
         let metrics = PanelGeometry.Metrics()
         let sizes = items.map { item -> CGSize in
-            let height = min(metrics.itemSide, item.frame.height > 0 ? item.frame.height : metrics.itemSide)
+            let baseHeight = item.frame.height > 0 ? min(metrics.itemSide, item.frame.height) : metrics.itemSide
             if let image = images[item.id] {
-                return CGSize(width: height * CGFloat(image.width) / CGFloat(max(1, image.height)), height: height)
+                return CGSize(width: baseHeight * CGFloat(image.width) / CGFloat(max(1, image.height)), height: baseHeight)
             }
-            return CGSize(width: max(metrics.itemSide, item.frame.width), height: max(1, item.frame.height))
+            let width = item.frame.width > 0 ? max(metrics.itemSide, item.frame.width) : metrics.itemSide
+            return CGSize(width: width, height: baseHeight)
         }
         let minimumWidth = footerText == nil ? PanelGeometry.Minimums.panelWidth : min(280, maximumWidth)
         let initial = PanelGeometry.contentLayout(itemSizes: sizes, maximumWidth: maximumWidth, minimumWidth: minimumWidth)
@@ -209,13 +210,10 @@ public final class TidyBarPanelView: NSView {
                 let size = CGSize(width: image.width, height: image.height)
                 NSImage(cgImage: image, size: size).draw(in: Self.aspectFit(size: size, in: container))
             } else {
-                let placeholder = CGRect(x: rect.midX - 10, y: rect.midY - 10, width: 20, height: 20)
-                NSColor.separatorColor.setStroke()
-                NSBezierPath(roundedRect: placeholder, xRadius: 4, yRadius: 4).stroke()
-                let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12),
-                    .foregroundColor: captionColor]
-                let size = "?".size(withAttributes: attributes)
-                "?".draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2), withAttributes: attributes)
+                let appIcon = AppIconResolver.resolve(for: item)
+                let iconSize = appIcon.size.width > 0 && appIcon.size.height > 0 ? appIcon.size : CGSize(width: metrics.itemSide, height: metrics.itemSide)
+                let container = CGRect(x: rect.minX, y: rect.midY - metrics.itemSide / 2, width: rect.width, height: metrics.itemSide)
+                appIcon.draw(in: Self.aspectFit(size: iconSize, in: container))
             }
         }
     }

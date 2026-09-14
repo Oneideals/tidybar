@@ -125,7 +125,7 @@ public enum MenuBarItemPolicy {
             if screen.frame.contains(center) { return true }
             // 两条分隔符可能同时展开为屏幕宽度；保留被推到左侧的真实图标供搜索。
             let hiddenSpan = 2 * max(2000, screen.frame.width + 200)
-            if screen.frame.minX == 0 && center.x >= -hiddenSpan && center.x <= screen.frame.maxX {
+            if center.x >= screen.frame.minX - hiddenSpan && center.x <= screen.frame.maxX {
                 return true
             }
             return false
