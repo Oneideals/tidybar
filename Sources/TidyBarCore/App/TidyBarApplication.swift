@@ -934,25 +934,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
         let shouldShowAlwaysHidden = permanentlyHidden && !revealsAlwaysHiddenForClick
-        // 顺序关键：先 isVisible 再 length。AppKit 要求 status item 先挂回窗口层，
-        // 否则 length 赋值被丢弃；隐藏时反过来，先归零 length 再注销。
-        if shouldShowAlwaysHidden {
-            alwaysHiddenSeparator?.isVisible = true
-            alwaysHiddenSeparator?.length = length
-        } else {
-            alwaysHiddenSeparator?.length = 0
-            alwaysHiddenSeparator?.isVisible = false
-        }
+        alwaysHiddenSeparator?.length = shouldShowAlwaysHidden ? length : 0
         alwaysHiddenSeparator?.button?.title = ""
         alwaysHiddenSeparator?.button?.action = #selector(toggleDrawer)
 
-        if isMenuBarFolded {
-            separator?.isVisible = true
-            separator?.length = length
-        } else {
-            separator?.length = 0
-            separator?.isVisible = false
-        }
+        separator?.length = isMenuBarFolded ? length : 0
         separator?.button?.title = ""
         separator?.button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
 
@@ -968,7 +954,6 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                           ("tidybar_always_hidden_separator", Self.alwaysHiddenDividerGlyph)] {
             let divider = NSStatusBar.system.statusItem(withLength: 0)
             divider.autosaveName = name
-            divider.isVisible = false
             divider.button?.title = ""
             divider.button?.target = self
             divider.button?.action = #selector(toggleDrawer)
@@ -991,10 +976,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             setupDividers()
             let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
             let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
-            alwaysHiddenSeparator?.isVisible = true
             alwaysHiddenSeparator?.button?.title = Self.alwaysHiddenDividerGlyph
             alwaysHiddenSeparator?.length = 8
-            separator?.isVisible = true
             separator?.button?.title = Self.dividerGlyph
             separator?.length = 8
         }
