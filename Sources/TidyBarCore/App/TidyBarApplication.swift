@@ -933,11 +933,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
 
         let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
-        alwaysHiddenSeparator?.length = (permanentlyHidden && !revealsAlwaysHiddenForClick) ? length : 0
+        let shouldShowAlwaysHidden = permanentlyHidden && !revealsAlwaysHiddenForClick
+        alwaysHiddenSeparator?.length = shouldShowAlwaysHidden ? length : 0
+        alwaysHiddenSeparator?.isVisible = shouldShowAlwaysHidden
         alwaysHiddenSeparator?.button?.title = ""
         alwaysHiddenSeparator?.button?.action = #selector(toggleDrawer)
 
         separator?.length = isMenuBarFolded ? length : 0
+        separator?.isVisible = isMenuBarFolded
         separator?.button?.title = ""
         separator?.button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
 
@@ -953,6 +956,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                           ("tidybar_always_hidden_separator", Self.alwaysHiddenDividerGlyph)] {
             let divider = NSStatusBar.system.statusItem(withLength: 0)
             divider.autosaveName = name
+            divider.isVisible = false
             divider.button?.title = ""
             divider.button?.target = self
             divider.button?.action = #selector(toggleDrawer)
@@ -975,8 +979,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             setupDividers()
             let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
             let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
+            alwaysHiddenSeparator?.isVisible = true
             alwaysHiddenSeparator?.button?.title = Self.alwaysHiddenDividerGlyph
             alwaysHiddenSeparator?.length = 8
+            separator?.isVisible = true
             separator?.button?.title = Self.dividerGlyph
             separator?.length = 8
         }
