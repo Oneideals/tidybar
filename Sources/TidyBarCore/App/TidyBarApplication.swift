@@ -32,6 +32,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var needsManualRealignment = false
     /// 分隔符：用户改边界时拖动它；折叠时由它自身扩展大跨度直接隐藏左侧全部收纳项
     private var dividerItems: [NSStatusItem] = []
+    /// 存储各个分隔符对应在 NSStatusBarWindow.contentView 上的系统水平最小宽度约束（借鉴 Ice 项目机制）。
+    /// AppKit 默认有 width == view.width + 16 的约束，导致即使 length=0 也会留下 16pt 幽灵空隙。
+    /// 展开时将该约束设为 inactive 并强制 contentSize 为 0 宽，折叠时重新激活。
+    private var dividerConstraints: [String: NSLayoutConstraint] = [:]
+    /// 借鉴 Ice 的 10,000pt 推杆设计：超大跨度确保在多屏/超宽屏/高分屏下 100% 将隐藏项推到屏幕外。
+    private static let expandedPushLength: CGFloat = 10_000
     private var searchUI: TidyBarSearchUI?
     /// 注销/关机/launchd 回收发来的信号不保证会走 applicationWillTerminate，显式挂信号源
     private var shutdown: GracefulShutdown?
@@ -182,6 +188,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         barController.onEmptyBarClick = { [weak self] in
             guard let self else { return }
+            let mouseLoc = NSEvent.mouseLocation
+            let ownWindows = ([self.statusItem] + self.dividerItems).compactMap { $0?.button?.window }
+            if ownWindows.contains(where: { $0.frame.contains(mouseLoc) }) {
+                return
+            }
             switch self.controller?.settings.emptyBarClickAction ?? .toggleDrawer {
             case .toggleFold:
                 self.toggleMenuBarFold()
@@ -935,21 +946,54 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         applyMenuBarFoldState()
     }
 
+    private func fetchHorizontalConstraint(for divider: NSStatusItem) -> NSLayoutConstraint? {
+        guard let button = divider.button,
+              let contentView = button.window?.contentView else { return nil }
+        let constraints = contentView.constraintsAffectingLayout(for: .horizontal)
+        return constraints.first(where: { $0.secondItem === button.superview })
+    }
+
     private func applyMenuBarFoldState() {
         guard layoutAdjustmentDepth == 0 else { return }
-        let width = services.screens.screens.map(\.frame.width).max() ?? 1920
-        let length = max(2000, width + 200)
 
         let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
         let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
 
+        // 动态捕获可能延迟挂载的水平约束
+        if let sep = separator, dividerConstraints["tidybar_separator"] == nil {
+            dividerConstraints["tidybar_separator"] = fetchHorizontalConstraint(for: sep)
+        }
+        if let ahSep = alwaysHiddenSeparator, dividerConstraints["tidybar_always_hidden_separator"] == nil {
+            dividerConstraints["tidybar_always_hidden_separator"] = fetchHorizontalConstraint(for: ahSep)
+        }
+
         let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
         let shouldShowAlwaysHidden = permanentlyHidden && !revealsAlwaysHiddenForClick
-        alwaysHiddenSeparator?.length = shouldShowAlwaysHidden ? length : 0
+        let alwaysHiddenConstraint = dividerConstraints["tidybar_always_hidden_separator"]
+        if shouldShowAlwaysHidden {
+            alwaysHiddenConstraint?.isActive = true
+            alwaysHiddenSeparator?.length = Self.expandedPushLength
+        } else {
+            alwaysHiddenSeparator?.length = 0
+            alwaysHiddenConstraint?.isActive = false
+            if let window = alwaysHiddenSeparator?.button?.window {
+                window.setContentSize(CGSize(width: 0, height: window.frame.height))
+            }
+        }
         alwaysHiddenSeparator?.button?.title = ""
         alwaysHiddenSeparator?.button?.action = #selector(toggleDrawer)
 
-        separator?.length = isMenuBarFolded ? length : 0
+        let separatorConstraint = dividerConstraints["tidybar_separator"]
+        if isMenuBarFolded {
+            separatorConstraint?.isActive = true
+            separator?.length = Self.expandedPushLength
+        } else {
+            separator?.length = 0
+            separatorConstraint?.isActive = false
+            if let window = separator?.button?.window {
+                window.setContentSize(CGSize(width: 0, height: window.frame.height))
+            }
+        }
         separator?.button?.title = ""
         separator?.button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
 
@@ -976,6 +1020,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             divider.button?.target = self
             divider.button?.action = #selector(toggleDrawer)
             divider.button?.toolTip = "TidyBar 分区边界"
+            if let constraint = fetchHorizontalConstraint(for: divider) {
+                dividerConstraints[name] = constraint
+            }
             dividerItems.append(divider)
         }
     }
@@ -994,8 +1041,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             setupDividers()
             let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
             let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
+            dividerConstraints["tidybar_always_hidden_separator"]?.isActive = true
             alwaysHiddenSeparator?.button?.title = Self.alwaysHiddenDividerGlyph
             alwaysHiddenSeparator?.length = 8
+            dividerConstraints["tidybar_separator"]?.isActive = true
             separator?.button?.title = Self.dividerGlyph
             separator?.length = 8
         }
