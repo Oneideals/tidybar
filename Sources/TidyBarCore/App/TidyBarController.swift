@@ -469,6 +469,12 @@ public final class TidyBarController {
         }
         guard !isPhysicalLayoutBusy else { return }
         if event.trigger == .emptyBarClick {
+            // 若点击命中 TidyBar 自身按钮或分隔符，由 AppKit 按钮自身的 action（statusItemClicked）专门处理，
+            // 绝不能当作「空白菜单栏点击」而抢先触发 toggleDrawer，否则会导致状态被破坏、折叠收起完全失效。
+            if items.contains(where: { owns($0) && $0.frame.contains(event.location) }) {
+                return
+            }
+
             let hitItem = items.first {
                 $0.frame.contains(event.location)
                 && !dividerIDs.contains($0.id)

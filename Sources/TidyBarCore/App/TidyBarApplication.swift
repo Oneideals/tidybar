@@ -364,8 +364,16 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         scheduleAutoConceal(barController: barController, panel: panel)
         stylingController.update(enabled: barController.settings.stylingEnabled, screen: services.screens.primaryScreen)
 
-        // 预设 Preferred Position（若尚未配置）：Paste 在距右缘 ≈634 处，预设 toggle 位于 645，separator 位于 655
-        if UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") == nil {
+        // 预设 Preferred Position：推杆（separator）必须紧邻折叠按钮（toggle）左侧。
+        // Preferred Position 从右向左度量，数值越大越靠左。推杆必须位于 togglePos + 1 处，
+        // 确保推杆能撑开并将所有位于其左侧的隐藏图标正确推出屏幕左侧。
+        if let togglePos = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Double {
+            UserDefaults.standard.set(togglePos + 1, forKey: "NSStatusItem Preferred Position tidybar_separator")
+            UserDefaults.standard.synchronize()
+        } else if let togglePosInt = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Int {
+            UserDefaults.standard.set(Double(togglePosInt) + 1.0, forKey: "NSStatusItem Preferred Position tidybar_separator")
+            UserDefaults.standard.synchronize()
+        } else {
             UserDefaults.standard.set(645, forKey: "NSStatusItem Preferred Position tidybar_toggle")
             UserDefaults.standard.set(655, forKey: "NSStatusItem Preferred Position tidybar_separator")
             UserDefaults.standard.synchronize()
@@ -856,6 +864,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         endHeldMenuAccess()
         let isRightClick = NSApp.currentEvent?.type == .rightMouseUp || (NSApp.currentEvent?.modifierFlags.contains(.control) ?? false)
         let isOptionClick = NSApp.currentEvent?.modifierFlags.contains(.option) ?? false
+        NSLog("TIDYBAR: statusItemClicked! right=\(isRightClick) opt=\(isOptionClick) folded=\(isMenuBarFolded)")
         if isRightClick {
             guard let controller else { return }
             let menu = makeStatusMenu(controller: controller)
@@ -912,6 +921,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     @objc public func toggleMenuBarFold() {
         guard !isRelayingClick else { return }
         endHeldMenuAccess()
+        NSLog("TIDYBAR: toggleMenuBarFold! now folded=\(isMenuBarFolded), will set to \(!isMenuBarFolded)")
         setMenuBarFolded(!isMenuBarFolded)
     }
 
@@ -920,6 +930,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         if dividerItems.isEmpty {
             setupDividers()
         }
+        NSLog("TIDYBAR: setMenuBarFolded to \(folded)")
         controller.setMenuBarFolded(folded)
         applyMenuBarFoldState()
     }
@@ -950,6 +961,13 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     /// 两个独立分界：普通展开只缩回右侧分隔符，左侧始终隐藏区仍保持遮挡。
     public func setupDividers() {
         guard dividerItems.isEmpty else { return }
+        if let togglePos = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Double {
+            UserDefaults.standard.set(togglePos + 1, forKey: "NSStatusItem Preferred Position tidybar_separator")
+            UserDefaults.standard.synchronize()
+        } else if let togglePosInt = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Int {
+            UserDefaults.standard.set(Double(togglePosInt) + 1.0, forKey: "NSStatusItem Preferred Position tidybar_separator")
+            UserDefaults.standard.synchronize()
+        }
         for (name, _) in [("tidybar_separator", Self.dividerGlyph),
                           ("tidybar_always_hidden_separator", Self.alwaysHiddenDividerGlyph)] {
             let divider = NSStatusBar.system.statusItem(withLength: 0)
