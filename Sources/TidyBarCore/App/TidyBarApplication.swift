@@ -636,7 +636,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 let addedIDs = currentIDs.subtracting(previousIDs)
                 let isMissingDueToFold = self.isMenuBarFolded && !missingIDs.isEmpty && missingIDs.isSubset(of: hiddenIDs)
                 let genuineMissing = isMissingDueToFold ? Set<String>() : missingIDs
-                let membershipChanged = !addedIDs.isEmpty || !genuineMissing.isEmpty
+                let isInitialScan = previousIDs.isEmpty || !self.hasPerformedInitialFold
+                let membershipChanged = !isInitialScan && (!addedIDs.isEmpty || !genuineMissing.isEmpty)
                 if membershipChanged { self.hasPerformedInitialFold = false }
                 controller.applyScan(items)
                 let requiresAlignment = membershipChanged || previousAssignments != controller.managedZoneAssignments
@@ -654,7 +655,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 self.settingsWindow?.refresh()
                 let elapsed = Date().timeIntervalSince(self.launchedAt)
                 fprint(String(format: "首扫完成｜图标 %d 个｜距启动 %.2fs（预算 2s）", items.count, elapsed))
-                if allowAlignment && (requiresAlignment || (!self.hasPerformedInitialFold && reason != .frontmostAppChanged)) {
+
+                let isPartitioned = self.isCurrentLayoutCorrectlyPartitioned(from: items)
+                if isPartitioned {
+                    self.hasPerformedInitialFold = true
+                    fprint("首扫判定：当前菜单栏物理布局已满足分区规则，直接维持折叠，无需启动拖拽重排")
+                } else if isInitialScan {
+                    self.hasPerformedInitialFold = true
+                    fprint("首扫判定：冷启动首帧已瞬时折叠，跳过启动拖拽重排")
+                }
+
+                if allowAlignment && !isPartitioned && !isInitialScan && (requiresAlignment || reason == .userRequested) {
                     self.scheduleAlignment()
                 }
             }
@@ -1124,6 +1135,19 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             lastLayoutError = "正在等待上次布局恢复所需的图标"
             return
         }
+
+        // 预检：若当前物理布局已处于正确分区，绝不盲目缩回推杆或逐个搬移图标，直接保持折叠并标记就绪
+        if !restoreSavedOrderRequested {
+            let live = services.reader.discoverItems()
+            if isCurrentLayoutCorrectlyPartitioned(from: live) {
+                hasPerformedInitialFold = true
+                lastLayoutError = nil
+                applyMenuBarFoldState()
+                fprint("整理预检：菜单栏已满足分区规则，无需缩回推杆与搬运图标")
+                return
+            }
+        }
+
         isReconcilingLayout = true
         hasPerformedInitialFold = false
         lastLayoutError = nil
@@ -1227,6 +1251,59 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     @objc public func executeFoldingByCalculatedZones() {
         alignDividerToVisibleBoundary()
+    }
+
+    private func isCurrentLayoutCorrectlyPartitioned(from items: [ManagedItem]) -> Bool {
+        guard let controller else { return true }
+        let owner = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
+        let controls = DividerGeometry.Controls(
+            leftDivider: ManagedItem.stableID(ownerBundleID: owner, title: Self.alwaysHiddenDividerGlyph),
+            rightDivider: ManagedItem.stableID(ownerBundleID: owner, title: Self.dividerGlyph),
+            toggle: ManagedItem.stableID(ownerBundleID: owner, title: statusItem?.button?.title ?? "☰")
+        )
+        if DividerGeometry.isCorrectlyPartitioned(
+            items: items,
+            layout: controller.snapshot.layout,
+            controls: controls,
+            defaultZone: controller.settings.newItemZone
+        ) {
+            return true
+        }
+
+        // 真实运行时判定：推杆折叠或 0 宽态下，分隔符无可见字符或处于离屏推开状态
+        // 此时以 toggle（折叠控制按钮）为物理界限：
+        // - 所有常显项（.visible）及系统项必须位于 toggle 右侧（centerX > toggle.centerX）
+        // - 所有收纳隐藏项（.hidden 及 .alwaysHidden）必须位于 toggle 左侧（centerX < toggle.centerX，包含负坐标离屏区）
+        guard let toggle = items.first(where: {
+            ($0.ownerBundleID == owner || $0.ownerBundleID == "local.tidybar.app") &&
+            ($0.title == statusItem?.button?.title || $0.title == "◀" || $0.title == "▶" || $0.title == "☰" || $0.id == controls.toggle || $0.frame.width >= 16)
+        }) else {
+            return false
+        }
+
+        let defaultZone = controller.settings.newItemZone
+        let layout = controller.snapshot.layout
+
+        let nonTidyBarItems = items.filter {
+            $0.ownerBundleID != owner && $0.ownerBundleID != "local.tidybar.app"
+        }
+        guard !nonTidyBarItems.isEmpty else { return true }
+
+        for item in nonTidyBarItems {
+            let zone = item.isSystemOwned ? .visible : (layout.zone(of: item.id) ?? defaultZone)
+            switch zone {
+            case .visible:
+                if item.centerX <= toggle.centerX {
+                    return false
+                }
+            case .hidden, .alwaysHidden:
+                if item.centerX >= toggle.centerX {
+                    return false
+                }
+            }
+        }
+
+        return true
     }
 
     /// 只更新真实边界。后台扫描不应把暂时的物理位置覆盖成用户分配。

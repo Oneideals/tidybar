@@ -12,7 +12,9 @@ CONFIG="${1:-release}"
 echo "▸ swift build -c $CONFIG"
 swift build -c "$CONFIG"
 
-BIN=".build/arm64-apple-macosx/$CONFIG/tidybar"
+CONFIG_CAP="$(tr '[:lower:]' '[:upper:]' <<< "${CONFIG:0:1}")${CONFIG:1}"
+BIN=".build/out/Products/$CONFIG_CAP/tidybar"
+[[ -f "$BIN" ]] || BIN=".build/arm64-apple-macosx/$CONFIG/tidybar"
 [[ -f "$BIN" ]] || BIN=".build/x86_64-apple-macosx/$CONFIG/tidybar"
 [[ -f "$BIN" ]] || { echo "找不到可执行文件，先确认 swift build 是否成功"; exit 1; }
 
