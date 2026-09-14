@@ -158,10 +158,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let panel = TidyBarPanelController(services: services, capturer: capturer)
         lastCaptureAuthorization = capturer.isAuthorized
         panel.onItemClick = { [weak self] item in
-            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: false)
+            self?.handleDrawerItemClick(item, button: .primary)
         }
         panel.onRightClick = { [weak self] item in
-            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: true)
+            self?.handleDrawerItemClick(item, button: .secondary)
         }
         panel.onRequestCaptureAuthorization = { [weak self] in
             if capturer.isAuthorized { self?.scheduleAlignment() }
@@ -179,12 +179,15 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let search = TidyBarSearchUI()
         search.queryHandler = { [weak barController] query in barController?.search(query) ?? [] }
         search.activateHandler = { [weak self] item in
-            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: false)
-            return .menuPresented
+            self?.handleDrawerItemClick(item, button: .primary)
+            return .queued
         }
         search.zoneLabel = { [weak barController] id in
             guard let zone = barController?.snapshot.layout.zone(of: id) else { return "未分类" }
             return TidyBarController.zoneLabel(zone)
+        }
+        search.imageProvider = { [weak panel] item in
+            panel?.cachedImages(for: [item])[item.id]
         }
         self.searchUI = search
 
@@ -695,6 +698,15 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             )
         } else {
             panel.hide()
+        }
+    }
+
+    /// 抽屉/搜索面板点击图标的统一入口：通过 MenuBarClickRelay 精确代理点击到目标图标，
+    /// 不再展开全部隐藏图标再用遮罩窗口覆盖（那个方案因 frame 为 .zero 导致遮罩计算失败）。
+    private func handleDrawerItemClick(_ item: ManagedItem, button: MenuBarClickRelay.Button) {
+        let outcome = requestProxyClick(item, button: button)
+        if !outcome.countsAsPressed && outcome != .queued {
+            panelController?.setActivationNotice(outcome.userReadable)
         }
     }
 
@@ -1459,6 +1471,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
         if settingsWindow == nil {
             settingsWindow = TidyBarSettingsWindowController(controller: barControllerProxy, hotKeyDescription: hotKeyNote)
+        }
+        // 将截图缓存接入设置面板，确保图标风格与菜单栏/抽屉一致
+        settingsWindow?.imageProvider = { [weak self] item in
+            self?.panelController?.cachedImages(for: [item])[item.id]
         }
         settingsWindow?.showAgain()
     }

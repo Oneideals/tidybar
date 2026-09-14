@@ -57,6 +57,8 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
     public var activateHandler: (ManagedItem) -> ActivationOutcome = { _ in .actionUnsupported }
     public var onDismiss: (() -> Void)?
     public var zoneLabel: (String) -> String = { _ in "" }
+    /// 外部提供的截图缓存查找器，确保搜索结果图标与菜单栏/抽屉风格一致。
+    public var imageProvider: ((ManagedItem) -> CGImage?)?
 
     private let maxResults: Int
 
@@ -274,7 +276,12 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
         }
 
         let icon = NSImageView()
-        icon.image = AppIconResolver.resolve(for: item)
+        // 优先使用截图缓存（与菜单栏/抽屉风格一致），无截图时回退到 AppIconResolver
+        if let cached = imageProvider?(item) {
+            icon.image = NSImage(cgImage: cached, size: CGSize(width: cached.width, height: cached.height))
+        } else {
+            icon.image = AppIconResolver.resolve(for: item)
+        }
         icon.translatesAutoresizingMaskIntoConstraints = false
 
         let titleLabel = NSTextField(labelWithString: item.title)

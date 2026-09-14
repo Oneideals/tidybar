@@ -40,6 +40,13 @@ public final class IconOverviewView: NSView {
     private let smartApplyButton = NSButton()
     private var persistentNotice: String?
     private var noticeIsFailure = false
+    /// 外部提供的位图缓存查找器：输入 ManagedItem，输出其截图缓存图像（如有）。
+    /// 设置面板通过此闭包接入抽屉的截图缓存，确保图标风格与菜单栏/抽屉保持一致。
+    public var imageProvider: ((ManagedItem) -> CGImage?)? {
+        didSet {
+            for (_, lane) in lanes { lane.imageProvider = imageProvider }
+        }
+    }
 
     public init(onReassign: @escaping (String, MenuBarZone) -> Bool) {
         self.onReassign = onReassign
@@ -223,6 +230,9 @@ private final class LaneView: NSView {
     private let hintLabel = NSTextField(labelWithString: "")
     private let countBadge = NSTextField(labelWithString: "")
     private let shelf: LaneShelfView
+    var imageProvider: ((ManagedItem) -> CGImage?)? {
+        didSet { shelf.imageProvider = imageProvider }
+    }
 
     init(
         zone: MenuBarZone,
@@ -328,6 +338,7 @@ private final class LaneShelfView: NSView {
     private var isHighlighted = false {
         didSet { needsDisplay = true }
     }
+    var imageProvider: ((ManagedItem) -> CGImage?)?
 
     private var shelfHeightConstraint: NSLayoutConstraint?
 
@@ -418,6 +429,7 @@ private final class LaneShelfView: NSView {
         for row in sorted {
             let cell = DraggableIconCellView(
                 row: row,
+                cachedImage: imageProvider?(row.item),
                 onMoveItem: onDrop,
                 onHover: { [weak self] item in
                     guard let self = self else { return }
@@ -506,6 +518,7 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
     let row: IconOverviewView.Row
     let onMoveItem: (String, MenuBarZone) -> Bool
     let onHover: (ManagedItem?) -> Void
+    private let cachedImage: CGImage?
 
     private var isHovered = false { didSet { needsDisplay = true } }
     private var isPressed = false { didSet { needsDisplay = true } }
@@ -514,10 +527,12 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
 
     init(
         row: IconOverviewView.Row,
+        cachedImage: CGImage? = nil,
         onMoveItem: @escaping (String, MenuBarZone) -> Bool,
         onHover: @escaping (ManagedItem?) -> Void
     ) {
         self.row = row
+        self.cachedImage = cachedImage
         self.onMoveItem = onMoveItem
         self.onHover = onHover
         super.init(frame: .zero)
@@ -533,7 +548,12 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
         autoresizingMask = []
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         iconImageView.imageScaling = .scaleProportionallyUpOrDown
-        iconImageView.image = AppIconResolver.resolve(for: row.item)
+        // 优先使用截图缓存（与菜单栏/抽屉风格一致），无截图时回退到 AppIconResolver
+        if let cached = cachedImage {
+            iconImageView.image = NSImage(cgImage: cached, size: CGSize(width: cached.width, height: cached.height))
+        } else {
+            iconImageView.image = AppIconResolver.resolve(for: row.item)
+        }
         addSubview(iconImageView)
 
         let displayName = row.item.title.isEmpty ? (row.item.ownerBundleID ?? "图标") : row.item.title

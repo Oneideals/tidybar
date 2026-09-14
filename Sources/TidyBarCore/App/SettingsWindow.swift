@@ -58,6 +58,9 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private var sidebarButtons: [Tab: NSButton] = [:]
     private var tabViews: [Tab: NSView] = [:]
 
+    /// 外部提供的截图缓存查找器，确保设置面板图标与菜单栏/抽屉风格一致。
+    public var imageProvider: ((ManagedItem) -> CGImage?)?
+
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
         let window = NSWindow(
@@ -549,6 +552,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     }
 
     public func refresh() {
+        overview.imageProvider = imageProvider
         overview.physicalLayoutState = controller.physicalLayoutState
         overview.reload(rows: IconOverviewBuilder.rows(from: controller))
         askToggle.state = controller.settings.askAboutNewItems ? .on : .off
