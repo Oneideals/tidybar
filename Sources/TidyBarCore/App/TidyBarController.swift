@@ -379,9 +379,15 @@ public final class TidyBarController {
     private func adoptScan(_ scanned: [ManagedItem]) {
         engine.refreshAccessibilityCapability()
         let known = Set(items.map(\.id))
-        items = scanned
+        let scannedIDs = Set(scanned.map(\.id))
+        let preservedMissing = isMenuBarFolded ? items.filter { item in
+            !scannedIDs.contains(item.id) && !owns(item) && !item.isSystemOwned
+                && (presentationLayout.zone(of: item.id) == .hidden || presentationLayout.zone(of: item.id) == .alwaysHidden)
+        } : []
+        let merged = scanned + preservedMissing
+        items = merged
         installTargetProviderOnce()
-        engine.fold(items: scanned.filter { !owns($0) }, newItemZone: settings.newItemZone)
+        engine.fold(items: merged.filter { !owns($0) }, newItemZone: settings.newItemZone)
         // A7「先问我」：默认策略照样先落一个确定的分区（不能让新图标悬着，
         // 否则它到底显不显示取决于 UI 有没有画那条问题），但把选择权挂出来等用户回答。
         if settings.askAboutNewItems {

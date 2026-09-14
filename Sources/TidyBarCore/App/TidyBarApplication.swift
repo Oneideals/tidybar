@@ -611,7 +611,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 let previousCapability = controller.capability
                 let previousIDs = Set(controller.assignableItems.map(\.id))
                 let currentIDs = Set(items.filter { !controller.owns($0) && !$0.isSystemOwned }.map(\.id))
-                let membershipChanged = previousIDs != currentIDs
+                let hiddenIDs = Set(controller.snapshot.layout.items(in: .hidden) + controller.snapshot.layout.items(in: .alwaysHidden))
+                let missingIDs = previousIDs.subtracting(currentIDs)
+                let addedIDs = currentIDs.subtracting(previousIDs)
+                let isMissingDueToFold = self.isMenuBarFolded && !missingIDs.isEmpty && missingIDs.isSubset(of: hiddenIDs)
+                let genuineMissing = isMissingDueToFold ? Set<String>() : missingIDs
+                let membershipChanged = !addedIDs.isEmpty || !genuineMissing.isEmpty
                 if membershipChanged { self.hasPerformedInitialFold = false }
                 controller.applyScan(items)
                 let requiresAlignment = membershipChanged || previousAssignments != controller.managedZoneAssignments
@@ -936,6 +941,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
             dividers[0].length = ready && permanentlyHidden && !revealsAlwaysHiddenForClick ? length : 0
             dividers[1].length = ready && isMenuBarFolded ? length : 0
+            dividers[0].button?.title = (dividers[0].length > 0) ? Self.alwaysHiddenDividerGlyph : ""
+            dividers[1].button?.title = (dividers[1].length > 0) ? Self.dividerGlyph : ""
             dividers[1].button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
         }
         statusItem?.button?.title = ready ? (isMenuBarFolded ? "◀" : "▶") : "☰"
@@ -947,11 +954,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     /// 两个独立分界：普通展开只缩回右侧分隔符，左侧始终隐藏区仍保持遮挡。
     public func setupDividers() {
         guard dividerItems.isEmpty else { return }
-        for (name, glyph) in [("tidybar_separator", Self.dividerGlyph),
-                              ("tidybar_always_hidden_separator", Self.alwaysHiddenDividerGlyph)] {
+        for (name, _) in [("tidybar_separator", Self.dividerGlyph),
+                          ("tidybar_always_hidden_separator", Self.alwaysHiddenDividerGlyph)] {
             let divider = NSStatusBar.system.statusItem(withLength: 0)
             divider.autosaveName = name
-            divider.button?.title = glyph
+            divider.button?.title = ""
             divider.button?.target = self
             divider.button?.action = #selector(toggleDrawer)
             divider.button?.toolTip = "TidyBar 分区边界"
@@ -971,7 +978,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         layoutAdjustmentDepth += 1
         if layoutAdjustmentDepth == 1 {
             setupDividers()
-            dividerItems.forEach { $0.length = 8 }
+            if dividerItems.count == 2 {
+                dividerItems[0].button?.title = Self.alwaysHiddenDividerGlyph
+                dividerItems[0].length = 8
+                dividerItems[1].button?.title = Self.dividerGlyph
+                dividerItems[1].length = 8
+            } else {
+                dividerItems.forEach { $0.length = 8 }
+            }
         }
     }
 
@@ -1119,7 +1133,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                         let total = controller.drawerItems.count
                         let cached = self.panelController?.cachedImages(for: controller.drawerItems).count ?? 0
                         fprint("抽屉原样图标｜已捕获 \(cached)/\(total)｜屏幕录制权限=\(self.panelController?.hasCaptureAuthorization == true ? "已授予" : "未授予")")
-                        finish(true)
+                        finish(false)
                         guard self.hasPerformedInitialFold else {
                             controller.reportPhysicalLayout(.failed("菜单栏位置已改变，正在重新读取"))
                             return
