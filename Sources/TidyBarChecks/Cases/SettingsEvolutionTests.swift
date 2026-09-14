@@ -19,7 +19,7 @@ struct SettingsEvolutionTests {
         expectEqual(loaded.newItemZone, MenuBarZone.alwaysHidden)
         expectEqual(loaded.revealTriggers, Set<RevealTrigger>([.hover]))
         expectEqual(loaded.autoRecoverPendingIntent, false)
-        expectEqual(loaded.emptyBarClickAction, GestureAction.toggleFold)
+        expectEqual(loaded.emptyBarClickAction, GestureAction.toggleDrawer)
         expectEqual(loaded.scrollOrSwipeAction, GestureAction.toggleFold)
         expectEqual(loaded.askAboutNewItems, false, "新字段该按默认值补上，而不是拉整份下水")
         expectEqual(loaded.hasCompletedFirstRunGuide, false)

@@ -6,8 +6,12 @@ import TidyBarCore
 struct RevealStateMachineTests {
     func beginnerDefaultsAvoidHoverTriggers() throws {
         expect(
-            RevealTrigger.beginnerDefaults == [.dividerClick, .hotkey],
+            !RevealTrigger.beginnerDefaults.contains(.hover),
             "默认不开悬停，避免光标路过就展开造成的「图标乱跳」观感"
+        )
+        expect(
+            RevealTrigger.beginnerDefaults == [.dividerClick, .hotkey, .emptyBarClick],
+            "默认开启点击、快捷键与空白菜单栏点击"
         )
     }
 

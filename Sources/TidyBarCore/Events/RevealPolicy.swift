@@ -24,8 +24,8 @@ public enum RevealTrigger: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    /// 泛用户默认：只开点击与快捷键，避免悬停误触发造成的「图标乱跳」观感
-    public static var beginnerDefaults: Set<RevealTrigger> { [.dividerClick, .hotkey] }
+    /// 泛用户默认：开启点击、快捷键与空白菜单栏点击，提供自然呼出体验
+    public static var beginnerDefaults: Set<RevealTrigger> { [.dividerClick, .hotkey, .emptyBarClick] }
 }
 
 /// 面板可见状态机。时间由外部注入，便于单测与「自动重隐藏」精度验证。

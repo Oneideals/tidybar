@@ -182,7 +182,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         barController.onEmptyBarClick = { [weak self] in
             guard let self else { return }
-            switch self.controller?.settings.emptyBarClickAction ?? .toggleFold {
+            switch self.controller?.settings.emptyBarClickAction ?? .toggleDrawer {
             case .toggleFold:
                 self.toggleMenuBarFold()
             case .toggleDrawer:
@@ -739,7 +739,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private func makeStatusItem(controller barController: TidyBarController) -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.autosaveName = "tidybar_toggle"
-        item.button?.title = isMenuBarFolded ? "▶" : "☰"
+        item.button?.title = isMenuBarFolded ? "◀" : "☰"
         item.button?.toolTip = "TidyBar：点击展开/折叠或打开抽屉，右键弹出菜单"
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked(_:))
@@ -934,11 +934,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let dividers = dividerItems.sorted { ($0.button?.window?.frame.maxX ?? 0) < ($1.button?.window?.frame.maxX ?? 0) }
         if dividers.count == 2 {
             let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
-            dividers[0].length = ready && permanentlyHidden && !revealsAlwaysHiddenForClick ? length : 8
-            dividers[1].length = ready && isMenuBarFolded ? length : 8
+            dividers[0].length = ready && permanentlyHidden && !revealsAlwaysHiddenForClick ? length : 0
+            dividers[1].length = ready && isMenuBarFolded ? length : 0
             dividers[1].button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
         }
-        statusItem?.button?.title = ready ? (isMenuBarFolded ? "▶" : "◀") : "☰"
+        statusItem?.button?.title = ready ? (isMenuBarFolded ? "◀" : "▶") : "☰"
         statusItem?.button?.toolTip = lastLayoutError ?? (ready ? "TidyBar：点击展开/折叠菜单栏，右键打开菜单"
             : controller?.capability == .fullDrag ? "TidyBar：点击整理并折叠菜单栏" : "TidyBar：点击打开收纳抽屉")
         foldMenuItem?.title = isMenuBarFolded ? "展开菜单栏图标" : "折叠菜单栏图标"
@@ -949,7 +949,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         guard dividerItems.isEmpty else { return }
         for (name, glyph) in [("tidybar_separator", Self.dividerGlyph),
                               ("tidybar_always_hidden_separator", Self.alwaysHiddenDividerGlyph)] {
-            let divider = NSStatusBar.system.statusItem(withLength: 8)
+            let divider = NSStatusBar.system.statusItem(withLength: 0)
             divider.autosaveName = name
             divider.button?.title = glyph
             divider.button?.target = self

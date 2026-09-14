@@ -53,7 +53,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init(
         revealTriggers: Set<RevealTrigger> = RevealTrigger.beginnerDefaults,
-        emptyBarClickAction: GestureAction = .toggleFold,
+        emptyBarClickAction: GestureAction = .toggleDrawer,
         scrollOrSwipeAction: GestureAction = .toggleFold,
         rehideDelay: TimeInterval = 2.0,
         newItemZone: MenuBarZone = .hidden,
@@ -100,9 +100,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppSettings()
-        revealTriggers = try c.decodeIfPresent(Set<RevealTrigger>.self, forKey: .revealTriggers)
+        var loadedTriggers = try c.decodeIfPresent(Set<RevealTrigger>.self, forKey: .revealTriggers)
             ?? defaults.revealTriggers
-        emptyBarClickAction = try c.decodeIfPresent(GestureAction.self, forKey: .emptyBarClickAction) ?? .toggleFold
+        if loadedTriggers == Set<RevealTrigger>([.dividerClick, .hotkey]) {
+            loadedTriggers.insert(.emptyBarClick)
+        }
+        revealTriggers = loadedTriggers
+        emptyBarClickAction = try c.decodeIfPresent(GestureAction.self, forKey: .emptyBarClickAction) ?? .toggleDrawer
         scrollOrSwipeAction = try c.decodeIfPresent(GestureAction.self, forKey: .scrollOrSwipeAction) ?? .toggleFold
         rehideDelay = try c.decodeIfPresent(TimeInterval.self, forKey: .rehideDelay) ?? defaults.rehideDelay
         newItemZone = try c.decodeIfPresent(MenuBarZone.self, forKey: .newItemZone) ?? defaults.newItemZone

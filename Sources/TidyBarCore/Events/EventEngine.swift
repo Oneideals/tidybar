@@ -34,7 +34,7 @@ public final class EventEngine {
 
     public init(throttleInterval: TimeInterval = 0.2, menuBarFrames: @escaping () -> [CGRect] = {
         NSScreen.screens.map { screen in
-            let height = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+            let height = max(28, max(NSStatusBar.system.thickness, screen.safeAreaInsets.top) + 4)
             return CGRect(x: screen.frame.minX, y: screen.frame.maxY - height,
                           width: screen.frame.width, height: height)
         }
@@ -55,7 +55,7 @@ public final class EventEngine {
         ) { [weak self] event in
             self?.receive(event)
         }].compactMap { $0 }
-        localMonitors = [NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
+        localMonitors = [NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
             self?.receive(event)
             return event
         }].compactMap { $0 }
