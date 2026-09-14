@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 
 /// 应用装配层：唯一持有 AppKit 生命周期依赖的地方。
 /// 骨架阶段的目标是「能跑起来 + 诚实标注哪些能力尚未接通」，不假装已具备隐藏能力。
@@ -154,13 +155,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let capturer = ScreenCaptureKitIconCapturer()
         let panel = TidyBarPanelController(services: services, capturer: capturer)
         lastCaptureAuthorization = capturer.isAuthorized
-        panel.onItemClick = { [weak self, weak panel] item in
-            let outcome = self?.requestProxyClick(item, button: .primary) ?? .interrupted
-            panel?.setActivationNotice(outcome.countsAsPressed ? nil : outcome.userReadable)
+        panel.onItemClick = { [weak self] item in
+            self?.temporarilyRevealItemInMenuBar(item)
         }
-        panel.onRightClick = { [weak self, weak panel] item in
-            let outcome = self?.requestProxyClick(item, button: .secondary) ?? .interrupted
-            panel?.setActivationNotice(outcome.countsAsPressed ? nil : outcome.userReadable)
+        panel.onRightClick = { [weak self] item in
+            self?.temporarilyRevealItemInMenuBar(item)
         }
         panel.onRequestCaptureAuthorization = { [weak self] in
             if capturer.isAuthorized { self?.scheduleAlignment() }
@@ -178,7 +177,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let search = TidyBarSearchUI()
         search.queryHandler = { [weak barController] query in barController?.search(query) ?? [] }
         search.activateHandler = { [weak self] item in
-            self?.requestProxyClick(item, button: .primary) ?? .actionUnsupported
+            self?.temporarilyRevealItemInMenuBar(item)
+            return .menuPresented
         }
         search.zoneLabel = { [weak barController] id in
             guard let zone = barController?.snapshot.layout.zone(of: id) else { return "未分类" }
@@ -189,8 +189,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         barController.onEmptyBarClick = { [weak self] in
             guard let self else { return }
             let mouseLoc = NSEvent.mouseLocation
-            let ownWindows = ([self.statusItem] + self.dividerItems).compactMap { $0?.button?.window }
-            if ownWindows.contains(where: { $0.frame.contains(mouseLoc) }) {
+            // 仅当点击直接落在折叠按钮自身窗口内时排除（交由按钮自身 action 响应）
+            if let toggleWindow = self.statusItem?.button?.window, toggleWindow.frame.contains(mouseLoc) {
                 return
             }
             switch self.controller?.settings.emptyBarClickAction ?? .toggleDrawer {
@@ -443,13 +443,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     /// 按"剩余可见时间"挂一次性收起表；不需要收起时**不挂任何表**。
-    private func scheduleAutoConceal(barController: TidyBarController, panel: TidyBarPanelController?) {
+    private func scheduleAutoConceal(barController: TidyBarController, panel: TidyBarPanelController? = nil, duration: TimeInterval? = nil) {
         tickTimer?.invalidate()
         tickTimer = nil
         guard !barController.isPhysicalLayoutBusy, !isRelayingClick, !isHoldingUnobservedMenu,
               services.cursor.isSessionInteractive else { return }
 
-        guard let remaining = barController.remainingRevealTime else { return }
+        let timeout = duration ?? barController.remainingRevealTime
+        guard let remaining = timeout, remaining > 0 else { return }
         let timer = Timer(timeInterval: max(0.05, remaining), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let barController = self.controller, self.services.cursor.isSessionInteractive else { return }
@@ -681,11 +682,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         if snapshot.isRevealed {
             let drawerItems = barController.drawerItems
             fprint("syncPanel: items=\(snapshot.items.count), drawerItems=\(drawerItems.count)")
-            let mouseX = NSEvent.mouseLocation.x
-            let anchor = mouseX > 0 ? mouseX : (statusItem?.button?.window?.frame.midX ?? (services.screens.primaryScreen?.frame.midX ?? 800))
+            let mouseLoc = NSEvent.mouseLocation
+            let currentScreen = services.screens.screens.first { $0.frame.contains(mouseLoc) } ?? services.screens.primaryScreen
+            let anchor = mouseLoc.x > 0 ? mouseLoc.x : (statusItem?.button?.window?.frame.midX ?? (currentScreen?.frame.midX ?? 800))
             panel.show(
                 items: drawerItems,
-                screen: services.screens.primaryScreen,
+                screen: currentScreen,
                 anchorX: anchor
             )
         } else {
@@ -910,6 +912,35 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
            let items = controller?.drawerItems, panel.cachedImages(for: items).count < items.count { scheduleAlignment() }
     }
 
+    /// 采用 Bartender 方式：点击抽屉中某 App 图标后，收起抽屉并将菜单栏临时展开一段时间（至少 7 秒），
+    /// 同时将鼠标指针就近吸附至该图标在菜单栏的真实位置，方便用户直接使用右键（或左键）原生呼出该 App 的菜单栏菜单。
+    public func temporarilyRevealItemInMenuBar(_ item: ManagedItem, duration: TimeInterval = 7.0) {
+        guard !terminationRequested else { return }
+        panelController?.hide()
+        searchUI?.dismiss()
+        endHeldMenuAccess()
+
+        // 原地展开菜单栏（推杆归零，隐藏项物理回到菜单栏可见带内）
+        setMenuBarFolded(false)
+        controller?.setInteractionActive(true)
+
+        let effectiveDuration = max(controller?.settings.rehideDelay ?? duration, duration)
+
+        // 稍等 AppKit 物理帧刷新完成后，将光标平滑吸附至该图标在菜单栏的真实坐标
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, !self.terminationRequested else { return }
+            let live = self.services.reader.discoverItems()
+            if let target = live.first(where: { $0.id == item.id || ($0.ownerBundleID == item.ownerBundleID && $0.title == item.title) }),
+               target.centerX > 0 {
+                let primaryHeight = self.services.screens.primaryScreen?.frame.height ?? CGDisplayBounds(CGMainDisplayID()).height
+                let cgPoint = CGPoint(x: target.centerX, y: primaryHeight - target.frame.midY)
+                CGWarpMouseCursorPosition(cgPoint)
+            }
+            self.controller?.setInteractionActive(false)
+            self.scheduleAutoConceal(barController: self.controller!, duration: effectiveDuration)
+        }
+    }
+
     /// 呼出搜索面板。
     ///
     /// 为什么还挂在 ☰ 菜单里而不是全局快捷键（报告 A8 的 ⌥Space）：
@@ -992,7 +1023,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             }
         }
         alwaysHiddenSeparator?.button?.title = ""
-        alwaysHiddenSeparator?.button?.action = #selector(toggleDrawer)
+        alwaysHiddenSeparator?.button?.target = nil
+        alwaysHiddenSeparator?.button?.action = nil
 
         let separatorConstraint = dividerConstraints["tidybar_separator"]
         if isMenuBarFolded {
@@ -1006,7 +1038,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             }
         }
         separator?.button?.title = ""
-        separator?.button?.action = isMenuBarFolded ? #selector(toggleDrawer) : #selector(toggleMenuBarFold)
+        separator?.button?.target = nil
+        separator?.button?.action = nil
 
         statusItem?.button?.title = isMenuBarFolded ? "◀" : "▶"
         statusItem?.button?.toolTip = lastLayoutError ?? "TidyBar：点击展开/折叠菜单栏，右键打开菜单"
@@ -1028,8 +1061,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             let divider = NSStatusBar.system.statusItem(withLength: 0)
             divider.autosaveName = name
             divider.button?.title = ""
-            divider.button?.target = self
-            divider.button?.action = #selector(toggleDrawer)
+            divider.button?.target = nil
+            divider.button?.action = nil
             divider.button?.toolTip = "TidyBar 分区边界"
             if let constraint = fetchHorizontalConstraint(for: divider) {
                 dividerConstraints[name] = constraint
