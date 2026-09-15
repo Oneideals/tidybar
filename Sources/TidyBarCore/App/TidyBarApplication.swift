@@ -988,6 +988,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private func handleDrawerItemClick(_ item: ManagedItem, autoRightClick: Bool) {
         guard !terminationRequested else { return }
         guard let controller else { return }
+        NSLog("TIDYBAR: handleDrawerItemClick item=\(item.id) capability=\(controller.capability) autoRightClick=\(autoRightClick)")
         if controller.capability == .fullDrag {
             panelController?.hide()
             searchUI?.dismiss()

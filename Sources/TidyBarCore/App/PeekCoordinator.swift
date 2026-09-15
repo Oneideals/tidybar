@@ -108,9 +108,14 @@ public final class PeekCoordinator {
                 let target = live.first { cand in
                     guard cand.frame.width > 0, cand.centerX > 0 else { return false }
                     if cand.id == item.id { return true }
-                    return cand.ownerBundleID == item.ownerBundleID && cand.title == item.title
+                    if let ob = item.ownerBundleID, ob == cand.ownerBundleID {
+                        if !item.title.isEmpty && cand.title == item.title { return true }
+                        if item.ordinalInOwner == cand.ordinalInOwner { return true }
+                    }
+                    return false
                 }
                 guard let target else {
+                    NSLog("TIDYBAR PeekCoordinator: 未在菜单栏找到目标图标 item=\(item.id) title=\(item.title) liveCount=\(live.count)")
                     DispatchQueue.main.async { self.abortToIdle(message: "未在菜单栏找到目标图标") }
                     return
                 }
@@ -120,12 +125,14 @@ public final class PeekCoordinator {
                     ownsItem($0) && $0.frame.width <= 32 && $0.centerX > 0
                 }
                 guard let toggle else {
+                    NSLog("TIDYBAR PeekCoordinator: 未找到控制按钮锚点 liveCount=\(live.count)")
                     DispatchQueue.main.async { self.abortToIdle(message: "未找到控制按钮锚点") }
                     return
                 }
 
                 // 目标落点：拖到切换按钮右侧紧贴常显区
                 let dropTargetX = toggle.frame.maxX + target.frame.width / 2 + 4
+                NSLog("TIDYBAR PeekCoordinator: executeMoveOut target=\(target.id) currentX=\(target.centerX) dropTargetX=\(dropTargetX) toggleX=\(toggle.centerX)")
 
                 guard let mover else {
                     DispatchQueue.main.async { self.abortToIdle(message: "无可用移动器") }
@@ -135,6 +142,7 @@ public final class PeekCoordinator {
                 do {
                     _ = try mover.move(itemID: target.id, toX: dropTargetX)
                 } catch {
+                    NSLog("TIDYBAR PeekCoordinator: 物理移出失败：\(error)")
                     DispatchQueue.main.async { self.abortToIdle(message: "物理移出失败：\(error)") }
                     return
                 }
@@ -142,10 +150,12 @@ public final class PeekCoordinator {
                 // 验证落点：X 必须位于按钮右侧
                 let afterMove = reader.discoverItems()
                 guard let verified = afterMove.first(where: { $0.id == target.id && $0.centerX > toggle.centerX }) else {
+                    NSLog("TIDYBAR PeekCoordinator: 落点校验未通过")
                     DispatchQueue.main.async { self.abortToIdle(message: "落点校验未通过") }
                     return
                 }
 
+                NSLog("TIDYBAR PeekCoordinator: 移出成功 verifiedX=\(verified.centerX)")
                 DispatchQueue.main.async {
                     self.finishMoveOut(verifiedItem: verified, autoRightClick: autoRightClick)
                 }
@@ -256,9 +266,14 @@ public final class PeekCoordinator {
                 let target = live.first { cand in
                     guard cand.frame.width > 0, cand.centerX > 0 else { return false }
                     if cand.id == item.id { return true }
-                    return cand.ownerBundleID == item.ownerBundleID && cand.title == item.title
+                    if let ob = item.ownerBundleID, ob == cand.ownerBundleID {
+                        if !item.title.isEmpty && cand.title == item.title { return true }
+                        if item.ordinalInOwner == cand.ordinalInOwner { return true }
+                    }
+                    return false
                 }
                 guard let target else {
+                    NSLog("TIDYBAR PeekCoordinator: executeMoveBack 未在菜单栏找到目标图标 item=\(item.id)")
                     DispatchQueue.main.async { self.finishMoveBack(success: false) }
                     return
                 }
@@ -346,6 +361,7 @@ public final class PeekCoordinator {
     }
 
     private func abortToIdle(message: String) {
+        NSLog("TIDYBAR PeekCoordinator abortToIdle: \(message)")
         setPusherCollapsed(false)
         dismissCurtain()
         rehideTimer?.invalidate()
