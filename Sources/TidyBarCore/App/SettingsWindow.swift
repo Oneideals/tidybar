@@ -71,6 +71,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         )
         window.title = "TidyBar 偏好设置"
         window.isReleasedWhenClosed = false
+        window.hidesOnDeactivate = false
         window.minSize = NSSize(width: 860, height: 580)
         super.init(window: window)
         overview.onReassign = { [weak controller] itemID, zone in

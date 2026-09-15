@@ -1304,8 +1304,15 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 self.isReconcilingLayout = false
                 controller.setPhysicalLayoutBusy(false)
                 controller.reportPhysicalLayout(.failed("整理已暂停，点击菜单栏入口可重试"))
+                let shouldRestoreSettings = self.settingsWindow?.window?.isVisible == true
+                if shouldRestoreSettings {
+                    self.menuBarAccess?.preventForegroundRestoration(cancelling: false)
+                }
                 self.endLayoutAdjustment()
                 self.endMenuBarAccess()
+                if shouldRestoreSettings {
+                    self.settingsWindow?.showAgain()
+                }
                 if self.alignmentRequested {
                     self.alignmentRequested = false
                     self.scheduleAlignment()
@@ -1322,8 +1329,15 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     guard let self, !self.terminationRequested else { return }
                     self.isReconcilingLayout = false
                     controller.setPhysicalLayoutBusy(false)
+                    let shouldRestoreSettings = self.settingsWindow?.window?.isVisible == true
+                    if shouldRestoreSettings {
+                        self.menuBarAccess?.preventForegroundRestoration(cancelling: false)
+                    }
                     self.endLayoutAdjustment()
                     self.endMenuBarAccess()
+                    if shouldRestoreSettings {
+                        self.settingsWindow?.showAgain()
+                    }
                     if self.alignmentRequested {
                         self.alignmentRequested = false
                         self.scheduleAlignment()
