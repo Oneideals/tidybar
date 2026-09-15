@@ -134,6 +134,12 @@ public final class PeekCoordinator {
                 let dropTargetX = toggle.frame.maxX + target.frame.width / 2 + 4
                 NSLog("TIDYBAR PeekCoordinator: executeMoveOut target=\(target.id) currentX=\(target.centerX) dropTargetX=\(dropTargetX) toggleX=\(toggle.centerX)")
 
+                // 关键修复：在投递 ⌘ 拖拽事件前撤除幕布，确保 AXUIElementCopyElementAtPosition 能直接命中真实图标，
+                // 彻底消除由于遮罩窗口覆盖导致 mover.move 抛出 sourceNotInteractable 失败的问题。
+                DispatchQueue.main.sync {
+                    self.dismissCurtain()
+                }
+
                 guard let mover else {
                     DispatchQueue.main.async { self.abortToIdle(message: "无可用移动器") }
                     return
@@ -290,6 +296,10 @@ public final class PeekCoordinator {
 
                 // 目标落点：拖到分隔符左侧（隐藏区末位）
                 let dropTargetX = max(50, boundaryX - target.frame.width / 2 - 4)
+
+                DispatchQueue.main.sync {
+                    self.dismissCurtain()
+                }
 
                 guard let mover else {
                     DispatchQueue.main.async { self.finishMoveBack(success: false) }

@@ -726,12 +726,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 if isPartitioned {
                     self.hasPerformedInitialFold = true
                     fprint("首扫判定：当前菜单栏物理布局已满足分区规则，直接维持折叠，无需启动拖拽重排")
-                } else if isInitialScan {
-                    self.hasPerformedInitialFold = true
-                    fprint("首扫判定：冷启动首帧已瞬时折叠，跳过启动拖拽重排")
                 }
 
-                if allowAlignment && !isPartitioned && !isInitialScan && (requiresAlignment || reason == .userRequested) {
+                if allowAlignment && !isPartitioned && (requiresAlignment || reason == .userRequested || isInitialScan) {
                     self.scheduleAlignment()
                 }
             }
@@ -1429,6 +1426,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 }
             case .hidden, .alwaysHidden:
                 if item.centerX >= toggle.centerX {
+                    return false
+                }
+                if self.isMenuBarFolded && item.centerX > 0 {
                     return false
                 }
             }

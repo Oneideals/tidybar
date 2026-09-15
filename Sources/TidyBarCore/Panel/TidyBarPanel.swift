@@ -416,10 +416,11 @@ public final class TidyBarPanelController: NSObject {
         startNextCapture()
     }
 
-    private func verifiedScreen(for item: ManagedItem, screens: [ScreenInfo]) -> ScreenInfo? {
+    private func verifiedScreen(for item: ManagedItem, screens: [ScreenInfo], allowOcclusion: Bool = false) -> ScreenInfo? {
         guard let screen = screens.first(where: { IconCaptureGeometry.isVisibleMenuBarFrame(item.frame, on: $0) }),
-              reader.currentFrame(of: item) == item.frame,
-              reader.hitTest(expected: item, at: CGPoint(x: item.centerX, y: item.frame.midY)) == .verified else { return nil }
+              reader.currentFrame(of: item) == item.frame else { return nil }
+        if allowOcclusion { return screen }
+        guard reader.hitTest(expected: item, at: CGPoint(x: item.centerX, y: item.frame.midY)) == .verified else { return nil }
         return screen
     }
 
@@ -439,8 +440,9 @@ public final class TidyBarPanelController: NSObject {
             timeout = nil
             if ingest, request.generation == bitmapGeneration, request.isValid(), capturer.isAuthorized {
                 let screens = screenObserver.screens
+                let allowOcclusion = !request.excludingWindowNumbers.isEmpty
                 let valid = incoming.filter { item, _, screen in
-                    if verifiedScreen(for: item, screens: screens) == screen { return true }
+                    if verifiedScreen(for: item, screens: screens, allowOcclusion: allowOcclusion) == screen { return true }
                     rejected.insert(item.id)
                     return false
                 }
