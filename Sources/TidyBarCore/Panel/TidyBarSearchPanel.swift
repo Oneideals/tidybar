@@ -275,13 +275,13 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
             button.layer?.backgroundColor = NSColor.clear.cgColor
         }
 
-        let icon = NSImageView()
-        // 优先使用截图缓存（与菜单栏/抽屉风格一致），无截图时回退到 AppIconResolver
-        if let cached = imageProvider?(item) {
-            icon.image = NSImage(cgImage: cached, size: CGSize(width: cached.width, height: cached.height))
-        } else {
-            icon.image = AppIconResolver.resolve(for: item)
-        }
+        let icon = MenuBarIconGlyphView()
+        icon.item = item
+        icon.presentation = MenuBarIconStyle.presentation(
+            for: item,
+            bitmap: imageProvider?(item),
+            captureAuthorized: true
+        )
         icon.translatesAutoresizingMaskIntoConstraints = false
 
         let titleLabel = NSTextField(labelWithString: item.title)
@@ -311,8 +311,8 @@ public final class TidyBarSearchUI: NSObject, NSTextFieldDelegate {
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 10),
             icon.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 20),
-            icon.heightAnchor.constraint(equalToConstant: 20),
+            icon.widthAnchor.constraint(equalToConstant: 22),
+            icon.heightAnchor.constraint(equalToConstant: 22),
 
             titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
             titleLabel.centerYAnchor.constraint(equalTo: button.centerYAnchor),

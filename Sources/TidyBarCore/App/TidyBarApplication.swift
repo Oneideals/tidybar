@@ -40,8 +40,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     /// 借鉴 Ice 的 10,000pt 推杆设计：超大跨度确保在多屏/超宽屏/高分屏下 100% 将隐藏项推到屏幕外。
     private static let expandedPushLength: CGFloat = 10_000
     private var searchUI: TidyBarSearchUI?
-    /// 用于临时单显某个抽屉图标时遮盖其他隐藏项的遮罩窗口，确保仅有被点击图标在菜单栏展示
-    private var isolationMaskWindows: [NSWindow] = []
+    /// 抽屉单项物理浮现协调器与幕布截图扫描器
+    private var peekCoordinator: PeekCoordinator?
+    private var captureSweep: CaptureSweep?
     /// 注销/关机/launchd 回收发来的信号不保证会走 applicationWillTerminate，显式挂信号源
     private var shutdown: GracefulShutdown?
     private var isExiting = false
@@ -157,11 +158,51 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let capturer = ScreenCaptureKitIconCapturer()
         let panel = TidyBarPanelController(services: services, capturer: capturer)
         lastCaptureAuthorization = capturer.isAuthorized
+        let coordinator = PeekCoordinator(
+            services: services,
+            controller: barController,
+            makeSession: { MenuBarAccessSession() },
+            curtainFactory: { [weak panel, weak barController] toggleMinX in
+                let screen = NSScreen.main ?? NSScreen.screens.first ?? NSScreen()
+                let cached = Array((panel?.cachedImages(for: barController?.drawerItems ?? []) ?? [:]).values)
+                return CurtainWindow(screen: screen, toggleMinX: toggleMinX, cachedBitmaps: cached)
+            },
+            setPusherCollapsed: { [weak self] collapsed in
+                self?.setPusherCollapsed(collapsed)
+            },
+            proxyClickRelay: { [weak self] item, button in
+                _ = self?.requestProxyClick(item, button: button, unfold: false)
+            }
+        )
+        self.peekCoordinator = coordinator
+
+        let sweep = CaptureSweep(
+            services: services,
+            panelController: panel,
+            setPusherCollapsed: { [weak self] collapsed in
+                self?.setPusherCollapsed(collapsed)
+            },
+            toggleMinXProvider: { [weak self] in
+                if let btn = self?.statusItem?.button?.window {
+                    return btn.frame.minX
+                }
+                let screen = NSScreen.main ?? NSScreen.screens.first ?? NSScreen()
+                return screen.visibleFrame.maxX - 60
+            },
+            isBusyProvider: { [weak self, weak barController, weak coordinator] in
+                self?.isRelayingClick == true ||
+                self?.isReconcilingLayout == true ||
+                barController?.isPhysicalLayoutBusy == true ||
+                coordinator?.state != .idle
+            }
+        )
+        self.captureSweep = sweep
+
         panel.onItemClick = { [weak self] item in
-            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: false)
+            self?.handleDrawerItemClick(item, autoRightClick: false)
         }
         panel.onRightClick = { [weak self] item in
-            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: true)
+            self?.handleDrawerItemClick(item, autoRightClick: true)
         }
         panel.onRequestCaptureAuthorization = { [weak self] in
             if capturer.isAuthorized { self?.scheduleAlignment() }
@@ -179,7 +220,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let search = TidyBarSearchUI()
         search.queryHandler = { [weak barController] query in barController?.search(query) ?? [] }
         search.activateHandler = { [weak self] item in
-            self?.revealSingleItemInMenuBar(item, autoTriggerRightClick: false)
+            self?.handleDrawerItemClick(item, autoRightClick: false)
             return .menuPresented
         }
         search.zoneLabel = { [weak barController] id in
@@ -226,6 +267,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 return
             }
             barController?.conceal()
+        }
+        events.onMenuBarInteraction = { [weak self] in
+            self?.peekCoordinator?.noteInteraction()
         }
         events.onManualLayoutChange = { [weak self] in
             guard let self, self.hasPerformedInitialFold,
@@ -305,6 +349,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     self?.hasPerformedInitialFold = false
                     self?.needsManualRealignment = false
                     self?.enumerator.invalidatePendingResults()
+                    self?.peekCoordinator?.cancelAndDrain()
                     self?.arrangement?.cancel()
                     self?.clickRelay?.cancel()
                     self?.menuBarAccess?.cancel()
@@ -319,6 +364,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     guard let self else { return }
                     if self.isReconcilingLayout { self.alignmentRequested = true }
                     self.scheduleRefresh(reason: .screenParametersChanged)
+                }
+            },
+            sessions.addObserver(forName: .init("AppleInterfaceThemeChangedNotification"), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let controller = self.controller else { return }
+                    self.captureSweep?.run(items: controller.drawerItems) { [weak self] in
+                        self?.settingsWindow?.refresh()
+                    }
                 }
             },
         ]
@@ -467,7 +520,6 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     barController.noteInteraction()
                     return
                 }
-                self.removeIsolationMasks()
                 barController.tick()
             }
         }
@@ -537,6 +589,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         guard !isExiting else { return }
         isExiting = true
         shutdown?.disarm()
+        peekCoordinator?.cancelAndDrain()
         eventEngine?.stop()
         tickTimer?.invalidate()
         ruleTimer?.invalidate()
@@ -559,6 +612,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private func stopBeforeExit(reason: String, completion: @escaping @MainActor @Sendable () -> Void) {
         terminationRequested = true
+        peekCoordinator?.cancelAndDrain()
         enumerator.invalidatePendingResults()
         controller?.setPhysicalLayoutBusy(true)
         arrangement?.cancel()
@@ -660,6 +714,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 }
                 self.evaluateAutomaticRules()
                 self.settingsWindow?.refresh()
+                if self.isMenuBarFolded {
+                    self.captureSweep?.run(items: controller.drawerItems) { [weak self] in
+                        self?.settingsWindow?.refresh()
+                    }
+                }
                 let elapsed = Date().timeIntervalSince(self.launchedAt)
                 fprint(String(format: "首扫完成｜图标 %d 个｜距启动 %.2fs（预算 2s）", items.count, elapsed))
 
@@ -701,7 +760,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func requestProxyClick(_ item: ManagedItem, button: MenuBarClickRelay.Button) -> ActivationOutcome {
+    @discardableResult
+    private func requestProxyClick(_ item: ManagedItem, button: MenuBarClickRelay.Button, unfold: Bool = true) -> ActivationOutcome {
         guard let controller, !terminationRequested, !isReconcilingLayout, !isRelayingClick,
               !controller.isPhysicalLayoutBusy else { return .busy }
         guard services.accessibility.isTrusted, services.cursor.isSessionInteractive else { return .interrupted }
@@ -713,12 +773,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         enumerator.invalidatePendingResults()
         tickTimer?.invalidate()
         tickTimer = nil
-        panelController?.hide()
-        searchUI?.dismiss()
-        controller.setMenuBarFolded(false)
-        controller.setInteractionActive(true)
+        if unfold {
+            panelController?.hide()
+            searchUI?.dismiss()
+            controller.setMenuBarFolded(false)
+            controller.setInteractionActive(true)
+        }
         guard let access = MenuBarAccessSession() else {
-            finishProxyClick(.notInteractable, returnToDrawer: returnToDrawer)
+            finishProxyClick(.notInteractable, returnToDrawer: returnToDrawer, unfold: unfold)
             return .notInteractable
         }
         menuBarAccess = access
@@ -727,26 +789,32 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         access.whenPrepared { [weak self] in
             guard let self, !self.terminationRequested else { return }
             guard !access.isCancelled else {
-                self.finishProxyClick(.interrupted, returnToDrawer: returnToDrawer)
+                self.finishProxyClick(.interrupted, returnToDrawer: returnToDrawer, unfold: unfold)
                 return
             }
             let started = relay.start(request, screens: self.services.screens.screens,
                 onActivation: { [weak self] outcome in
                     guard self?.terminationRequested == false else { return }
                     self?.controller?.reportActivation(itemID: item.id, outcome: outcome)
+                    if !unfold {
+                        self?.peekCoordinator?.noteInteraction()
+                    }
                 }, completion: { [weak self] outcome in
                     guard let self, !self.terminationRequested else { return }
                     if !outcome.countsAsPressed || outcome == .menuObservationUnavailable {
                         self.controller?.reportActivation(itemID: item.id, outcome: outcome)
                     }
-                    self.finishProxyClick(outcome, returnToDrawer: returnToDrawer)
+                    if !unfold {
+                        self.peekCoordinator?.noteInteraction()
+                    }
+                    self.finishProxyClick(outcome, returnToDrawer: returnToDrawer, unfold: unfold)
                 })
-            if !started { self.finishProxyClick(.busy, returnToDrawer: returnToDrawer) }
+            if !started { self.finishProxyClick(.busy, returnToDrawer: returnToDrawer, unfold: unfold) }
         }
         return .queued
     }
 
-    private func finishProxyClick(_ outcome: ActivationOutcome, returnToDrawer: Bool) {
+    private func finishProxyClick(_ outcome: ActivationOutcome, returnToDrawer: Bool, unfold: Bool = true) {
         isRelayingClick = false
         if outcome == .menuObservationUnavailable {
             isHoldingUnobservedMenu = true
@@ -756,22 +824,24 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
         revealsAlwaysHiddenForClick = false
         endMenuBarAccess()
-        controller?.setInteractionActive(false)
-        if outcome == .menuPresented {
-            controller?.conceal()
-        } else if !outcome.countsAsPressed {
-            controller?.conceal()
-            panelController?.setActivationNotice(outcome.userReadable)
-            if returnToDrawer && services.cursor.isSessionInteractive { controller?.toggleDrawer() }
-        } else {
-            // 只确认发送，尚未观察到菜单时不宣称成功；留下展开的原生图标供直接操作。
-            controller?.noteInteraction()
+        if unfold {
+            controller?.setInteractionActive(false)
+            if outcome == .menuPresented {
+                controller?.conceal()
+            } else if !outcome.countsAsPressed {
+                controller?.conceal()
+                panelController?.setActivationNotice(outcome.userReadable)
+                if returnToDrawer && services.cursor.isSessionInteractive { controller?.toggleDrawer() }
+            } else {
+                // 只确认发送，尚未观察到菜单时不宣称成功；留下展开的原生图标供直接操作。
+                controller?.noteInteraction()
+            }
+            applyMenuBarFoldState()
+            if alignmentRequested {
+                alignmentRequested = false
+                scheduleAlignment()
+            } else { scheduleRefresh(reason: .userRequested, allowAlignment: false) }
         }
-        applyMenuBarFoldState()
-        if alignmentRequested {
-            alignmentRequested = false
-            scheduleAlignment()
-        } else { scheduleRefresh(reason: .userRequested, allowAlignment: false) }
     }
 
     private func isTidyBarOwnItem(_ item: ManagedItem) -> Bool {
@@ -915,171 +985,44 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         controller?.toggleDrawer()
     }
 
-/// 菜单栏单图标隔离遮罩视图：以与系统菜单栏像素级一致的纯净底色与底边细线，
-/// 遮盖目标图标两侧的所有其他收纳项，实现「仅被选中的图标单独浮现在菜单栏」。
-/// 点击遮罩区域将立即取消隔离并重新折叠菜单栏。
-private final class MenuBarIsolationMaskView: NSView {
-    var onClick: (() -> Void)?
-
-    override func draw(_ dirtyRect: NSRect) {
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let bgColor = isDark
-            ? NSColor(calibratedWhite: 0.12, alpha: 1.0)
-            : NSColor(calibratedWhite: 0.96, alpha: 1.0)
-        bgColor.setFill()
-        bounds.fill()
-
-        // 菜单栏底部分隔细线
-        let separatorColor = isDark
-            ? NSColor.white.withAlphaComponent(0.12)
-            : NSColor.black.withAlphaComponent(0.12)
-        separatorColor.setFill()
-        NSRect(x: 0, y: 0, width: bounds.width, height: 1.0).fill()
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onClick?()
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        onClick?()
-    }
-}
-
-    private func removeIsolationMasks() {
-        isolationMaskWindows.forEach { $0.orderOut(nil) }
-        isolationMaskWindows.removeAll()
-    }
-
-    private func createIsolationMaskWindow(frame: CGRect, screen: NSScreen?) -> NSWindow {
-        let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false, screen: screen)
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
-        window.isOpaque = true
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.ignoresMouseEvents = false
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-
-        let maskView = MenuBarIsolationMaskView(frame: NSRect(origin: .zero, size: frame.size))
-        maskView.onClick = { [weak self] in
-            self?.endSingleItemIsolation()
+    private func handleDrawerItemClick(_ item: ManagedItem, autoRightClick: Bool) {
+        guard !terminationRequested else { return }
+        guard let controller else { return }
+        if controller.capability == .fullDrag {
+            panelController?.hide()
+            searchUI?.dismiss()
+            endHeldMenuAccess()
+            peekCoordinator?.peek(item: item, autoRightClick: autoRightClick)
+        } else {
+            panelController?.setActivationNotice("当前系统未确认拖拽接管，无法临时浮现")
+            requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: true)
         }
-        window.contentView = maskView
-        return window
     }
 
-    private func endSingleItemIsolation() {
-        removeIsolationMasks()
-        setMenuBarFolded(true)
-    }
-
-    /// 采用严格物理遮罩方式：点击抽屉中某 App 图标后，将折叠推杆归零，
-    /// 同时在目标图标左侧与右侧立即布置两条完全不透明的菜单栏背景遮罩，
-    /// 遮蔽除目标图标与 TidyBar 控制按钮之外的全部收纳项。
-    /// 同时将鼠标指针吸附至该图标在菜单栏的真实位置；若 autoTriggerRightClick 为 true，自动触发右键唤出该 App 原生菜单。
-    public func revealSingleItemInMenuBar(_ item: ManagedItem, autoTriggerRightClick: Bool = false, duration: TimeInterval = 6.0) {
-        guard !terminationRequested else { return }
-        removeIsolationMasks()
-        panelController?.hide()
-        searchUI?.dismiss()
-        endHeldMenuAccess()
-
-        // 展开菜单栏（推杆归零，目标图标与收纳项物理回到菜单栏可见带内）
-        setMenuBarFolded(false)
-        controller?.setInteractionActive(true)
-
-        let effectiveDuration = max(controller?.settings.rehideDelay ?? duration, duration)
-        findAndIsolateItem(item, autoTriggerRightClick: autoTriggerRightClick, duration: effectiveDuration)
-    }
-
-    private func findAndIsolateItem(_ item: ManagedItem, autoTriggerRightClick: Bool, duration: TimeInterval, attempt: Int = 0) {
-        guard !terminationRequested else { return }
-        let live = services.reader.discoverItems()
-        let target = live.first(where: {
-            ($0.id == item.id || ($0.ownerBundleID == item.ownerBundleID && $0.title == item.title))
-            && $0.frame.width > 0 && $0.centerX > 0
-        })
-
-        if let target {
-            applySingleItemIsolation(target: target, liveItems: live, autoTriggerRightClick: autoTriggerRightClick, duration: duration)
-        } else if attempt < 12 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-                self?.findAndIsolateItem(item, autoTriggerRightClick: autoTriggerRightClick, duration: duration, attempt: attempt + 1)
+    public func setPusherCollapsed(_ collapsed: Bool) {
+        let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
+        let separatorConstraint = dividerConstraints["tidybar_separator"]
+        if collapsed {
+            separator?.length = 0
+            separatorConstraint?.isActive = false
+            if let window = separator?.button?.window {
+                window.setContentSize(CGSize(width: 0, height: window.frame.height))
+                window.ignoresMouseEvents = true
             }
         } else {
-            controller?.setInteractionActive(false)
-            scheduleAutoConceal(barController: controller!, duration: duration)
-        }
-    }
-
-    private func applySingleItemIsolation(target: ManagedItem, liveItems: [ManagedItem], autoTriggerRightClick: Bool, duration: TimeInterval) {
-        guard !terminationRequested else { return }
-        removeIsolationMasks()
-
-        let primaryScreen = services.screens.primaryScreen
-        let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: target.centerX, y: target.frame.midY)) } ?? NSScreen.main
-        let screenFrame = screen?.frame ?? primaryScreen?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        let visibleFrame = screen?.visibleFrame ?? screenFrame
-        let menuBarHeight = max(24, screenFrame.maxY - visibleFrame.maxY)
-        let menuBarY = screenFrame.maxY - menuBarHeight
-
-        let targetFrame = target.frame
-
-        // 查找 TidyBar 自身折叠控制按钮的真实屏幕边界（所有被展开的隐藏项均位于其左侧）
-        let toggleLeftBound = statusItem?.button?.window?.frame.minX ?? (screenFrame.maxX - 60)
-        
-        // 计算被展开的收纳项的最左边界，遮罩精准遮蔽隐藏项，不遮挡屏幕左侧的苹果与应用主菜单
-        let hiddenItems = liveItems.filter { $0.centerX < toggleLeftBound && !isTidyBarOwnItem($0) && $0.centerX > 0 }
-        let leftmostHiddenX = hiddenItems.map(\.frame.minX).min() ?? targetFrame.minX
-        let leftStart = max(leftmostHiddenX - 4, visibleFrame.minX)
-
-        // 遮罩 A：从收纳区左边缘到目标图标左边缘之间，遮蔽目标左侧的其他收纳项
-        if targetFrame.minX > leftStart + 2 {
-            let leftFrame = CGRect(x: leftStart, y: menuBarY, width: targetFrame.minX - leftStart, height: menuBarHeight)
-            let leftWindow = createIsolationMaskWindow(frame: leftFrame, screen: screen)
-            leftWindow.orderFrontRegardless()
-            isolationMaskWindows.append(leftWindow)
-        }
-
-        // 遮罩 B：从目标图标右边缘到 TidyBar 控制按钮之间，遮蔽目标右侧的其他收纳项
-        if toggleLeftBound > targetFrame.maxX + 2 {
-            let rightFrame = CGRect(x: targetFrame.maxX, y: menuBarY, width: toggleLeftBound - targetFrame.maxX, height: menuBarHeight)
-            let rightWindow = createIsolationMaskWindow(frame: rightFrame, screen: screen)
-            rightWindow.orderFrontRegardless()
-            isolationMaskWindows.append(rightWindow)
-        }
-
-        // 光标平滑吸附至目标图标物理中心
-        let primaryHeight = primaryScreen?.frame.height ?? CGDisplayBounds(CGMainDisplayID()).height
-        let cgPoint = CGPoint(x: target.centerX, y: primaryHeight - target.frame.midY)
-        CGWarpMouseCursorPosition(cgPoint)
-
-        // 若需触发右键，就位后自动派发原生右键点击事件
-        if autoTriggerRightClick {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
-                guard let self, !self.terminationRequested else { return }
-                let source = CGEventSource(stateID: .combinedSessionState)
-                if let down = CGEvent(mouseEventSource: source, mouseType: .rightMouseDown, mouseCursorPosition: cgPoint, mouseButton: .right),
-                   let up = CGEvent(mouseEventSource: source, mouseType: .rightMouseUp, mouseCursorPosition: cgPoint, mouseButton: .right) {
-                    down.setIntegerValueField(.mouseEventClickState, value: 1)
-                    up.setIntegerValueField(.mouseEventClickState, value: 1)
-                    down.post(tap: .cghidEventTap)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
-                        up.post(tap: .cghidEventTap)
-                    }
+            if isMenuBarFolded {
+                separatorConstraint?.isActive = true
+                separator?.length = Self.expandedPushLength
+                separator?.button?.window?.ignoresMouseEvents = true
+            } else {
+                separator?.length = 0
+                separatorConstraint?.isActive = false
+                if let window = separator?.button?.window {
+                    window.setContentSize(CGSize(width: 0, height: window.frame.height))
+                    window.ignoresMouseEvents = true
                 }
             }
         }
-
-        // 顺便趁目标图标可见，为位图缓存抓取最新的菜单栏截图
-        if panelController?.hasCaptureAuthorization == true {
-            panelController?.requestMissingBitmaps(for: [target]) { [weak self] in
-                self?.settingsWindow?.refresh()
-            }
-        }
-
-        controller?.setInteractionActive(false)
-        scheduleAutoConceal(barController: controller!, duration: duration)
     }
 
     /// 呼出搜索面板。
@@ -1176,7 +1119,6 @@ private final class MenuBarIsolationMaskView: NSView {
 
         let separatorConstraint = dividerConstraints["tidybar_separator"]
         if isMenuBarFolded {
-            removeIsolationMasks()
             separatorConstraint?.isActive = true
             separator?.length = Self.expandedPushLength
             separator?.button?.window?.ignoresMouseEvents = true
@@ -1259,7 +1201,7 @@ private final class MenuBarIsolationMaskView: NSView {
 
     private func scheduleAlignment(after delay: TimeInterval = 0.3) {
         guard !terminationRequested, !dividerItems.isEmpty, services.cursor.isSessionInteractive else { return }
-        if isRelayingClick || isHoldingUnobservedMenu { alignmentRequested = true; return }
+        if isRelayingClick || isHoldingUnobservedMenu || peekCoordinator?.state != .idle { alignmentRequested = true; return }
         if isReconcilingLayout {
             alignmentRequested = true
             arrangement?.cancel()
@@ -1304,7 +1246,7 @@ private final class MenuBarIsolationMaskView: NSView {
     public func alignDividerToVisibleBoundary() {
         guard let controller, controller.capability == .fullDrag,
               !terminationRequested, !needsManualRealignment, let mover = services.mover else { return }
-        if isRelayingClick || isHoldingUnobservedMenu { alignmentRequested = true; return }
+        if isRelayingClick || isHoldingUnobservedMenu || peekCoordinator?.state != .idle { alignmentRequested = true; return }
         guard services.cursor.isSessionInteractive else {
             lastLayoutError = "屏幕未解锁，已暂停菜单栏整理"
             return
@@ -1446,11 +1388,13 @@ private final class MenuBarIsolationMaskView: NSView {
             rightDivider: ManagedItem.stableID(ownerBundleID: owner, title: Self.dividerGlyph),
             toggle: ManagedItem.stableID(ownerBundleID: owner, title: statusItem?.button?.title ?? "☰")
         )
+        let exemptIDs: Set<String> = controller.peekedItemID.map { [$0] } ?? []
         if DividerGeometry.isCorrectlyPartitioned(
             items: items,
             layout: controller.snapshot.layout,
             controls: controls,
-            defaultZone: controller.settings.newItemZone
+            defaultZone: controller.settings.newItemZone,
+            exempt: exemptIDs
         ) {
             return true
         }
@@ -1475,6 +1419,7 @@ private final class MenuBarIsolationMaskView: NSView {
         guard !nonTidyBarItems.isEmpty else { return true }
 
         for item in nonTidyBarItems {
+            if exemptIDs.contains(item.id) { continue }
             let zone = item.isSystemOwned ? .visible : (layout.zone(of: item.id) ?? defaultZone)
             switch zone {
             case .visible:

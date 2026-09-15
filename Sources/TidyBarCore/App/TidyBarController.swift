@@ -52,6 +52,7 @@ public final class TidyBarController {
     public private(set) var physicalLayoutState: PhysicalLayoutState = .idle
     public var isPhysicalLayoutBusy: Bool { physicalLayoutState == .arranging }
     private let ownBundleID = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
+    public var peekedItemID: String?
 
     public init(
         engine: LayoutEngine,
@@ -309,7 +310,8 @@ public final class TidyBarController {
     /// 用户手动拖动后按按钮位置重算，再将折叠分隔符归位。
     public func realignToDividers() {
         guard let rightEdge = visibleBoundary, !isDemoMode, !isAwaitingRecovery, !isPhysicalLayoutBusy else { return }
-        let ordered = MenuBarEnumeration.sortedLeftToRight(assignableItems)
+        let eligible = assignableItems.filter { $0.id != peekedItemID }
+        let ordered = MenuBarEnumeration.sortedLeftToRight(eligible)
         for zone in MenuBarZone.allCases {
             let members = ordered.filter { DividerGeometry.zone(forX: $0.centerX, leftEdge: dividerCenters.left, rightEdge: rightEdge) == zone }
             for (index, item) in members.enumerated() {
@@ -323,6 +325,24 @@ public final class TidyBarController {
         }
         publish()
         onRequestPhysicalArrangement?(false)
+    }
+
+    /// 更新条目的实时物理位置（供浮现状态下点击命中与坐标校验使用）。
+    public func updateItemFrame(id: String, frame: CGRect) {
+        if let idx = items.firstIndex(where: { $0.id == id }) {
+            let old = items[idx]
+            items[idx] = ManagedItem(
+                id: old.id,
+                ownerBundleID: old.ownerBundleID,
+                title: old.title,
+                frame: frame,
+                isSystemOwned: old.isSystemOwned,
+                lastActivatedAt: old.lastActivatedAt,
+                identitySource: old.identitySource,
+                ordinalInOwner: old.ordinalInOwner,
+                ownerItemCount: old.ownerItemCount
+            )
+        }
     }
 
     /// 把上次没做完的变更真的再做一次。

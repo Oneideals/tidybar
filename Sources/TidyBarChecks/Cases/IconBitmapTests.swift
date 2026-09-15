@@ -191,6 +191,7 @@ struct IconBitmapTests {
         MainActor.assumeIsolated {
             NSApplication.shared.setActivationPolicy(.prohibited)
             let view = TidyBarPanelView(frame: CGRect(x: 0, y: 0, width: 120, height: 42))
+            view.hasCaptureAuthorization = true
             view.items = [item("captured", x: 600)]
             let captured = image(width: 48, height: 48,
                 fill: CGColor(red: 0.3, green: 0.35, blue: 0.4, alpha: 1),

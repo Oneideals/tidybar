@@ -22,6 +22,17 @@ public protocol MenuBarIconCapturing: AnyObject {
     func requestAuthorization()
     /// 抓取一块区域（AppKit 坐标，左下原点）。完成回调可能在任意线程。
     func capture(frame: CGRect, scale: CGFloat, completion: @escaping (Result<CGImage, IconCaptureError>) -> Void)
+    func capture(frame: CGRect, scale: CGFloat, excludingWindowNumbers: [CGWindowID], completion: @escaping (Result<CGImage, IconCaptureError>) -> Void)
+}
+
+public extension MenuBarIconCapturing {
+    func capture(frame: CGRect, scale: CGFloat, completion: @escaping (Result<CGImage, IconCaptureError>) -> Void) {
+        capture(frame: frame, scale: scale, excludingWindowNumbers: [], completion: completion)
+    }
+
+    func capture(frame: CGRect, scale: CGFloat, excludingWindowNumbers: [CGWindowID], completion: @escaping (Result<CGImage, IconCaptureError>) -> Void) {
+        capture(frame: frame, scale: scale, completion: completion)
+    }
 }
 
 /// 未接通时的占位：永远回答"没权限"，不得伪造位图
@@ -29,7 +40,7 @@ public final class UnverifiedMenuBarIconCapturer: MenuBarIconCapturing {
     public init() {}
     public var isAuthorized: Bool { false }
     public func requestAuthorization() {}
-    public func capture(frame: CGRect, scale: CGFloat, completion: @escaping (Result<CGImage, IconCaptureError>) -> Void) {
+    public func capture(frame: CGRect, scale: CGFloat, excludingWindowNumbers: [CGWindowID] = [], completion: @escaping (Result<CGImage, IconCaptureError>) -> Void) {
         completion(.failure(.notAuthorized))
     }
 }
@@ -112,6 +123,7 @@ public final class ScreenCaptureKitIconCapturer: MenuBarIconCapturing {
     public func capture(
         frame: CGRect,
         scale: CGFloat,
+        excludingWindowNumbers: [CGWindowID] = [],
         completion: @escaping (Result<CGImage, IconCaptureError>) -> Void
     ) {
         precondition(Thread.isMainThread, "capture 必须在主线程调用（面板/搜索路径本来就是主线程）")
@@ -148,7 +160,8 @@ public final class ScreenCaptureKitIconCapturer: MenuBarIconCapturing {
                 configuration.queueDepth = 1
                 // 输出与裁剪框都用同一套"屏幕内左上原点"坐标，缩放比例交给 width/height 表达
 
-                let filter = SCContentFilter(display: display, excludingWindows: [])
+                let excludedWindows = content.windows.filter { excludingWindowNumbers.contains($0.windowID) }
+                let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
                 completion(.success(image))
             } catch {

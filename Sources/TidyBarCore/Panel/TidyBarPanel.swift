@@ -93,6 +93,8 @@ public final class TidyBarPanelView: NSView {
     }
     private var trackingArea: NSTrackingArea?
 
+    public var hasCaptureAuthorization: Bool = false { didSet { needsDisplay = true } }
+
     private var footerText: String? { notice?.isEmpty == false ? notice : missingImageMessage }
     private var noticeAttributes: [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
@@ -105,12 +107,14 @@ public final class TidyBarPanelView: NSView {
     public func contentLayout(maximumWidth: CGFloat) -> PanelGeometry.ContentLayout {
         let metrics = PanelGeometry.Metrics()
         let sizes = items.map { item -> CGSize in
-            let baseHeight = item.frame.height > 0 ? min(metrics.itemSide, item.frame.height) : metrics.itemSide
-            if let image = images[item.id] {
-                return CGSize(width: baseHeight * CGFloat(image.width) / CGFloat(max(1, image.height)), height: baseHeight)
-            }
-            let width = item.frame.width > 0 ? max(metrics.itemSide, item.frame.width) : metrics.itemSide
-            return CGSize(width: width, height: baseHeight)
+            let presentation = MenuBarIconStyle.presentation(
+                for: item,
+                bitmap: images[item.id],
+                captureAuthorized: hasCaptureAuthorization
+            )
+            let dummy = CGRect(x: 0, y: 0, width: 200, height: metrics.itemSide)
+            let glyphRect = MenuBarIconStyle.glyphRect(for: presentation, in: dummy)
+            return CGSize(width: max(metrics.itemSide, glyphRect.width), height: metrics.itemSide)
         }
         let minimumWidth = footerText == nil ? PanelGeometry.Minimums.panelWidth : min(280, maximumWidth)
         let initial = PanelGeometry.contentLayout(itemSizes: sizes, maximumWidth: maximumWidth, minimumWidth: minimumWidth)
@@ -204,17 +208,12 @@ public final class TidyBarPanelView: NSView {
                 NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
             }
 
-            if let image = images[item.id] {
-                let height = min(metrics.itemSide, item.frame.height > 0 ? item.frame.height : metrics.itemSide)
-                let container = CGRect(x: rect.minX, y: rect.midY - height / 2, width: rect.width, height: height)
-                let size = CGSize(width: image.width, height: image.height)
-                NSImage(cgImage: image, size: size).draw(in: Self.aspectFit(size: size, in: container))
-            } else {
-                let appIcon = AppIconResolver.resolve(for: item)
-                let iconSize = appIcon.size.width > 0 && appIcon.size.height > 0 ? appIcon.size : CGSize(width: metrics.itemSide, height: metrics.itemSide)
-                let container = CGRect(x: rect.minX, y: rect.midY - metrics.itemSide / 2, width: rect.width, height: metrics.itemSide)
-                appIcon.draw(in: Self.aspectFit(size: iconSize, in: container))
-            }
+            let presentation = MenuBarIconStyle.presentation(
+                for: item,
+                bitmap: images[item.id],
+                captureAuthorized: hasCaptureAuthorization
+            )
+            MenuBarIconStyle.draw(presentation, for: item, in: rect)
         }
     }
 
@@ -289,6 +288,7 @@ public final class TidyBarPanelController: NSObject {
     private struct CaptureRequest {
         let items: [ManagedItem]
         let generation: Int
+        let excludingWindowNumbers: [CGWindowID]
         let isValid: () -> Bool
         let completion: (Set<String>) -> Void
     }
@@ -330,11 +330,11 @@ public final class TidyBarPanelController: NSObject {
     public var bitmapCacheBytes: Int { bitmaps.currentBytes }
     public var hasCaptureAuthorization: Bool { capturer.isAuthorized }
 
-    public func prewarmBitmaps(for items: [ManagedItem], isValid: @escaping () -> Bool,
+    public func prewarmBitmaps(for items: [ManagedItem], excludingWindowNumbers: [CGWindowID] = [], isValid: @escaping () -> Bool,
                               completion: @escaping () -> Void) {
         precondition(Thread.isMainThread)
         let generation = bitmapGeneration
-        enqueueCapture(items, isValid: isValid) { [weak self] rejected in
+        enqueueCapture(items, excludingWindowNumbers: excludingWindowNumbers, isValid: isValid) { [weak self] rejected in
             guard let self, self.bitmapGeneration == generation, !rejected.isEmpty,
                   isValid(), self.capturer.isAuthorized else { completion(); return }
             // 位置在截图期间变化时只补抓一次，并重新获取观测绑定；不能反复截图旧坐标。
@@ -357,7 +357,7 @@ public final class TidyBarPanelController: NSObject {
                         return item.identitySource != .ownerOrdinal
                             || (original.ordinalInOwner == item.ordinalInOwner && original.ownerItemCount == item.ownerItemCount)
                     }
-                    self.enqueueCapture(fresh, isValid: isValid) { _ in completion() }
+                    self.enqueueCapture(fresh, excludingWindowNumbers: excludingWindowNumbers, isValid: isValid) { _ in completion() }
                 }
             }
         }
@@ -408,11 +408,11 @@ public final class TidyBarPanelController: NSObject {
         enqueueCapture(missing, isValid: { true }) { _ in onBitmapsReady() }
     }
 
-    private func enqueueCapture(_ items: [ManagedItem], isValid: @escaping () -> Bool, completion: @escaping (Set<String>) -> Void) {
+    private func enqueueCapture(_ items: [ManagedItem], excludingWindowNumbers: [CGWindowID] = [], isValid: @escaping () -> Bool, completion: @escaping (Set<String>) -> Void) {
         var seen: Set<String> = []
         let unique = items.filter { seen.insert($0.id).inserted }
         for item in unique { reservedCaptures[item.id, default: 0] += 1 }
-        captureQueue.append(CaptureRequest(items: unique, generation: bitmapGeneration, isValid: isValid, completion: completion))
+        captureQueue.append(CaptureRequest(items: unique, generation: bitmapGeneration, excludingWindowNumbers: excludingWindowNumbers, isValid: isValid, completion: completion))
         startNextCapture()
     }
 
@@ -485,7 +485,7 @@ public final class TidyBarPanelController: NSObject {
                 if remaining == 0 { finish(ingest: true) }
                 continue
             }
-            capturer.capture(frame: region, scale: CGFloat(group.screen.scaleFactor)) { result in
+            capturer.capture(frame: region, scale: CGFloat(group.screen.scaleFactor), excludingWindowNumbers: request.excludingWindowNumbers) { result in
                 DispatchQueue.main.async {
                     guard !finished else { return }
                     guard request.isValid() else { finish(ingest: false); return }
@@ -521,6 +521,7 @@ public final class TidyBarPanelController: NSObject {
     }
 
     private func updateContent() {
+        panelView.hasCaptureAuthorization = hasCaptureAuthorization
         panelView.images = cachedImages(for: panelView.items)
         panelView.emptyMessage = accessibility.isTrusted ? "暂无收纳图标" : "请授权辅助功能"
         let missing = panelView.items.contains { panelView.images[$0.id] == nil }

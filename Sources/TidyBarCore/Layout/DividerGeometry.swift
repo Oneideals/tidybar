@@ -33,33 +33,40 @@ public enum DividerGeometry {
 
     /// 普通折叠只做稳定分组；档案中的显式次序仍由 arrangementOrder 处理。
     public static func foldingOrder(items: [ManagedItem], layout: MenuBarLayout,
-                                    controls: Controls, defaultZone: MenuBarZone = .hidden) -> [String] {
+                                    controls: Controls, defaultZone: MenuBarZone = .hidden,
+                                    exempt: Set<String> = []) -> [String] {
         let ordered = physicalItems(items).filter { !controls.ids.contains($0.id) }
         func members(_ zone: MenuBarZone) -> [String] {
-            ordered.filter { ($0.isSystemOwned ? .visible : layout.zone(of: $0.id) ?? defaultZone) == zone }.map(\.id)
+            ordered.filter {
+                if exempt.contains($0.id) { return zone == .visible }
+                return ($0.isSystemOwned ? .visible : layout.zone(of: $0.id) ?? defaultZone) == zone
+            }.map(\.id)
         }
         return members(.alwaysHidden) + [controls.leftDivider] + members(.hidden)
             + [controls.rightDivider, controls.toggle] + members(.visible)
     }
 
     public static func isCorrectlyPartitioned(items: [ManagedItem], layout: MenuBarLayout,
-                                              controls: Controls, defaultZone: MenuBarZone = .hidden) -> Bool {
+                                              controls: Controls, defaultZone: MenuBarZone = .hidden,
+                                              exempt: Set<String> = []) -> Bool {
         let ordered = physicalItems(items)
         guard let left = ordered.first(where: { $0.id == controls.leftDivider })?.centerX,
               let right = ordered.first(where: { $0.id == controls.rightDivider })?.centerX,
               let toggle = ordered.first(where: { $0.id == controls.toggle })?.centerX,
               left < right, right < toggle else { return false }
         // 验收与进展采用同一分区顺序：隐藏项在按钮左侧，全部常显项在按钮右侧。
-        return partitionDisorder(items: ordered, layout: layout, controls: controls, defaultZone: defaultZone) == 0
+        return partitionDisorder(items: ordered, layout: layout, controls: controls, defaultZone: defaultZone, exempt: exempt) == 0
     }
 
     /// 同区交换不算进展；只有整条分区级别序列的逆序减少才允许继续投递。
     public static func partitionDisorder(items: [ManagedItem], layout: MenuBarLayout,
-                                         controls: Controls, defaultZone: MenuBarZone = .hidden) -> Int {
+                                         controls: Controls, defaultZone: MenuBarZone = .hidden,
+                                         exempt: Set<String> = []) -> Int {
         let ranks = physicalItems(items).map { item -> Int in
             if item.id == controls.leftDivider { return 1 }
             if item.id == controls.rightDivider { return 3 }
             if item.id == controls.toggle { return 4 }
+            if exempt.contains(item.id) { return 5 }
             switch item.isSystemOwned ? .visible : layout.zone(of: item.id) ?? defaultZone {
             case .alwaysHidden: return 0
             case .hidden: return 2

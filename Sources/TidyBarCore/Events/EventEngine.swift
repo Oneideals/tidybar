@@ -23,6 +23,7 @@ public final class EventEngine {
     /// 点击菜单栏区域 = 呼出；点击别处 = 收起
     public var onEvent: ((Event) -> Void)?
     public var onConcealRequest: (() -> Void)?
+    public var onMenuBarInteraction: (() -> Void)?
     public var onManualLayoutChange: (() -> Void)?
     private var manualMenuBarDrag = false
 
@@ -77,7 +78,7 @@ public final class EventEngine {
         case .leftMouseDown:
             receive(.init(trigger: .emptyBarClick, location: NSEvent.mouseLocation))
         case .rightMouseDown:
-            onConcealRequest?()
+            receiveRightClick(at: NSEvent.mouseLocation)
         case .mouseMoved:
             receive(.init(trigger: .hover, location: NSEvent.mouseLocation))
         case .scrollWheel, .otherMouseDragged:
@@ -97,6 +98,17 @@ public final class EventEngine {
         if event.type == .leftMouseUp, manualMenuBarDrag {
             manualMenuBarDrag = false
             onManualLayoutChange?()
+        }
+    }
+
+    /// 右键点击统一处理：带内右键同时通知交互与收起（PeekCoordinator 需要交互信号，
+    /// 控制器仍需收起信号）；带外右键只触发收起。
+    public func receiveRightClick(at location: CGPoint) {
+        if menuBarFrames().contains(where: { $0.contains(location) }) {
+            onMenuBarInteraction?()
+            onConcealRequest?()
+        } else {
+            onConcealRequest?()
         }
     }
 

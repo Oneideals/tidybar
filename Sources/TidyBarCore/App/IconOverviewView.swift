@@ -36,6 +36,7 @@ public final class IconOverviewView: NSView {
     private var lanes: [MenuBarZone: LaneView] = [:]
     private let inspectorCard = NSView()
     private let inspectorIconView = NSImageView()
+    private let inspectorGlyphView = MenuBarIconGlyphView()
     private let inspectorTextLabel = NSTextField(labelWithString: "")
     private var persistentNotice: String?
     private var noticeIsFailure = false
@@ -68,15 +69,10 @@ public final class IconOverviewView: NSView {
                 zone: zone,
                 onMoveItem: { [weak self] itemID, targetZone in
                     guard let self else { return false }
-                    let changed = self.onReassign(itemID, targetZone)
-                    self.persistentNotice = changed ? "分区已保存" : "移动未完成，请查看设置中的操作原因"
-                    self.noticeIsFailure = !changed
-                    self.onZoneChanged?()
-                    self.updateInspector(item: nil, zone: nil)
-                    return changed
+                    return self.onReassign(itemID, targetZone)
                 },
-                onHoverItem: { [weak self] item, itemZone in
-                    self?.updateInspector(item: item, zone: itemZone)
+                onHoverItem: { [weak self] item, zone in
+                    self?.updateInspector(item: item, zone: zone)
                 }
             )
             lanes[zone] = lane
@@ -110,6 +106,10 @@ public final class IconOverviewView: NSView {
         inspectorIconView.imageScaling = .scaleProportionallyUpOrDown
         inspectorCard.addSubview(inspectorIconView)
 
+        inspectorGlyphView.translatesAutoresizingMaskIntoConstraints = false
+        inspectorGlyphView.isHidden = true
+        inspectorCard.addSubview(inspectorGlyphView)
+
         inspectorTextLabel.font = NSFont.systemFont(ofSize: 11)
         inspectorTextLabel.textColor = .secondaryLabelColor
         inspectorTextLabel.lineBreakMode = .byTruncatingTail
@@ -122,6 +122,11 @@ public final class IconOverviewView: NSView {
             inspectorIconView.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
             inspectorIconView.widthAnchor.constraint(equalToConstant: 18),
             inspectorIconView.heightAnchor.constraint(equalToConstant: 18),
+
+            inspectorGlyphView.leadingAnchor.constraint(equalTo: inspectorCard.leadingAnchor, constant: 10),
+            inspectorGlyphView.centerYAnchor.constraint(equalTo: inspectorCard.centerYAnchor),
+            inspectorGlyphView.widthAnchor.constraint(equalToConstant: 18),
+            inspectorGlyphView.heightAnchor.constraint(equalToConstant: 18),
 
             inspectorTextLabel.leadingAnchor.constraint(equalTo: inspectorIconView.trailingAnchor, constant: 8),
             inspectorTextLabel.trailingAnchor.constraint(lessThanOrEqualTo: inspectorCard.trailingAnchor, constant: -10),
@@ -171,18 +176,20 @@ public final class IconOverviewView: NSView {
             let appName = item.title.isEmpty ? (item.ownerBundleID ?? "未知应用") : item.title
             let bundle = item.ownerBundleID ?? "未知来源"
             let posHint = item.isPositionalIdentity ? " · [位置匹配]" : ""
-            if let cached = imageProvider?(item) {
-                inspectorIconView.image = NSImage(cgImage: cached, size: CGSize(width: cached.width, height: cached.height))
-            } else {
-                inspectorIconView.image = AppIconResolver.resolve(for: item)
-            }
-            inspectorIconView.contentTintColor = nil
-            inspectorIconView.isHidden = false
+            inspectorGlyphView.item = item
+            inspectorGlyphView.presentation = MenuBarIconStyle.presentation(
+                for: item,
+                bitmap: imageProvider?(item),
+                captureAuthorized: true
+            )
+            inspectorGlyphView.isHidden = false
+            inspectorIconView.isHidden = true
             inspectorTextLabel.stringValue = "\(appName)（\(bundle)）\(posHint) ｜ 当前：\(zone.displayLabel)"
             inspectorTextLabel.textColor = .labelColor
         } else if let notice = physicalLayoutState.message ?? persistentNotice {
             let failed = physicalLayoutState.message == nil ? noticeIsFailure : physicalLayoutState.isFailure
             let waiting = physicalLayoutState == .queued || physicalLayoutState == .arranging
+            inspectorGlyphView.isHidden = true
             inspectorIconView.image = NSImage(systemSymbolName: failed ? "exclamationmark.circle.fill" : waiting ? "clock" : "checkmark.circle.fill",
                                               accessibilityDescription: failed ? "未完成" : waiting ? "等待整理" : "完成")
             inspectorIconView.contentTintColor = failed ? .systemOrange : waiting ? .secondaryLabelColor : .systemGreen
@@ -190,6 +197,7 @@ public final class IconOverviewView: NSView {
             inspectorTextLabel.stringValue = notice
             inspectorTextLabel.textColor = .labelColor
         } else {
+            inspectorGlyphView.isHidden = true
             inspectorIconView.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "提示")
             inspectorIconView.contentTintColor = nil
             inspectorIconView.isHidden = false
@@ -417,9 +425,14 @@ private final class LaneShelfView: NSView {
 
         let sorted = rows.sorted { $0.item.title.localizedCaseInsensitiveCompare($1.item.title) == .orderedAscending }
         for row in sorted {
+            let presentation = MenuBarIconStyle.presentation(
+                for: row.item,
+                bitmap: imageProvider?(row.item),
+                captureAuthorized: true
+            )
             let cell = DraggableIconCellView(
                 row: row,
-                cachedImage: imageProvider?(row.item),
+                presentation: presentation,
                 onMoveItem: onDrop,
                 onHover: { [weak self] item in
                     guard let self = self else { return }
@@ -508,21 +521,20 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
     let row: IconOverviewView.Row
     let onMoveItem: (String, MenuBarZone) -> Bool
     let onHover: (ManagedItem?) -> Void
-    private let cachedImage: CGImage?
+    var presentation: IconPresentation { didSet { needsDisplay = true } }
 
     private var isHovered = false { didSet { needsDisplay = true } }
     private var isPressed = false { didSet { needsDisplay = true } }
-    private let iconImageView = NSImageView()
     private var trackingArea: NSTrackingArea?
 
     init(
         row: IconOverviewView.Row,
-        cachedImage: CGImage? = nil,
+        presentation: IconPresentation,
         onMoveItem: @escaping (String, MenuBarZone) -> Bool,
         onHover: @escaping (ManagedItem?) -> Void
     ) {
         self.row = row
-        self.cachedImage = cachedImage
+        self.presentation = presentation
         self.onMoveItem = onMoveItem
         self.onHover = onHover
         super.init(frame: .zero)
@@ -536,29 +548,12 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
 
     private func setup() {
         autoresizingMask = []
-        iconImageView.translatesAutoresizingMaskIntoConstraints = false
-        iconImageView.imageScaling = .scaleProportionallyUpOrDown
-        // 优先使用截图缓存（与菜单栏/抽屉风格一致），无截图时回退到 AppIconResolver
-        if let cached = cachedImage {
-            iconImageView.image = NSImage(cgImage: cached, size: CGSize(width: cached.width, height: cached.height))
-        } else {
-            iconImageView.image = AppIconResolver.resolve(for: row.item)
-        }
-        addSubview(iconImageView)
-
         let displayName = row.item.title.isEmpty ? (row.item.ownerBundleID ?? "图标") : row.item.title
         var tip = "\(displayName)\n来源：\(row.item.ownerBundleID ?? "系统")\n分区：\(row.zone.displayLabel)"
         if row.isPositionalIdentity {
             tip += "\n[按位置认领：名称随未读或标题变化]"
         }
         toolTip = tip
-
-        NSLayoutConstraint.activate([
-            iconImageView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            iconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 22),
-            iconImageView.heightAnchor.constraint(equalToConstant: 22),
-        ])
     }
 
     override func updateTrackingAreas() {
@@ -605,6 +600,8 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
         strokeColor.setStroke()
         path.lineWidth = 1
         path.stroke()
+
+        MenuBarIconStyle.draw(presentation, for: row.item, in: bounds)
     }
 
     // MARK: - Mouse & Dragging Source
