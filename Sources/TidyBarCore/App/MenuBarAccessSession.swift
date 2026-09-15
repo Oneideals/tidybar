@@ -20,8 +20,15 @@ final class MenuBarAccessSession {
         previousMenu = application.mainMenu
         previousPolicy = application.activationPolicy()
         let windows = application.windows.filter { $0.isVisible && $0.level == .normal }
-        guard windows.isEmpty || windows.contains(where: \.isOnActiveSpace) else { return nil }
-        guard application.setActivationPolicy(.regular) else { return nil }
+        if !windows.isEmpty && !windows.contains(where: \.isOnActiveSpace) {
+            for w in windows {
+                w.collectionBehavior.insert(.moveToActiveSpace)
+                w.orderFrontRegardless()
+            }
+        }
+        if application.activationPolicy() != .regular {
+            _ = application.setActivationPolicy(.regular)
+        }
         let menu = NSMenu()
         let appItem = NSMenuItem()
         appItem.submenu = NSMenu()
@@ -57,8 +64,13 @@ final class MenuBarAccessSession {
     }
 
     func cancel() {
+        guard !isCancelled else { return }
         isCancelled = true
         if !activationStarted { finishPreparation() }
+        if application.activationPolicy() != previousPolicy {
+            application.setActivationPolicy(previousPolicy)
+        }
+        application.mainMenu = previousMenu
     }
 
     func end() {
