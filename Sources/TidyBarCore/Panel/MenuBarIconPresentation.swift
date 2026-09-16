@@ -22,19 +22,20 @@ public enum MenuBarIconStyle {
 
     /// 纯函数：由条目与位图查找结果决定呈现方式。
     /// 判定顺序固定：
-    /// 1. item.frame == .zero -> itemNotRunning
+    /// 判定顺序：
+    /// 1. bitmap != nil -> bitmap（只要有真实位图，无论是折叠收纳态还是后台项均优先展示真实截图）
     /// 2. !captureAuthorized -> captureNotAuthorized
-    /// 3. bitmap != nil -> bitmap
+    /// 3. item.frame == .zero -> itemNotRunning
     /// 4. 否则 -> notCapturedYet
     public static func presentation(for item: ManagedItem, bitmap: CGImage?, captureAuthorized: Bool) -> IconPresentation {
-        if item.frame == .zero {
-            return .placeholder(reason: .itemNotRunning)
+        if let bitmap {
+            return .bitmap(bitmap)
         }
         if !captureAuthorized {
             return .placeholder(reason: .captureNotAuthorized)
         }
-        if let bitmap {
-            return .bitmap(bitmap)
+        if item.frame == .zero {
+            return .placeholder(reason: .itemNotRunning)
         }
         return .placeholder(reason: .notCapturedYet)
     }
@@ -66,15 +67,15 @@ public enum MenuBarIconStyle {
         case .bitmap(let image):
             let size = CGSize(width: image.width, height: image.height)
             let nsImage = NSImage(cgImage: image, size: size)
+            NSGraphicsContext.saveGraphicsState()
+            let clip = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+            clip.addClip()
             nsImage.draw(in: rect)
+            NSGraphicsContext.restoreGraphicsState()
 
         case .placeholder:
-            let isDark = NSAppearance.currentDrawing().bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-
-            // 虚线圆角框
-            let strokeColor = isDark
-                ? NSColor.white.withAlphaComponent(0.25)
-                : NSColor.black.withAlphaComponent(0.20)
+            // 虚线圆角框（在暗色托盘中保持优雅可见度）
+            let strokeColor = NSColor.white.withAlphaComponent(0.28)
             let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: cornerRadius, yRadius: cornerRadius)
             path.lineWidth = 1.0
             let dashes: [CGFloat] = [3.0, 2.0]
@@ -94,9 +95,7 @@ public enum MenuBarIconStyle {
             }
 
             let font = NSFont.systemFont(ofSize: 11, weight: .medium)
-            let textColor = isDark
-                ? NSColor.white.withAlphaComponent(0.4)
-                : NSColor.black.withAlphaComponent(0.35)
+            let textColor = NSColor.white.withAlphaComponent(0.65)
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,
                 .foregroundColor: textColor

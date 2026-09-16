@@ -1069,8 +1069,18 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         controller.setMenuBarFolded(folded)
         applyMenuBarFoldState()
         if !folded, panelController?.hasCaptureAuthorization == true {
-            panelController?.requestMissingBitmaps(for: controller.drawerItems) { [weak self] in
-                self?.settingsWindow?.refresh()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                guard let self, let panel = self.panelController else { return }
+                let reader = self.services.reader
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let live = reader.discoverItems()
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        panel.prewarmBitmaps(for: live.filter { $0.frame.width > 0 && $0.centerX > 0 }, isValid: { true }) { [weak self] in
+                            self?.settingsWindow?.refresh()
+                        }
+                    }
+                }
             }
         }
     }
@@ -1111,7 +1121,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 window.ignoresMouseEvents = true
             }
         }
-        alwaysHiddenSeparator?.button?.title = ""
+        alwaysHiddenSeparator?.button?.title = Self.alwaysHiddenDividerGlyph
         alwaysHiddenSeparator?.button?.target = nil
         alwaysHiddenSeparator?.button?.action = nil
 
@@ -1128,7 +1138,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 window.ignoresMouseEvents = true
             }
         }
-        separator?.button?.title = ""
+        separator?.button?.title = Self.dividerGlyph
         separator?.button?.target = nil
         separator?.button?.action = nil
 
@@ -1147,11 +1157,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(Double(togglePosInt) + 1.0, forKey: "NSStatusItem Preferred Position tidybar_separator")
             UserDefaults.standard.synchronize()
         }
-        for (name, _) in [("tidybar_separator", Self.dividerGlyph),
+        for (name, glyph) in [("tidybar_separator", Self.dividerGlyph),
                           ("tidybar_always_hidden_separator", Self.alwaysHiddenDividerGlyph)] {
             let divider = NSStatusBar.system.statusItem(withLength: 0)
             divider.autosaveName = name
-            divider.button?.title = ""
+            divider.button?.title = glyph
             divider.button?.target = nil
             divider.button?.action = nil
             divider.button?.window?.ignoresMouseEvents = true
@@ -1177,12 +1187,21 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             setupDividers()
             let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
             let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
-            dividerConstraints["tidybar_always_hidden_separator"]?.isActive = true
-            alwaysHiddenSeparator?.button?.title = Self.alwaysHiddenDividerGlyph
+            dividerConstraints["tidybar_always_hidden_separator"]?.isActive = false
             alwaysHiddenSeparator?.length = 8
-            dividerConstraints["tidybar_separator"]?.isActive = true
-            separator?.button?.title = Self.dividerGlyph
+            if let window = alwaysHiddenSeparator?.button?.window {
+                window.setContentSize(CGSize(width: 8, height: window.frame.height))
+                window.ignoresMouseEvents = true
+            }
+            alwaysHiddenSeparator?.button?.title = Self.alwaysHiddenDividerGlyph
+
+            dividerConstraints["tidybar_separator"]?.isActive = false
             separator?.length = 8
+            if let window = separator?.button?.window {
+                window.setContentSize(CGSize(width: 8, height: window.frame.height))
+                window.ignoresMouseEvents = true
+            }
+            separator?.button?.title = Self.dividerGlyph
         }
     }
 
@@ -1267,6 +1286,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             if isCurrentLayoutCorrectlyPartitioned(from: live) {
                 hasPerformedInitialFold = true
                 lastLayoutError = nil
+                controller.reportPhysicalLayout(.idle)
                 applyMenuBarFoldState()
                 fprint("整理预检：菜单栏已满足分区规则，无需缩回推杆与搬运图标")
                 return
@@ -1488,6 +1508,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             if self.isMenuBarFolded {
                 self.captureSweep?.run(items: allItems) { [weak self] in
                     self?.settingsWindow?.refresh()
+                }
+            } else {
+                let reader = self.services.reader
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let live = reader.discoverItems()
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, let panel = self.panelController else { return }
+                        panel.prewarmBitmaps(for: live.filter { $0.frame.width > 0 && $0.centerX > 0 }, isValid: { true }) { [weak self] in
+                            self?.settingsWindow?.refresh()
+                        }
+                    }
                 }
             }
         }

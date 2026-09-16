@@ -104,7 +104,9 @@ public final class MenuBarArrangement {
                 let hasToggle = physicalIDs.contains(controls.toggle)
                     || physical.contains(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "☰" || $0.title == "▶" || $0.title == "◀") })
                 let hasLeft = physicalIDs.contains(controls.leftDivider)
+                    || physical.contains(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "┆" || $0.id.contains("always_hidden")) })
                 let hasRight = physicalIDs.contains(controls.rightDivider)
+                    || physical.contains(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "│" || $0.id.contains("separator")) })
                 guard hasToggle && hasLeft && hasRight else {
                     if ProcessInfo.processInfo.systemUptime < deadline {
                         Thread.sleep(forTimeInterval: 0.05)
@@ -112,7 +114,12 @@ public final class MenuBarArrangement {
                     }
                     throw Failure.controlsUnavailable
                 }
-                let managed = Set(physical.filter { !$0.isSystemOwned && !controls.ids.contains($0.id) }.map(\.id))
+                let foundLeft = physical.first(where: { $0.id == controls.leftDivider })
+                    ?? physical.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "┆" || $0.id.contains("always_hidden")) })
+                let foundRight = physical.first(where: { $0.id == controls.rightDivider })
+                    ?? physical.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "│" || $0.id.contains("separator")) })
+                let currentControlIDs = Set([foundLeft?.id, foundRight?.id, controls.leftDivider, controls.rightDivider, controls.toggle].compactMap { $0 })
+                let managed = Set(physical.filter { !$0.isSystemOwned && !currentControlIDs.contains($0.id) && $0.ownerBundleID != "local.tidybar.app" && $0.ownerBundleID != Bundle.main.bundleIdentifier }.map(\.id))
                 guard managed == expectedItems else {
                     if ProcessInfo.processInfo.systemUptime < deadline {
                         Thread.sleep(forTimeInterval: 0.05)
@@ -130,7 +137,7 @@ public final class MenuBarArrangement {
                     throw Failure.unsupportedDisplayLayout
                 }
 
-                let itemsToCheck = physical.filter({ !$0.isSystemOwned || controls.ids.contains($0.id) || $0.id == toggle.id })
+                let itemsToCheck = physical.filter({ !$0.isSystemOwned || currentControlIDs.contains($0.id) || $0.id == toggle.id })
                 let allOnScreen = itemsToCheck.allSatisfy {
                     ScreenCoordinateSpace.isWithinMenuBar($0.frame, screen: screen)
                 }
@@ -149,17 +156,15 @@ public final class MenuBarArrangement {
             }
         }
 
-        func desiredOrder(for items: [ManagedItem], toggleID: String) -> [String] {
-            let effectiveControls = DividerGeometry.Controls(leftDivider: controls.leftDivider, rightDivider: controls.rightDivider, toggle: toggleID)
+        func desiredOrder(for items: [ManagedItem], controls: DividerGeometry.Controls) -> [String] {
             return restoreSavedOrder
-                ? DividerGeometry.arrangementOrder(items: items, layout: layout, leftDivider: effectiveControls.leftDivider,
-                    rightDivider: effectiveControls.rightDivider, toggle: effectiveControls.toggle, defaultZone: defaultZone)
-                : DividerGeometry.foldingOrder(items: items, layout: layout, controls: effectiveControls, defaultZone: defaultZone)
+                ? DividerGeometry.arrangementOrder(items: items, layout: layout, leftDivider: controls.leftDivider,
+                    rightDivider: controls.rightDivider, toggle: controls.toggle, defaultZone: defaultZone)
+                : DividerGeometry.foldingOrder(items: items, layout: layout, controls: controls, defaultZone: defaultZone)
         }
-        func disorder(of items: [ManagedItem], toggleID: String) -> Int {
-            let effectiveControls = DividerGeometry.Controls(leftDivider: controls.leftDivider, rightDivider: controls.rightDivider, toggle: toggleID)
-            return restoreSavedOrder ? DividerGeometry.orderDisorder(items: items, desiredOrder: desiredOrder(for: items, toggleID: toggleID))
-                : DividerGeometry.partitionDisorder(items: items, layout: layout, controls: effectiveControls, defaultZone: defaultZone)
+        func disorder(of items: [ManagedItem], controls: DividerGeometry.Controls) -> Int {
+            return restoreSavedOrder ? DividerGeometry.orderDisorder(items: items, desiredOrder: desiredOrder(for: items, controls: controls))
+                : DividerGeometry.partitionDisorder(items: items, layout: layout, controls: controls, defaultZone: defaultZone)
         }
         let limit = max(12, (expectedItems.count + controls.ids.count) * 3)
         var lastMoveEnded = -TimeInterval.infinity
@@ -171,8 +176,14 @@ public final class MenuBarArrangement {
             let toggleID = current.first(where: { $0.id == controls.toggle })?.id
                 ?? current.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "☰" || $0.title == "▶" || $0.title == "◀") })?.id
                 ?? controls.toggle
-            let effectiveControls = DividerGeometry.Controls(leftDivider: controls.leftDivider, rightDivider: controls.rightDivider, toggle: toggleID)
-            let desired = desiredOrder(for: current, toggleID: toggleID)
+            let leftID = current.first(where: { $0.id == controls.leftDivider })?.id
+                ?? current.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "┆" || $0.id.contains("always_hidden")) })?.id
+                ?? controls.leftDivider
+            let rightID = current.first(where: { $0.id == controls.rightDivider })?.id
+                ?? current.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "│" || $0.id.contains("separator")) })?.id
+                ?? controls.rightDivider
+            let effectiveControls = DividerGeometry.Controls(leftDivider: leftID, rightDivider: rightID, toggle: toggleID)
+            let desired = desiredOrder(for: current, controls: effectiveControls)
             if restoreSavedOrder ? current.map(\.id) == desired
                 : DividerGeometry.isCorrectlyPartitioned(items: current, layout: layout, controls: effectiveControls, defaultZone: defaultZone) {
                 return raw
@@ -215,14 +226,18 @@ public final class MenuBarArrangement {
             if progress.isCancelled { throw Failure.cancelled }
 
             // 系统可能只完成一部分移动；必须改善全局分区，不能靠同区图标互换反复运行。
-            let previousDisorder = disorder(of: current, toggleID: toggleID)
+            let previousDisorder = disorder(of: current, controls: effectiveControls)
             let deadline = ProcessInfo.processInfo.systemUptime + 0.8
             var advanced = false
             repeat {
                 if progress.isCancelled { throw Failure.cancelled }
                 guard cursor.isSessionInteractive else { throw Failure.sessionUnavailable }
                 let after = try readMenuBar().current
-                advanced = disorder(of: after, toggleID: toggleID) < previousDisorder
+                let afterLeftID = after.first(where: { $0.id == effectiveControls.leftDivider })?.id ?? leftID
+                let afterRightID = after.first(where: { $0.id == effectiveControls.rightDivider })?.id ?? rightID
+                let afterToggleID = after.first(where: { $0.id == effectiveControls.toggle })?.id ?? toggleID
+                let afterControls = DividerGeometry.Controls(leftDivider: afterLeftID, rightDivider: afterRightID, toggle: afterToggleID)
+                advanced = disorder(of: after, controls: afterControls) < previousDisorder
                 if advanced { break }
                 Thread.sleep(forTimeInterval: 0.04)
             } while ProcessInfo.processInfo.systemUptime < deadline

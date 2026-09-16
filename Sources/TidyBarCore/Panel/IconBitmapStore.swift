@@ -21,11 +21,21 @@ public final class IconBitmapStore {
 
     /// 坐标变化不改变截图归属；身份来源或多图标序号关系变化时才拒绝复用。
     public func image(for item: ManagedItem) -> CGImage? {
-        guard let slot = cache.value(for: item.id), slot.item.ownerBundleID == item.ownerBundleID,
-              slot.item.identitySource == item.identitySource else { return nil }
-        if item.identitySource == .ownerOrdinal,
-           (slot.item.ordinalInOwner != item.ordinalInOwner || slot.item.ownerItemCount != item.ownerItemCount) { return nil }
-        return slot.image
+        if let slot = cache.value(for: item.id), slot.item.ownerBundleID == item.ownerBundleID,
+           slot.item.identitySource == item.identitySource {
+            if item.identitySource == .ownerOrdinal,
+               (slot.item.ordinalInOwner != item.ordinalInOwner || slot.item.ownerItemCount != item.ownerItemCount) { return nil }
+            return slot.image
+        }
+        // 兜底查找：若持久化 ID 与实时 ID 因序号后缀（#0）存在细微差异，支持通过 ownerBundleID 复用位图
+        if let owner = item.ownerBundleID, !owner.isEmpty {
+            for id in knownIDs {
+                if let slot = cache.value(for: id), slot.item.ownerBundleID == owner {
+                    return slot.image
+                }
+            }
+        }
+        return nil
     }
 
     /// 缺少可复用截图时才请求捕获；被 LRU 淘汰的项也必须重新进入此集合。

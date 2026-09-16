@@ -94,9 +94,14 @@ public final class CaptureSweep {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.state == .running else { return }
                     let freshNeeded = live.filter { item in
-                        needed.contains { $0.id == item.id || ($0.ownerBundleID == item.ownerBundleID && $0.title == item.title) }
-                        && item.frame.width > 0 && item.centerX > 0
+                        guard item.frame.width > 0 && item.centerX > 0 else { return false }
+                        return needed.contains { n in
+                            n.id == item.id
+                            || (n.ownerBundleID != nil && n.ownerBundleID == item.ownerBundleID)
+                            || (!n.title.isEmpty && n.title == item.title)
+                        }
                     }
+                    NSLog("TIDYBAR-SWEEP: live items=%d, needed=%d, matched freshNeeded=%d", live.count, needed.count, freshNeeded.count)
 
                     if freshNeeded.isEmpty {
                         self.finishSweep()

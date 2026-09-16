@@ -372,7 +372,7 @@ private final class LaneShelfView: NSView {
         }
         emptyLabel.stringValue = emptyHint
         emptyLabel.font = NSFont.systemFont(ofSize: 11)
-        emptyLabel.textColor = .tertiaryLabelColor
+        emptyLabel.textColor = NSColor(white: 1.0, alpha: 0.45)
         emptyLabel.alignment = .center
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(emptyLabel)
@@ -397,9 +397,10 @@ private final class LaneShelfView: NSView {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
 
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        // 对标 Bartender 5：拟态真实菜单栏材质，暗色亚克力托盘消除位图与托盘色差，1:1 还原菜单栏质感
         let bgColor = isDark
-            ? NSColor(calibratedWhite: 0.15, alpha: 0.85)
-            : NSColor(calibratedWhite: 0.94, alpha: 0.85)
+            ? NSColor(calibratedWhite: 0.12, alpha: 0.95)
+            : NSColor(calibratedWhite: 0.16, alpha: 0.92)
         bgColor.setFill()
         path.fill()
 
@@ -409,8 +410,8 @@ private final class LaneShelfView: NSView {
             path.stroke()
         } else {
             let borderColor = isDark
-                ? NSColor(calibratedWhite: 0.28, alpha: 0.5)
-                : NSColor(calibratedWhite: 0.82, alpha: 0.8)
+                ? NSColor(white: 1.0, alpha: 0.14)
+                : NSColor(white: 1.0, alpha: 0.18)
             borderColor.setStroke()
             path.lineWidth = 1.0
             path.stroke()
@@ -585,18 +586,18 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
 
         let bgColor: NSColor
         if isPressed {
-            bgColor = NSColor.controlAccentColor.withAlphaComponent(0.35)
+            bgColor = NSColor.controlAccentColor.withAlphaComponent(0.4)
         } else if isHovered {
-            bgColor = NSColor.labelColor.withAlphaComponent(0.14)
+            bgColor = NSColor.white.withAlphaComponent(0.18)
         } else {
-            bgColor = NSColor.labelColor.withAlphaComponent(0.04)
+            bgColor = NSColor.white.withAlphaComponent(0.06)
         }
         bgColor.setFill()
         path.fill()
 
         let strokeColor = isHovered
-            ? NSColor.separatorColor.withAlphaComponent(0.4)
-            : NSColor.separatorColor.withAlphaComponent(0.1)
+            ? NSColor.white.withAlphaComponent(0.45)
+            : NSColor.white.withAlphaComponent(0.12)
         strokeColor.setStroke()
         path.lineWidth = 1
         path.stroke()

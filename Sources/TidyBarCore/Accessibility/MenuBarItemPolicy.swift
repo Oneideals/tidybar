@@ -123,8 +123,8 @@ public enum MenuBarItemPolicy {
             let bandBottom = screen.frame.maxY - screen.menuBarHeight - config.menuBarTolerance
             guard center.y >= bandBottom && center.y <= bandTop else { return false }
             if screen.frame.contains(center) { return true }
-            // 两条分隔符可能同时展开为屏幕宽度；保留被推到左侧的真实图标供搜索。
-            let hiddenSpan = 2 * max(2000, screen.frame.width + 200)
+            // 两条分隔符可能同时展开为超大跨度（10,000pt 推杆）；保留被推到左侧的真实图标供搜索与状态判断。
+            let hiddenSpan = max(25_000, 2 * max(2000, screen.frame.width + 200))
             if center.x >= screen.frame.minX - hiddenSpan && center.x <= screen.frame.maxX {
                 return true
             }
