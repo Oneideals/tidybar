@@ -986,15 +986,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         guard !terminationRequested else { return }
         guard let controller else { return }
         NSLog("TIDYBAR: handleDrawerItemClick item=\(item.id) capability=\(controller.capability) autoRightClick=\(autoRightClick)")
-        if controller.capability == .fullDrag {
-            panelController?.hide()
-            searchUI?.dismiss()
-            endHeldMenuAccess()
-            peekCoordinator?.peek(item: item, autoRightClick: autoRightClick)
-        } else {
-            panelController?.setActivationNotice("当前系统未确认拖拽接管，无法临时浮现")
-            requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: true)
-        }
+        panelController?.hide()
+        searchUI?.dismiss()
+        endHeldMenuAccess()
+        // 架构演进：优先走极速代理点击（推杆归零瞬间展开原生菜单栏 + 派发原生点击，0ms 拖拽等待，菜单关闭后自动恢复折叠，对标 Ice / Bartender 体验）
+        requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: true)
     }
 
     public func setPusherCollapsed(_ collapsed: Bool) {

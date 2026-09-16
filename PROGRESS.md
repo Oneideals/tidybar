@@ -1,7 +1,7 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-09-16T05:02:50Z (read-only projection)
-> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 208
+> **Last Updated:** 2026-09-16T07:50:18Z (read-only projection)
+> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 212
 
 ---
 
@@ -14,7 +14,8 @@
 - [DONE] (agy, 2026-09-15) 修复设置面板在整理开始和结束时被系统压入后台消失的问题
 - [DONE] (agy, 2026-09-15) 完成打包脚本优化，支持本地签名持久化TCC
 - [DONE] (agy, 2026-09-15) 完成三大关键根因修复（幕布截图命中验证、Peek拖拽AX穿透、冷启动折叠分区判定）并通过全量单测重新打包上线
-- [DONE] (agy, 2026-09-15) 组装打包最新dist/TidyBar.app，完善PeekCoordinator匹配鲁棒性与调试日志
+- [DONE] (agy, 2026-09-16) 抽屉图标异常渲染、重复时钟与越界主菜单切片问题彻底修复，全链路隔离系统项（SHA: 1f9606a）
+- [DONE] (agy, 2026-09-16) 推进技术路线演进：抽屉形态升级为水平流式胶囊副栏（Capsule Bar），消除冗余错误提示；交互响应升级为极速代理点击（Instant Proxy Click），推杆归零瞬间激活原生菜单，菜单关闭自动恢复折叠（对标 Ice / Bartender 体验）
 
 ## 📋 Open Issues & Backlog ([TODO])
 
@@ -26,15 +27,7 @@ _No active leases._
 
 ## 📝 Working Tree Changes
 
-- `.M` `Sources/TidyBarCore/App/CaptureSweep.swift`
-- `.M` `Sources/TidyBarCore/App/SettingsWindow.swift`
-- `.M` `Sources/TidyBarCore/App/TidyBarController.swift`
-- `.M` `Sources/TidyBarCore/Layout/LayoutEngine.swift`
-- `.M` `Sources/TidyBarCore/Model/ManagedItem.swift`
-- `.M` `Sources/TidyBarCore/Model/MenuBarLayout.swift`
-- `.M` `Sources/TidyBarCore/Panel/IconBitmapStore.swift`
-- `.M` `Sources/TidyBarCore/Panel/MenuBarIconPresentation.swift`
-- `.M` `Sources/TidyBarCore/Safety/LayoutJournal.swift`
+_Working tree is clean._
 
 ## 💡 Handoff Instructions for Next Agent
 

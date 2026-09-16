@@ -23,6 +23,7 @@ public final class TidyBarPanel: NSPanel {
         // 面板不显示在窗口切换器里
         isExcludedFromWindowsMenu = true
         acceptsMouseMovedEvents = true
+        animationBehavior = .none
     }
 
     override public var canBecomeKey: Bool { true }
@@ -174,11 +175,13 @@ public final class TidyBarPanelView: NSView {
     override public func draw(_ dirtyRect: NSRect) {
         let metrics = PanelGeometry.Metrics()
         let layout = contentLayout(maximumWidth: bounds.width)
+        let isSingleRow = bounds.height <= metrics.rowHeight + 8
+        let cornerRadius: CGFloat = isSingleRow ? min(16, bounds.height / 2) : 12
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: cornerRadius, yRadius: cornerRadius)
         let background = capturedBackground ?? NSColor.windowBackgroundColor.withAlphaComponent(0.96)
-        let path = NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10)
         background.setFill()
         path.fill()
-        let strokeColor = NSColor.separatorColor.withAlphaComponent(0.35)
+        let strokeColor = NSColor.separatorColor.withAlphaComponent(0.25)
         strokeColor.setStroke()
         path.lineWidth = 1
         path.stroke()
@@ -201,11 +204,11 @@ public final class TidyBarPanelView: NSView {
         for (index, item) in items.enumerated() {
             let rect = layout.itemFrames[index]
 
-            // 1. 彻底去除默认描边与背景方框，仅在鼠标悬停时呈现轻柔半透明高亮
+            // 悬停时呈现轻柔半透明高亮
             if hoveredIndex == index {
-                let hoverColor = NSColor.labelColor.withAlphaComponent(0.1)
+                let hoverColor = NSColor.labelColor.withAlphaComponent(0.08)
                 hoverColor.setFill()
-                NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+                NSBezierPath(roundedRect: rect.insetBy(dx: -1, dy: -1), xRadius: 6, yRadius: 6).fill()
             }
 
             let presentation = MenuBarIconStyle.presentation(
@@ -534,9 +537,8 @@ public final class TidyBarPanelController: NSObject {
         panelView.hasCaptureAuthorization = hasCaptureAuthorization
         panelView.images = cachedImages(for: panelView.items)
         panelView.emptyMessage = accessibility.isTrusted ? "暂无收纳图标" : "请授权辅助功能"
-        let missing = panelView.items.contains { panelView.images[$0.id] == nil }
-        panelView.missingImageMessage = missing
-            ? hasCaptureAuthorization ? "部分菜单栏缩略图暂不可用，请展开菜单栏后重试" : "请授权屏幕录制以显示真实菜单栏图标"
+        panelView.missingImageMessage = !hasCaptureAuthorization
+            ? "请授权屏幕录制以显示真实菜单栏图标"
             : nil
         panelView.onRequestCaptureAuthorization = !hasCaptureAuthorization ? onRequestCaptureAuthorization : nil
         guard let screen = lastScreen else { return }

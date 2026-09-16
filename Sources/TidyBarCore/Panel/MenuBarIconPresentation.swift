@@ -48,8 +48,8 @@ public enum MenuBarIconStyle {
             let imgHeight = max(1, CGFloat(image.height))
             let targetHeight = min(container.height, glyphHeight)
             let rawWidth = (imgWidth / imgHeight) * targetHeight
-            // 抽屉内图标必须限制最大宽度（不超过 36pt），防止超长条冲垮网格
-            let targetWidth = min(rawWidth, 36)
+            // 自适应宽度：单图标通常为 22pt，文字/监控长条（如网速、温度、日历）自适应延伸至上限 80pt，防止无限延展
+            let targetWidth = min(max(glyphHeight, rawWidth), 80)
             let x = container.midX - targetWidth / 2
             let y = container.midY - targetHeight / 2
             return CGRect(x: x, y: y, width: targetWidth, height: targetHeight)
@@ -74,11 +74,10 @@ public enum MenuBarIconStyle {
             clip.addClip()
             let imgWidth = CGFloat(image.width)
             let imgHeight = max(1, CGFloat(image.height))
-            let aspect = imgWidth / imgHeight
-            if aspect > 1.6 {
+            let naturalWidth = (imgWidth / imgHeight) * rect.height
+            if naturalWidth > rect.width + 1 {
                 // 超宽异形图居中裁剪绘制，防止横向被压缩挤扁
-                let drawWidth = rect.height * aspect
-                let drawRect = CGRect(x: rect.midX - drawWidth / 2, y: rect.minY, width: drawWidth, height: rect.height)
+                let drawRect = CGRect(x: rect.midX - naturalWidth / 2, y: rect.minY, width: naturalWidth, height: rect.height)
                 nsImage.draw(in: drawRect)
             } else {
                 nsImage.draw(in: rect)
