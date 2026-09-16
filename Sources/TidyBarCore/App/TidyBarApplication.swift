@@ -1188,18 +1188,18 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
             let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
             dividerConstraints["tidybar_always_hidden_separator"]?.isActive = false
-            alwaysHiddenSeparator?.length = 8
+            alwaysHiddenSeparator?.length = 22
             if let window = alwaysHiddenSeparator?.button?.window {
-                window.setContentSize(CGSize(width: 8, height: window.frame.height))
-                window.ignoresMouseEvents = true
+                window.setContentSize(CGSize(width: 22, height: window.frame.height))
+                window.ignoresMouseEvents = false
             }
             alwaysHiddenSeparator?.button?.title = Self.alwaysHiddenDividerGlyph
 
             dividerConstraints["tidybar_separator"]?.isActive = false
-            separator?.length = 8
+            separator?.length = 22
             if let window = separator?.button?.window {
-                window.setContentSize(CGSize(width: 8, height: window.frame.height))
-                window.ignoresMouseEvents = true
+                window.setContentSize(CGSize(width: 22, height: window.frame.height))
+                window.ignoresMouseEvents = false
             }
             separator?.button?.title = Self.dividerGlyph
         }
