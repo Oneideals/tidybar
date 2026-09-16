@@ -553,6 +553,93 @@ struct ReviewRegressionTests {
         expectEqual(scrollEvents, 1, "滚轮轻扫应成功调度外部 onScrollOrSwipe")
     }
 
+    func emptyBarClickPredicateFiltersNonEmptyAreas() throws {
+        let engine = LayoutEngine(layout: MenuBarLayout(), services: makeServices(mover: nil),
+                                  journal: LayoutJournal(directory: TestPaths.journalDirectory("predicate-filter")))
+        let controller = TidyBarController(
+            engine: engine,
+            reveal: RevealStateMachine(),
+            settings: AppSettings(revealTriggers: [.emptyBarClick]),
+            store: FakeSettingsStore()
+        )
+        var clicks = 0
+        controller.onEmptyBarClick = { clicks += 1 }
+
+        controller.emptySpacePredicate = { location in
+            location.x > 500
+        }
+
+        // x = 200 (属于左侧文字菜单区)，谓词返回 false，被拦截
+        controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 200, y: 1188)))
+        expectEqual(clicks, 0, "谓词拦截的点击不应触发 onEmptyBarClick")
+
+        // x = 600 (处于合法空白区)，谓词返回 true，正常放行
+        controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 600, y: 1188)))
+        expectEqual(clicks, 1, "谓词通过的点击应触发 onEmptyBarClick")
+    }
+
+    func applicationMenuGeometryEmptySpaceCalculations() throws {
+        let screenNotched = ScreenInfo(
+            identifier: 1,
+            frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+            menuBarHeight: 32,
+            notchWidth: 160,
+            isBuiltin: true
+        )
+        let screenExternalLeft = ScreenInfo(
+            identifier: 2,
+            frame: CGRect(x: -1920, y: 0, width: 1920, height: 1080),
+            menuBarHeight: 24,
+            notchWidth: nil,
+            isBuiltin: false
+        )
+
+        let statusItem = ManagedItem(
+            id: "com.apple.controlcenter",
+            ownerBundleID: "com.apple.controlcenter",
+            title: "Control Center",
+            frame: CGRect(x: 1300, y: 868, width: 30, height: 32)
+        )
+        let statusItems = [statusItem]
+
+        // 1. 刘海屏测试：
+        // a. 垂直超出菜单栏高度带 (y < 868 - 2)
+        expect(!ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+            point: CGPoint(x: 600, y: 850), screen: screenNotched, statusItems: statusItems
+        ), "垂直超出菜单栏高度带必须被拦截")
+
+        // b. 水平落在左侧文字菜单区 (x < screen.minX + 280)
+        expect(!ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+            point: CGPoint(x: 200, y: 884), screen: screenNotched, statusItems: statusItems
+        ), "左侧前台应用文字菜单区域必须被拦截")
+
+        // c. 硬件刘海区避让 (midX = 720, notchWidth = 160 -> 640...800)
+        expect(!ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+            point: CGPoint(x: 720, y: 884), screen: screenNotched, statusItems: statusItems
+        ), "硬件刘海正中区域必须被拦截")
+
+        // d. 右侧状态项区避让 (x >= 1300 - 4)
+        expect(!ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+            point: CGPoint(x: 1305, y: 884), screen: screenNotched, statusItems: statusItems
+        ), "右侧状态图标区域必须被拦截")
+
+        // e. 真实空白区放行 (x = 550, 介于文字菜单 280 与 刘海 640 之间)
+        expect(ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+            point: CGPoint(x: 550, y: 884), screen: screenNotched, statusItems: statusItems
+        ), "文字菜单与刘海之间的真实空白区必须放行")
+
+        // 2. 外接负坐标无刘海屏测试：
+        // a. 左侧文字菜单区 (x = -1800, 离 -1920 仅 120pt)
+        expect(!ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+            point: CGPoint(x: -1800, y: 1068), screen: screenExternalLeft, statusItems: []
+        ), "负坐标外接屏的左侧文字菜单必须被拦截")
+
+        // b. 中间有效空白区 (x = -1000, y = 1068, 菜单栏高 24 -> bottom 1056)
+        expect(ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+            point: CGPoint(x: -1000, y: 1068), screen: screenExternalLeft, statusItems: []
+        ), "负坐标外接屏的中间有效空白区必须放行")
+    }
+
     func completedRecoveryReceiptPreventsDuplicateReplay() throws {
         let directory = TestPaths.journalDirectory("completed-recovery")
         let journal = LayoutJournal(directory: directory)
@@ -959,6 +1046,8 @@ extension ReviewRegressionTests {
             TestCase("deferredRecoveryFollowsConfirmedRename", suite.deferredRecoveryFollowsConfirmedRename),
             TestCase("disabledEmptyBarTriggerDoesNotReveal", suite.disabledEmptyBarTriggerDoesNotReveal),
             TestCase("emptyBarClickAndScrollDispatchCustomActions", suite.emptyBarClickAndScrollDispatchCustomActions),
+            TestCase("emptyBarClickPredicateFiltersNonEmptyAreas", suite.emptyBarClickPredicateFiltersNonEmptyAreas),
+            TestCase("applicationMenuGeometryEmptySpaceCalculations", suite.applicationMenuGeometryEmptySpaceCalculations),
             TestCase("drawerAndMenuBarShareAutoHidePolicy", suite.drawerAndMenuBarShareAutoHidePolicy),
             TestCase("ordinaryDrawerExcludesAlwaysHiddenItems", suite.ordinaryDrawerExcludesAlwaysHiddenItems),
             TestCase("pointerTriggersAreRestrictedToTheMenuBar", suite.pointerTriggersAreRestrictedToTheMenuBar),

@@ -35,7 +35,10 @@ public final class EventEngine {
 
     public init(throttleInterval: TimeInterval = 0.2, menuBarFrames: @escaping () -> [CGRect] = {
         NSScreen.screens.map { screen in
-            let height = max(32, max(NSStatusBar.system.thickness, screen.safeAreaInsets.top) + 6)
+            let measuredHeight = max(0, screen.frame.maxY - screen.visibleFrame.maxY)
+            let height = screen.safeAreaInsets.top > 0
+                ? max(screen.safeAreaInsets.top, measuredHeight)
+                : (measuredHeight > 0 ? measuredHeight : (NSStatusBar.system.thickness > 0 ? NSStatusBar.system.thickness : 24))
             return CGRect(x: screen.frame.minX, y: screen.frame.maxY - height,
                           width: screen.frame.width, height: height)
         }

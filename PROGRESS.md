@@ -1,7 +1,7 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-09-16T08:00:00Z (read-only projection)
-> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 213
+> **Last Updated:** 2026-09-16T08:20:43Z (read-only projection)
+> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 215
 
 ---
 
@@ -26,7 +26,7 @@ _No active leases._
 
 ## 📝 Working Tree Changes
 
-_Working tree is clean._
+- `??` `Sources/TidyBarCore/Accessibility/ApplicationMenuGeometry.swift`
 
 ## 💡 Handoff Instructions for Next Agent
 

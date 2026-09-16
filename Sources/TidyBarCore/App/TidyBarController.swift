@@ -502,6 +502,8 @@ public final class TidyBarController {
 
     /// 空白处点击触发的外部动作（如原地折叠/展开或呼出抽屉）
     public var onEmptyBarClick: (() -> Void)?
+    /// 空白处点击校验谓词（返回 false 则拦截该事件，不予响应）
+    public var emptySpacePredicate: ((CGPoint) -> Bool)?
     /// 菜单栏滚轮/轻扫触发的外部动作
     public var onScrollOrSwipe: (() -> Void)?
 
@@ -514,6 +516,9 @@ public final class TidyBarController {
         }
         guard !isPhysicalLayoutBusy else { return }
         if event.trigger == .emptyBarClick {
+            if let emptySpacePredicate, !emptySpacePredicate(event.location) {
+                return
+            }
             // 若点击命中 TidyBar 自身折叠控制按钮，由 AppKit 按钮自身的 action（statusItemClicked）专门处理，
             // 绝不能当作「空白菜单栏点击」而抢先触发 toggleDrawer。
             // 注意：必须排除推杆/分隔符（它们是撑开推杆，推杆占据的空白区正是空白菜单栏的有效点击区）。

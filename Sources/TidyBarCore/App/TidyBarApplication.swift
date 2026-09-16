@@ -232,14 +232,39 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
         self.searchUI = search
 
+        barController.emptySpacePredicate = { [weak self, weak barController] location in
+            guard let self, let barController else { return true }
+            let screens = self.services.screens.screens
+            guard let screen = screens.first(where: { $0.frame.contains(location) }) ?? self.services.screens.primaryScreen else {
+                return false
+            }
+            return ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+                point: location,
+                screen: screen,
+                statusItems: barController.snapshot.items,
+                ignoredItemIDs: barController.dividerIDs
+            )
+        }
+
         barController.onEmptyBarClick = { [weak self] in
-            guard let self else { return }
+            guard let self, let barController = self.controller else { return }
             let mouseLoc = NSEvent.mouseLocation
             // 仅当点击直接落在折叠按钮自身窗口内时排除（交由按钮自身 action 响应）
             if let toggleWindow = self.statusItem?.button?.window, toggleWindow.frame.contains(mouseLoc) {
                 return
             }
-            switch self.controller?.settings.emptyBarClickAction ?? .toggleDrawer {
+            let screens = self.services.screens.screens
+            if let screen = screens.first(where: { $0.frame.contains(mouseLoc) }) ?? self.services.screens.primaryScreen {
+                guard ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+                    point: mouseLoc,
+                    screen: screen,
+                    statusItems: barController.snapshot.items,
+                    ignoredItemIDs: barController.dividerIDs
+                ) else {
+                    return
+                }
+            }
+            switch barController.settings.emptyBarClickAction {
             case .toggleFold:
                 self.toggleMenuBarFold()
             case .toggleDrawer:
@@ -746,7 +771,15 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             fprint("syncPanel: items=\(snapshot.items.count), drawerItems=\(drawerItems.count)")
             let mouseLoc = NSEvent.mouseLocation
             let currentScreen = services.screens.screens.first { $0.frame.contains(mouseLoc) } ?? services.screens.primaryScreen
-            let anchor = mouseLoc.x > 0 ? mouseLoc.x : (statusItem?.button?.window?.frame.midX ?? (currentScreen?.frame.midX ?? 800))
+            let anchor: CGFloat
+            if let screen = currentScreen, screen.frame.contains(mouseLoc) {
+                anchor = mouseLoc.x
+            } else if let toggleMidX = statusItem?.button?.window?.frame.midX,
+                      let currentScreen, currentScreen.frame.minX <= toggleMidX && toggleMidX <= currentScreen.frame.maxX {
+                anchor = toggleMidX
+            } else {
+                anchor = currentScreen?.frame.midX ?? 800
+            }
             panel.show(
                 items: drawerItems,
                 screen: currentScreen,
