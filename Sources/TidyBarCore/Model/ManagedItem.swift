@@ -130,6 +130,36 @@ public struct ManagedItem: Identifiable, Codable, Equatable, Sendable {
         }
         return id
     }
+
+    /// 判定指定的 Bundle ID 是否属于系统项（ControlCenter、系统UI等，不参与收纳与代点）
+    public static func isSystemOwned(bundleID: String?) -> Bool {
+        guard let bundleID, !bundleID.isEmpty else { return false }
+        let lower = bundleID.lowercased()
+        return lower.hasPrefix("com.apple.controlcenter")
+            || lower.hasPrefix("com.apple.systempreferences")
+            || lower.hasPrefix("com.apple.coreaudio")
+            || lower.hasPrefix("com.apple.textinputmenuagent")
+            || lower.hasPrefix("com.apple.systemuiserver")
+            || lower.hasPrefix("com.apple.menuextra")
+            || lower.hasPrefix("com.apple.notificationcenterui")
+            || lower.hasPrefix("com.apple.spotlight")
+            || lower.hasPrefix("com.apple.siri")
+            || lower == "com.apple.system"
+    }
+
+    /// 判定指定的 Item ID 是否属于系统项
+    public static func isSystemOwned(itemID: String) -> Bool {
+        if let owner = ownerFromID(itemID), isSystemOwned(bundleID: owner) {
+            return true
+        }
+        let lower = itemID.lowercased()
+        return lower.contains("com.apple.controlcenter")
+            || lower.contains("com.apple.textinputmenuagent")
+            || lower.contains("com.apple.systemuiserver")
+            || lower.contains("com.apple.menuextra")
+            || lower.contains("com.apple.spotlight")
+            || lower.contains("com.apple.siri")
+    }
 }
 
 extension ManagedItem {

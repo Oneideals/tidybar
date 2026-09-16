@@ -98,7 +98,14 @@ public final class LayoutEngine {
         ledger: IdentityLedgerStore? = nil,
         clock: @escaping () -> Date = Date.init
     ) {
-        self.layout = layout
+        var initialLayout = layout
+        for id in initialLayout.items(in: .hidden) where ManagedItem.isSystemOwned(itemID: id) {
+            initialLayout.move(itemID: id, to: .visible)
+        }
+        for id in initialLayout.items(in: .alwaysHidden) where ManagedItem.isSystemOwned(itemID: id) {
+            initialLayout.move(itemID: id, to: .visible)
+        }
+        self.layout = initialLayout
         self.services = services
         self.journal = journal
         self.sentinel = sentinel
@@ -168,6 +175,12 @@ public final class LayoutEngine {
     /// 比丢一次配置更难查，也更伤信任。
     public func fold(items discovered: [ManagedItem], newItemZone: MenuBarZone) {
         var adopted = layout
+        for id in adopted.items(in: .hidden) where ManagedItem.isSystemOwned(itemID: id) {
+            adopted.move(itemID: id, to: .visible)
+        }
+        for id in adopted.items(in: .alwaysHidden) where ManagedItem.isSystemOwned(itemID: id) {
+            adopted.move(itemID: id, to: .visible)
+        }
         let pending = pendingIntent
         let committed = journal.readCommittedLayout()
         var restoration = committed
@@ -385,6 +398,7 @@ public final class LayoutEngine {
 
     /// 把图标移入目标分区。targetX 由调用方（UI/策略层）给出；nil 表示当前环境不允许真实移动。
     public func apply(itemID: String, to zone: MenuBarZone, targetX: CGFloat?, targetPosition: Int? = nil) throws {
+        guard !ManagedItem.isSystemOwned(itemID: itemID) else { return }
         let prev = layout.zone(of: itemID).flatMap { z -> (MenuBarZone, Int)? in
             layout.items(in: z).firstIndex(of: itemID).map { (z, $0) }
         }

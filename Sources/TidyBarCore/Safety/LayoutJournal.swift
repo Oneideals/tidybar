@@ -113,8 +113,15 @@ public struct LayoutJournal: Sendable {
     }
 
     public func writeCommitted(_ layout: MenuBarLayout, completing intent: LayoutIntent? = nil) throws {
+        var cleanLayout = layout
+        for id in cleanLayout.items(in: .hidden) where ManagedItem.isSystemOwned(itemID: id) {
+            cleanLayout.move(itemID: id, to: .visible)
+        }
+        for id in cleanLayout.items(in: .alwaysHidden) where ManagedItem.isSystemOwned(itemID: id) {
+            cleanLayout.move(itemID: id, to: .visible)
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try encoder.encode(CommittedLayout(zones: layout.zones, completedIntentID: intent?.id))
+        try encoder.encode(CommittedLayout(zones: cleanLayout.zones, completedIntentID: intent?.id))
             .write(to: committedURL, options: .atomic)
     }
 
@@ -137,7 +144,14 @@ public struct LayoutJournal: Sendable {
 
     public func readCommittedLayout() -> MenuBarLayout? {
         guard let data = try? Data(contentsOf: committedURL) else { return nil }
-        return try? decoder.decode(MenuBarLayout.self, from: data)
+        guard var layout = try? decoder.decode(MenuBarLayout.self, from: data) else { return nil }
+        for id in layout.items(in: .hidden) where ManagedItem.isSystemOwned(itemID: id) {
+            layout.move(itemID: id, to: .visible)
+        }
+        for id in layout.items(in: .alwaysHidden) where ManagedItem.isSystemOwned(itemID: id) {
+            layout.move(itemID: id, to: .visible)
+        }
+        return layout
     }
 
     public func readPendingIntent() -> LayoutIntent? {

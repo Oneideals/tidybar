@@ -348,9 +348,18 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         // 卡片 2: 快捷键 & Spotlight 搜索
         let (card2, stack2) = createCardView(title: "快捷键与 Spotlight 搜索", subtitle: "随时随地一键唤醒菜单栏图标或居中搜索。")
 
+        let hotKeyRow = NSStackView()
+        hotKeyRow.orientation = .horizontal
+        hotKeyRow.spacing = 12
         hotKeyLine.stringValue = "• 呼出抽屉快捷键：" + hotKeyDescription
         hotKeyLine.font = NSFont.systemFont(ofSize: 12)
-        stack2.addArrangedSubview(hotKeyLine)
+        hotKeyRow.addArrangedSubview(hotKeyLine)
+
+        let testDrawerBtn = NSButton(title: "立即呼出收纳抽屉试试", target: self, action: #selector(testDrawer))
+        testDrawerBtn.bezelStyle = .rounded
+        testDrawerBtn.font = NSFont.systemFont(ofSize: 11)
+        hotKeyRow.addArrangedSubview(testDrawerBtn)
+        stack2.addArrangedSubview(hotKeyRow)
 
         let searchRow = NSStackView()
         searchRow.orientation = .horizontal
@@ -536,6 +545,10 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         ])
 
         return (card, bodyStack)
+    }
+
+    @objc private func testDrawer() {
+        controller.onToggleDrawer?()
     }
 
     @objc private func testSearchHUD() {

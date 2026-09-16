@@ -91,7 +91,14 @@ public struct MenuBarLayout: Codable, Equatable, Sendable {
     public static func folding(discovered itemIDs: [String], into layout: MenuBarLayout, defaultZone: MenuBarZone) -> MenuBarLayout {
         var next = layout
         for id in itemIDs where next.zone(of: id) == nil {
-            next.append(id, to: defaultZone)
+            let zone = ManagedItem.isSystemOwned(itemID: id) ? .visible : defaultZone
+            next.append(id, to: zone)
+        }
+        // 系统项（时钟、控制中心等）受系统原生保护，无论历史配置如何，必须强制保留在常显区 (.visible)
+        for id in itemIDs where ManagedItem.isSystemOwned(itemID: id) {
+            if next.zone(of: id) != .visible {
+                next.move(itemID: id, to: .visible)
+            }
         }
         // 已消失的图标（App 退出/卸载）不残留
         let discovered = Set(itemIDs)

@@ -128,11 +128,13 @@ public final class TidyBarController {
         guard !isDemoMode else { return [] }
         let available = assignableItems
         return presentationLayout.items(in: .hidden).compactMap { id in
+            if ManagedItem.isSystemOwned(itemID: id) { return nil }
             if let found = available.first(where: { $0.id == id }) {
                 return found
             }
             let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
                 ?? ManagedItem.ownerFromID(id)
+            if ManagedItem.isSystemOwned(bundleID: owner) { return nil }
             let title = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.observedTitle
                 ?? ManagedItem.titleFromID(id)
             return ManagedItem(
@@ -149,11 +151,13 @@ public final class TidyBarController {
         guard !isDemoMode else { return [] }
         let available = assignableItems
         return presentationLayout.items(in: .visible).compactMap { id in
+            if ManagedItem.isSystemOwned(itemID: id) { return nil }
             if let found = available.first(where: { $0.id == id }) {
                 return found
             }
             let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
                 ?? ManagedItem.ownerFromID(id)
+            if ManagedItem.isSystemOwned(bundleID: owner) { return nil }
             let title = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.observedTitle
                 ?? ManagedItem.titleFromID(id)
             return ManagedItem(

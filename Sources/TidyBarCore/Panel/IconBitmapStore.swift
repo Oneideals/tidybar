@@ -28,10 +28,17 @@ public final class IconBitmapStore {
             return slot.image
         }
         // 兜底查找：若持久化 ID 与实时 ID 因序号后缀（#0）存在细微差异，支持通过 ownerBundleID 复用位图
-        if let owner = item.ownerBundleID, !owner.isEmpty {
+        // 严格安全限制：系统项绝对禁止模糊匹配；多图标应用禁止跨序号/跨标题匹配，防止时钟或其它图标被错误共用
+        if let owner = item.ownerBundleID, !owner.isEmpty,
+           !item.isSystemOwned, !ManagedItem.isSystemOwned(bundleID: owner) {
             for id in knownIDs {
                 if let slot = cache.value(for: id), slot.item.ownerBundleID == owner {
-                    return slot.image
+                    let bothSingle = slot.item.ownerItemCount <= 1 && item.ownerItemCount <= 1
+                    let sameOrdinal = slot.item.ordinalInOwner == item.ordinalInOwner
+                    let sameTitle = !item.title.isEmpty && slot.item.title == item.title
+                    if bothSingle || sameOrdinal || sameTitle {
+                        return slot.image
+                    }
                 }
             }
         }

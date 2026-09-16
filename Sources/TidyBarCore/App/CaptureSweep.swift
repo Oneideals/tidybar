@@ -84,8 +84,8 @@ public final class CaptureSweep {
             }
         }
 
-        // 等待 120ms 布局消化，避免读到平移动画中的中间负坐标（借鉴 Ice 平稳过渡体验）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+        // 等待 280ms 布局彻底消化，避免读到平移动画中的中间坐标或挤压在左侧的坐标
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
             guard let self, self.state == .running else { return }
 
             let reader = self.services.reader
@@ -93,12 +93,19 @@ public final class CaptureSweep {
                 let live = reader.discoverItems()
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.state == .running else { return }
+                    // 屏幕左侧通常为前台应用的主菜单（Apple 菜单、应用名、文件、编辑、帮助等），状态栏图标绝不能落在左半区
+                    let minSafeX = screen.frame.minX + max(650, screen.frame.width * 0.45)
                     let freshNeeded = live.filter { item in
-                        guard item.frame.width > 0 && item.centerX > 0 else { return false }
+                        guard item.frame.width > 0 && item.frame.width <= 100 && item.frame.minX >= minSafeX else { return false }
+                        guard !item.isSystemOwned,
+                              !ManagedItem.isSystemOwned(bundleID: item.ownerBundleID),
+                              !ManagedItem.isSystemOwned(itemID: item.id) else { return false }
                         return needed.contains { n in
-                            n.id == item.id
-                            || (n.ownerBundleID != nil && n.ownerBundleID == item.ownerBundleID)
-                            || (!n.title.isEmpty && n.title == item.title)
+                            if n.id == item.id { return true }
+                            guard n.ownerBundleID == item.ownerBundleID else { return false }
+                            if n.ownerItemCount <= 1 && item.ownerItemCount <= 1 { return true }
+                            if n.ordinalInOwner == item.ordinalInOwner { return true }
+                            return !n.title.isEmpty && n.title == item.title
                         }
                     }
                     NSLog("TIDYBAR-SWEEP: live items=%d, needed=%d, matched freshNeeded=%d", live.count, needed.count, freshNeeded.count)
