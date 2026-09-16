@@ -163,10 +163,13 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     private func observedElement(for item: ManagedItem) -> AXUIElement? {
         bindingsLock.lock()
         defer { bindingsLock.unlock() }
-        guard let token = item.observationToken else { return nil }
-        return bindingSnapshots.lazy.flatMap({ $0 }).first {
-            $0.item.observationToken == token && $0.item == item
-        }?.element
+        if let token = item.observationToken,
+           let el = bindingSnapshots.lazy.flatMap({ $0 }).first(where: {
+               $0.item.observationToken == token && $0.item == item
+           })?.element {
+            return el
+        }
+        return bindings[item.id]?.element
     }
 
     public func currentFrame(of item: ManagedItem) -> CGRect? {

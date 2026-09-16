@@ -77,15 +77,15 @@ public final class CaptureSweep {
         // 升幕布后，将推杆归零（收起推杆）
         setPusherCollapsed(true)
 
-        // 挂 2.5 秒看门狗
-        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
+        // 挂 3 秒看门狗
+        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.abortSweep()
             }
         }
 
-        // 等待 60ms 布局消化，避免读到屏外负坐标
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+        // 等待 120ms 布局消化，避免读到平移动画中的中间负坐标（借鉴 Ice 平稳过渡体验）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
             guard let self, self.state == .running else { return }
 
             let reader = self.services.reader

@@ -369,7 +369,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             sessions.addObserver(forName: .init("AppleInterfaceThemeChangedNotification"), object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let controller = self.controller else { return }
-                    self.captureSweep?.run(items: controller.drawerItems) { [weak self] in
+                    self.captureSweep?.run(items: controller.drawerItems + controller.visibleItems) { [weak self] in
                         self?.settingsWindow?.refresh()
                     }
                 }
@@ -715,7 +715,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 self.evaluateAutomaticRules()
                 self.settingsWindow?.refresh()
                 if self.isMenuBarFolded {
-                    self.captureSweep?.run(items: controller.drawerItems) { [weak self] in
+                    self.captureSweep?.run(items: controller.drawerItems + controller.visibleItems) { [weak self] in
                         self?.settingsWindow?.refresh()
                     }
                 }
@@ -1479,6 +1479,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 将截图缓存接入设置面板，确保图标风格与菜单栏/抽屉一致
         settingsWindow?.imageProvider = { [weak self] item in
             self?.panelController?.cachedImages(for: [item])[item.id]
+        }
+        if let controller {
+            let allItems = controller.drawerItems + controller.visibleItems
+            self.panelController?.requestMissingBitmaps(for: controller.visibleItems) { [weak self] in
+                self?.settingsWindow?.refresh()
+            }
+            if self.isMenuBarFolded {
+                self.captureSweep?.run(items: allItems) { [weak self] in
+                    self?.settingsWindow?.refresh()
+                }
+            }
         }
         settingsWindow?.showAgain()
     }

@@ -417,10 +417,17 @@ public final class TidyBarPanelController: NSObject {
     }
 
     private func verifiedScreen(for item: ManagedItem, screens: [ScreenInfo], allowOcclusion: Bool = false) -> ScreenInfo? {
-        guard let screen = screens.first(where: { IconCaptureGeometry.isVisibleMenuBarFrame(item.frame, on: $0) }),
-              reader.currentFrame(of: item) == item.frame else { return nil }
-        if allowOcclusion { return screen }
-        guard reader.hitTest(expected: item, at: CGPoint(x: item.centerX, y: item.frame.midY)) == .verified else { return nil }
+        guard let screen = screens.first(where: { IconCaptureGeometry.isVisibleMenuBarFrame(item.frame, on: $0) }) else { return nil }
+        if !allowOcclusion {
+            if let current = reader.currentFrame(of: item) {
+                let dx = abs(current.origin.x - item.frame.origin.x)
+                let dy = abs(current.origin.y - item.frame.origin.y)
+                let dw = abs(current.width - item.frame.width)
+                let dh = abs(current.height - item.frame.height)
+                if dx > 2 || dy > 2 || dw > 2 || dh > 2 { return nil }
+            }
+            guard reader.hitTest(expected: item, at: CGPoint(x: item.centerX, y: item.frame.midY)) == .verified else { return nil }
+        }
         return screen
     }
 
@@ -467,10 +474,11 @@ public final class TidyBarPanelController: NSObject {
             return
         }
         let screens = screenObserver.screens
+        let allowOcclusion = !request.excludingWindowNumbers.isEmpty
         var groups: [CGDirectDisplayID: (screen: ScreenInfo, items: [ManagedItem])] = [:]
         for item in request.items {
             attemptedFrames[item.id] = item.frame
-            guard let screen = verifiedScreen(for: item, screens: screens) else { rejected.insert(item.id); continue }
+            guard let screen = verifiedScreen(for: item, screens: screens, allowOcclusion: allowOcclusion) else { rejected.insert(item.id); continue }
             if groups[screen.identifier] == nil { groups[screen.identifier] = (screen, []) }
             groups[screen.identifier]?.items.append(item)
         }

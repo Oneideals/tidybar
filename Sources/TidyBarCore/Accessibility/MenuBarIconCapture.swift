@@ -165,6 +165,13 @@ public final class ScreenCaptureKitIconCapturer: MenuBarIconCapturing {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
                 completion(.success(image))
             } catch {
+                // 借鉴 Ice 架构设计：若 ScreenCaptureKit 异步服务异常，降级尝试 CGWindowListCreateImage 兜底
+                let displayBounds = CGDisplayBounds(displayID)
+                let cgRect = CGRect(x: frame.minX, y: displayBounds.height - frame.maxY, width: frame.width, height: frame.height)
+                if let cgImage = CGWindowListCreateImage(cgRect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution, .boundsIgnoreFraming]) {
+                    completion(.success(cgImage))
+                    return
+                }
                 completion(.failure(.failed(String(describing: error))))
             }
         }
