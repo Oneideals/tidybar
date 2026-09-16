@@ -81,7 +81,7 @@ public final class MenuBarClickRelay {
         }
         func pointerIsAt(_ point: CGPoint) -> Bool {
             let current = io.cursor.currentLocation
-            return hypot(current.x - point.x, current.y - point.y) <= 6
+            return hypot(current.x - point.x, current.y - point.y) <= 20
         }
         func buttonsReleased() -> Bool { !io.cursor.isPrimaryButtonPressed && !io.cursor.isSecondaryButtonPressed }
         func requestIsCurrent() -> Bool {
@@ -133,13 +133,13 @@ public final class MenuBarClickRelay {
               let up = event(secondary ? .rightMouseUp : .leftMouseUp) else { return .failed(code: -1) }
         guard io.send(move) else { return .failed(code: -1) }
         if settle > 0 { Thread.sleep(forTimeInterval: settle) }
-        guard sessionIsCurrent(), buttonsReleased(), pointerIsAt(point) else { return .interrupted }
+        guard sessionIsCurrent(), buttonsReleased() else { return .interrupted }
         guard io.reader.currentFrame(of: item) == frame,
               io.reader.hitTest(expected: item, at: point) == .verified else { return .notInteractable }
-        guard sessionIsCurrent(), buttonsReleased(), pointerIsAt(point) else { return .interrupted }
+        guard sessionIsCurrent(), buttonsReleased() else { return .interrupted }
         var owesMouseUp = true
         func release() -> Bool {
-            if !sessionIsCurrent() || !pointerIsAt(point) {
+            if !sessionIsCurrent() {
                 up.location = CGDragEventPoster.cgPoint(for: io.cursor.currentLocation,
                     primaryScreenHeight: CGDisplayBounds(CGMainDisplayID()).height)
             }

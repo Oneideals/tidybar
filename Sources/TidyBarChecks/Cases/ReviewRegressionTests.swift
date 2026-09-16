@@ -579,6 +579,9 @@ struct ReviewRegressionTests {
     }
 
     func applicationMenuGeometryEmptySpaceCalculations() throws {
+        ApplicationMenuGeometry.menuWidthProvider = { nil }
+        defer { ApplicationMenuGeometry.menuWidthProvider = nil }
+
         let screenNotched = ScreenInfo(
             identifier: 1,
             frame: CGRect(x: 0, y: 0, width: 1440, height: 900),

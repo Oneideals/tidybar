@@ -791,7 +791,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     @discardableResult
-    private func requestProxyClick(_ item: ManagedItem, button: MenuBarClickRelay.Button, unfold: Bool = true) -> ActivationOutcome {
+    private func requestProxyClick(
+        _ item: ManagedItem,
+        button: MenuBarClickRelay.Button,
+        unfold: Bool = true,
+        completionHandler: (@MainActor (ActivationOutcome) -> Void)? = nil
+    ) -> ActivationOutcome {
         guard let controller, !terminationRequested, !isReconcilingLayout, !isRelayingClick,
               !controller.isPhysicalLayoutBusy else { return .busy }
         guard services.accessibility.isTrusted, services.cursor.isSessionInteractive else { return .interrupted }
@@ -809,37 +814,29 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             controller.setMenuBarFolded(false)
             controller.setInteractionActive(true)
         }
-        guard let access = MenuBarAccessSession() else {
-            finishProxyClick(.notInteractable, returnToDrawer: returnToDrawer, unfold: unfold)
-            return .notInteractable
-        }
-        menuBarAccess = access
         let relay = clickRelay ?? MenuBarClickRelay(reader: services.reader, cursor: services.cursor)
         clickRelay = relay
-        access.whenPrepared { [weak self] in
-            guard let self, !self.terminationRequested else { return }
-            guard !access.isCancelled else {
-                self.finishProxyClick(.interrupted, returnToDrawer: returnToDrawer, unfold: unfold)
-                return
-            }
-            let started = relay.start(request, screens: self.services.screens.screens,
-                onActivation: { [weak self] outcome in
-                    guard self?.terminationRequested == false else { return }
-                    self?.controller?.reportActivation(itemID: item.id, outcome: outcome)
-                    if !unfold {
-                        self?.peekCoordinator?.noteInteraction()
-                    }
-                }, completion: { [weak self] outcome in
-                    guard let self, !self.terminationRequested else { return }
-                    if !outcome.countsAsPressed || outcome == .menuObservationUnavailable {
-                        self.controller?.reportActivation(itemID: item.id, outcome: outcome)
-                    }
-                    if !unfold {
-                        self.peekCoordinator?.noteInteraction()
-                    }
-                    self.finishProxyClick(outcome, returnToDrawer: returnToDrawer, unfold: unfold)
-                })
-            if !started { self.finishProxyClick(.busy, returnToDrawer: returnToDrawer, unfold: unfold) }
+        let started = relay.start(request, screens: self.services.screens.screens,
+            onActivation: { [weak self] outcome in
+                guard self?.terminationRequested == false else { return }
+                self?.controller?.reportActivation(itemID: item.id, outcome: outcome)
+                if !unfold {
+                    self?.peekCoordinator?.noteInteraction()
+                }
+            }, completion: { [weak self] outcome in
+                guard let self, !self.terminationRequested else { return }
+                if !outcome.countsAsPressed || outcome == .menuObservationUnavailable {
+                    self.controller?.reportActivation(itemID: item.id, outcome: outcome)
+                }
+                if !unfold {
+                    self.peekCoordinator?.noteInteraction()
+                }
+                self.finishProxyClick(outcome, returnToDrawer: returnToDrawer, unfold: unfold)
+                completionHandler?(outcome)
+            })
+        if !started {
+            self.finishProxyClick(.busy, returnToDrawer: returnToDrawer, unfold: unfold)
+            completionHandler?(.busy)
         }
         return .queued
     }
@@ -860,8 +857,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 controller?.conceal()
             } else if !outcome.countsAsPressed {
                 controller?.conceal()
-                panelController?.setActivationNotice(outcome.userReadable)
-                if returnToDrawer && services.cursor.isSessionInteractive { controller?.toggleDrawer() }
+                let canFallbackToPeek = (outcome == .notInteractable || outcome == .itemNotFound) &&
+                    (controller?.capability == .fullDrag) && (peekCoordinator?.state == .idle)
+                if !canFallbackToPeek {
+                    panelController?.setActivationNotice(outcome.userReadable)
+                    if returnToDrawer && services.cursor.isSessionInteractive { controller?.toggleDrawer() }
+                }
             } else {
                 // 只确认发送，尚未观察到菜单时不宣称成功；留下展开的原生图标供直接操作。
                 controller?.noteInteraction()
@@ -1022,8 +1023,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         panelController?.hide()
         searchUI?.dismiss()
         endHeldMenuAccess()
-        // 架构演进：优先走极速代理点击（推杆归零瞬间展开原生菜单栏 + 派发原生点击，0ms 拖拽等待，菜单关闭后自动恢复折叠，对标 Ice / Bartender 体验）
-        requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: true)
+        // 核心协同架构：优先走 0ms 原位极速代理点击；
+        // 若在单刘海屏等窄小安全区下展开后撞入硬件刘海盲区导致不可操作（.notInteractable），自动平滑降级由 PeekCoordinator 执行单项浮现至常显区安全位
+        requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: true) { [weak self] outcome in
+            guard let self else { return }
+            if (outcome == .notInteractable || outcome == .itemNotFound),
+               self.controller?.capability == .fullDrag,
+               self.peekCoordinator?.state == .idle {
+                NSLog("TIDYBAR: 代理点击受刘海硬件遮挡或溢出，自动无缝启动 PeekCoordinator 常显区单项浮现 item=\(item.id)")
+                self.peekCoordinator?.peek(item: item, autoRightClick: autoRightClick)
+            }
+        }
     }
 
     public func setPusherCollapsed(_ collapsed: Bool) {
