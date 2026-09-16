@@ -84,28 +84,66 @@ public final class CaptureSweep {
             }
         }
 
-        // 等待 280ms 布局彻底消化，避免读到平移动画中的中间坐标或挤压在左侧的坐标
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
+        // 等待 450ms 让 WindowServer 跨进程平移动画彻底完成，避免读到移动中的中间坐标产生错位切片
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self, self.state == .running else { return }
 
             let reader = self.services.reader
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let live = reader.discoverItems()
+                var live = reader.discoverItems()
+                // 双采样稳定校验：间隔 80ms 二次采样，确保所有图标平移动画彻底停止
+                Thread.sleep(forTimeInterval: 0.08)
+                let second = reader.discoverItems()
+                var maxDrift: CGFloat = 0
+                for item in second {
+                    if let prev = live.first(where: { $0.id == item.id }) {
+                        maxDrift = max(maxDrift, abs(item.frame.minX - prev.frame.minX))
+                    }
+                }
+                if maxDrift > 1.5 {
+                    // 若仍在滑动，再多等 120ms 直至完全静止
+                    Thread.sleep(forTimeInterval: 0.12)
+                    live = reader.discoverItems()
+                } else {
+                    live = second
+                }
+
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.state == .running else { return }
-                    // 屏幕左侧通常为前台应用的主菜单（Apple 菜单、应用名、文件、编辑、帮助等），状态栏图标绝不能落在左半区
-                    let minSafeX = screen.frame.minX + max(650, screen.frame.width * 0.45)
-                    let freshNeeded = live.filter { item in
-                        guard item.frame.width > 0 && item.frame.width <= 100 && item.frame.minX >= minSafeX else { return false }
+                    // 仅排除最左侧的  与应用名主菜单（220pt），绝不误过滤属于用户的合法状态栏图标（通常 >= 300pt）
+                    let minSafeX = screen.frame.minX + 220
+                    var freshNeeded: [ManagedItem] = []
+                    for item in live {
+                        guard item.frame.width > 0 && item.frame.width <= 250 && item.frame.minX >= minSafeX else { continue }
                         guard !item.isSystemOwned,
                               !ManagedItem.isSystemOwned(bundleID: item.ownerBundleID),
-                              !ManagedItem.isSystemOwned(itemID: item.id) else { return false }
-                        return needed.contains { n in
+                              !ManagedItem.isSystemOwned(itemID: item.id) else { continue }
+                        if let matched = needed.first(where: { n in
                             if n.id == item.id { return true }
                             guard n.ownerBundleID == item.ownerBundleID else { return false }
                             if n.ownerItemCount <= 1 && item.ownerItemCount <= 1 { return true }
                             if n.ordinalInOwner == item.ordinalInOwner { return true }
                             return !n.title.isEmpty && n.title == item.title
+                        }) {
+                            // 继承目标抽屉项的稳定 ID，确保截图直接对应抽屉渲染项
+                            let liveMapped = ManagedItem(
+                                id: matched.id,
+                                ownerBundleID: item.ownerBundleID,
+                                title: item.title,
+                                frame: item.frame,
+                                isSystemOwned: item.isSystemOwned,
+                                lastActivatedAt: item.lastActivatedAt,
+                                identitySource: item.identitySource,
+                                ordinalInOwner: item.ordinalInOwner,
+                                ownerItemCount: item.ownerItemCount
+                            )
+                            freshNeeded.append(liveMapped)
+                            if item.id != matched.id {
+                                freshNeeded.append(item)
+                            }
+                        } else {
+                            // 即使没有在 needed 中强匹配，也为合法 live 项预热位图，防患未然
+                            freshNeeded.append(item)
                         }
                     }
                     NSLog("TIDYBAR-SWEEP: live items=%d, needed=%d, matched freshNeeded=%d", live.count, needed.count, freshNeeded.count)

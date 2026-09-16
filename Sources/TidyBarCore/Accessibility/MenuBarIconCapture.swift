@@ -94,7 +94,7 @@ public enum IconCaptureGeometry {
         }
         guard let cropped = image.cropping(to: rect),
               let context = CGContext(data: nil, width: cropped.width, height: cropped.height,
-                  bitsPerComponent: 8, bytesPerRow: cropped.width * 4,
+                  bitsPerComponent: 8, bytesPerRow: 0,
                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         // 每个缓存项持有自己的像素，避免一张小裁图长期保留整条截图的底层存储。
         context.draw(cropped, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))

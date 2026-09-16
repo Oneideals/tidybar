@@ -1029,6 +1029,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     public func setPusherCollapsed(_ collapsed: Bool) {
         let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
         let separatorConstraint = dividerConstraints["tidybar_separator"]
+        let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
+        let alwaysHiddenConstraint = dividerConstraints["tidybar_always_hidden_separator"]
         if collapsed {
             separator?.length = 0
             separatorConstraint?.isActive = false
@@ -1036,19 +1038,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 window.setContentSize(CGSize(width: 0, height: window.frame.height))
                 window.ignoresMouseEvents = true
             }
-        } else {
-            if isMenuBarFolded {
-                separatorConstraint?.isActive = true
-                separator?.length = Self.expandedPushLength
-                separator?.button?.window?.ignoresMouseEvents = true
-            } else {
-                separator?.length = 0
-                separatorConstraint?.isActive = false
-                if let window = separator?.button?.window {
-                    window.setContentSize(CGSize(width: 0, height: window.frame.height))
-                    window.ignoresMouseEvents = true
-                }
+            alwaysHiddenSeparator?.length = 0
+            alwaysHiddenConstraint?.isActive = false
+            if let ahWindow = alwaysHiddenSeparator?.button?.window {
+                ahWindow.setContentSize(CGSize(width: 0, height: ahWindow.frame.height))
+                ahWindow.ignoresMouseEvents = true
             }
+        } else {
+            applyMenuBarFoldState()
         }
     }
 
@@ -1098,11 +1095,25 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         controller.setMenuBarFolded(folded)
         applyMenuBarFoldState()
         if !folded, panelController?.hasCaptureAuthorization == true {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
                 guard let self, let panel = self.panelController else { return }
                 let reader = self.services.reader
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    let live = reader.discoverItems()
+                    var live = reader.discoverItems()
+                    Thread.sleep(forTimeInterval: 0.08)
+                    let second = reader.discoverItems()
+                    var maxDrift: CGFloat = 0
+                    for item in second {
+                        if let prev = live.first(where: { $0.id == item.id }) {
+                            maxDrift = max(maxDrift, abs(item.frame.minX - prev.frame.minX))
+                        }
+                    }
+                    if maxDrift > 1.5 {
+                        Thread.sleep(forTimeInterval: 0.12)
+                        live = reader.discoverItems()
+                    } else {
+                        live = second
+                    }
                     DispatchQueue.main.async { [weak self] in
                         guard let self else { return }
                         panel.prewarmBitmaps(for: live.filter { $0.frame.width > 0 && $0.centerX > 0 }, isValid: { true }) { [weak self] in
