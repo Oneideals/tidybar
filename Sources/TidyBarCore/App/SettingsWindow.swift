@@ -79,6 +79,11 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             controller?.reassignZone(itemID, to: zone) ?? false
         }
         overview.onZoneChanged = { [weak self] in self?.refresh() }
+        overview.onRestoreAlwaysHidden = { [weak self, weak controller] in
+            controller?.restoreAlwaysHiddenToHidden()
+            self?.overview.reportNotice("已成功将始终隐藏区的所有图标全部恢复至隐藏区！")
+            self?.refresh()
+        }
         buildLayout(hotKeyDescription: hotKeyDescription)
         selectTab(.layout)
         refresh()
@@ -413,7 +418,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         stack1.addArrangedSubview(askToggle)
         view.addSubview(card1)
 
-        let (card2, stack2) = createCardView(title: "收纳抽屉自动隐藏", subtitle: "设置鼠标离开抽屉后自动隐藏的延时时间。")
+        let (card2, stack2) = createCardView(title: "长显区域显示时间（临时浮现）", subtitle: "从收纳抽屉点击图标临时显示在长显区域后的停留时间，支持右键唤出菜单，超时无操作自动收回。")
         let rehideRow = NSStackView()
         rehideRow.orientation = .horizontal
         rehideRow.spacing = 10
@@ -563,8 +568,8 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         stylingToggle.state = controller.settings.stylingEnabled ? .on : .off
         rehideStepper.doubleValue = controller.settings.rehideDelay
         rehideValue.stringValue = controller.settings.rehideDelay == 0
-            ? "自动收起：从不"
-            : String(format: "自动收起：%.1fs", controller.settings.rehideDelay)
+            ? "长显显示：从不自动收起"
+            : String(format: "长显显示：%.1f 秒（无操作后收回）", controller.settings.rehideDelay)
 
         // 自然手势触发与动作状态同步
         emptyBarToggle.state = controller.settings.revealTriggers.contains(.emptyBarClick) ? .on : .off
@@ -724,6 +729,10 @@ public final class FirstRunWizardController: NSWindowController {
                 controller?.reassignZone(itemID, to: zone) ?? false
             }
             overviewInWizard.onZoneChanged = { [weak self] in self?.showStep() }
+            overviewInWizard.onRestoreAlwaysHidden = { [weak self, weak controller] in
+                controller?.restoreAlwaysHiddenToHidden()
+                self?.showStep()
+            }
         }
         overviewInWizard.physicalLayoutState = controller.physicalLayoutState
         overviewInWizard.reload(rows: IconOverviewBuilder.rows(from: controller))

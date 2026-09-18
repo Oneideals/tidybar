@@ -121,10 +121,11 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     public func item(withID id: String) -> ManagedItem? {
         bindingsLock.lock()
         let owner = bindings[id]?.item.ownerBundleID
+            ?? bindings.first(where: { $0.key.caseInsensitiveCompare(id) == .orderedSame })?.value.item.ownerBundleID
         bindingsLock.unlock()
         // 缓存只提供归属提示；帧与元素仍从该进程重新读取，避免每一步再全机扫描。
-        return owner.map { discoverItems(owning: $0).first { $0.id == id } }
-            ?? discoverItems().first { $0.id == id }
+        return owner.map { discoverItems(owning: $0).first { $0.id.caseInsensitiveCompare(id) == .orderedSame } }
+            ?? discoverItems().first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
     }
 
     /// 只读某一个进程的图标。
@@ -169,7 +170,10 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
            })?.element {
             return el
         }
-        return bindings[item.id]?.element
+        if let direct = bindings[item.id]?.element {
+            return direct
+        }
+        return bindings.first(where: { $0.key.caseInsensitiveCompare(item.id) == .orderedSame })?.value.element
     }
 
     public func currentFrame(of item: ManagedItem) -> CGRect? {

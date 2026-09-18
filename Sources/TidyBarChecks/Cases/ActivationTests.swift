@@ -118,6 +118,60 @@ struct ActivationTests {
         expect(!journal.hasPendingIntent, "代点不是布局变更，不得写 pending")
         expectNil(journal.readCommittedLayout(), "代点不得改写已提交布局")
     }
+    /// 方案 A（虚拟代理图标模式）：浮现与回收全程推杆绝对不动，零全部展开
+    func proxyStatusItemPeekNeverCollapsesPusher() throws {
+        MainActor.assumeIsolated {
+            let (controller, reader) = makeController(activator: SpyActivator())
+            let services = SystemServices(
+                reader: reader,
+                mover: FakeMenuBarMover(),
+                cursor: FakeCursor(),
+                accessibility: FakeTrust(),
+                screens: FakeScreens(),
+                activator: SpyActivator()
+            )
+            var pusherCollapsedCalls = 0
+            var presentProxyCalls = 0
+            var dismissProxyCalls = 0
+
+            let targetItem = ManagedItem(
+                id: "com.test.a",
+                ownerBundleID: "com.test.a",
+                title: "Test A",
+                frame: CGRect(x: 100, y: 10, width: 24, height: 24)
+            )
+
+            let coordinator = PeekCoordinator(
+                services: services,
+                controller: controller,
+                setPusherCollapsed: { _ in
+                    pusherCollapsedCalls += 1
+                },
+                proxyClickRelay: { _, _ in },
+                presentProxy: { item, _ in
+                    presentProxyCalls += 1
+                    return CGRect(x: 500, y: 10, width: 30, height: 24)
+                },
+                dismissProxy: {
+                    dismissProxyCalls += 1
+                }
+            )
+
+            coordinator.peek(item: targetItem, autoRightClick: false)
+
+            expectEqual(coordinator.state, .presented(itemID: "com.test.a"), "方案 A 应直接进入 presented 状态")
+            expectEqual(pusherCollapsedCalls, 0, "方案 A 呈现时推杆绝不缩短，零全部展开")
+            expectEqual(presentProxyCalls, 1, "应调用 presentProxy 呈现代理状态项")
+            expectEqual(controller.peekedItemID, "com.test.a")
+
+            coordinator.rehide(item: targetItem)
+
+            expectEqual(coordinator.state, .idle, "收回后应回到 idle")
+            expectEqual(pusherCollapsedCalls, 0, "方案 A 收回时推杆同样绝不缩短")
+            expectEqual(dismissProxyCalls, 1, "应调用 dismissProxy 销毁代理状态项")
+            expectNil(controller.peekedItemID)
+        }
+    }
 }
 
 extension ActivationTests {
@@ -131,6 +185,7 @@ extension ActivationTests {
             TestCase("unconfirmedPressCountsAsPressed", suite.unconfirmedPressCountsAsPressed),
             TestCase("activatingAlwaysHiddenItemRevealsFirst", suite.activatingAlwaysHiddenItemRevealsFirst),
             TestCase("activationDoesNotTouchJournal", suite.activationDoesNotTouchJournal),
+            TestCase("proxyStatusItemPeekNeverCollapsesPusher", suite.proxyStatusItemPeekNeverCollapsesPusher),
         ]
     }
 }

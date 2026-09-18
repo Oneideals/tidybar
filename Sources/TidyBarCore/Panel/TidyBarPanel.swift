@@ -55,13 +55,14 @@ public final class TidyBarPanelView: NSView {
     private var capturedBackground: NSColor?
 
     /// 截图带着菜单栏底色；使用边角像素的中位色，使整条抽屉与图标背景保持一致。
+    /// 若大多数图标为纯净透明（WindowList 模式），则不施加染色，保留原生材质。
     private static func backgroundColor(in images: [CGImage]) -> NSColor? {
         let colors = images.flatMap { image -> [NSColor] in
             let bitmap = NSBitmapImageRep(cgImage: image)
             return [(0, 0), (image.width - 1, 0), (0, image.height - 1), (image.width - 1, image.height - 1)]
                 .compactMap { x, y in bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) }
         }.filter { $0.alphaComponent > 0.9 }
-        guard !colors.isEmpty else { return nil }
+        guard colors.count >= max(2, images.count / 2) else { return nil }
         func median(_ component: (NSColor) -> CGFloat) -> CGFloat { colors.map(component).sorted()[colors.count / 2] }
         return NSColor(deviceRed: median(\.redComponent), green: median(\.greenComponent),
                        blue: median(\.blueComponent), alpha: 1)
@@ -233,9 +234,31 @@ public final class TidyBarPanelView: NSView {
         return CGRect(x: x, y: y, width: w, height: h)
     }
 
+    override public func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+
+    private func eventLocalPoint(with event: NSEvent) -> CGPoint {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        if bounds.contains(viewPoint) {
+            return viewPoint
+        }
+        if let window = self.window {
+            let screenPoint = NSEvent.mouseLocation
+            let windowPoint = window.convertPoint(fromScreen: screenPoint)
+            let fallbackPoint = convert(windowPoint, from: nil)
+            if bounds.contains(fallbackPoint) {
+                return fallbackPoint
+            }
+        }
+        return viewPoint
+    }
+
     override public func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        pressedItemID = item(at: point)?.id
+        let point = eventLocalPoint(with: event)
+        let hit = item(at: point)
+        fprint("TidyBarPanelView: mouseDown at \(point), hit=\(hit?.id ?? "none")")
+        pressedItemID = hit?.id
         pressedAuthorizationNotice = onRequestCaptureAuthorization != nil && notice == nil
             && contentLayout(maximumWidth: bounds.width).footerFrame?.contains(point) == true
     }
@@ -245,21 +268,32 @@ public final class TidyBarPanelView: NSView {
         let authorization = pressedAuthorizationNotice
         pressedItemID = nil
         pressedAuthorizationNotice = false
-        let point = convert(event.locationInWindow, from: nil)
-        if let item = item(at: point), item.id == initialID { onClick?(item) }
-        else if authorization && contentLayout(maximumWidth: bounds.width).footerFrame?.contains(point) == true {
+        let point = eventLocalPoint(with: event)
+        let hit = item(at: point)
+        fprint("TidyBarPanelView: mouseUp at \(point), hit=\(hit?.id ?? "none"), initialID=\(initialID ?? "none")")
+        if let item = hit, (initialID == nil || item.id == initialID) {
+            fprint("TidyBarPanelView: 触发 onClick item=\(item.id)")
+            onClick?(item)
+        } else if authorization && contentLayout(maximumWidth: bounds.width).footerFrame?.contains(point) == true {
             onRequestCaptureAuthorization?()
         }
     }
 
     override public func rightMouseDown(with event: NSEvent) {
-        rightPressedItemID = item(at: convert(event.locationInWindow, from: nil))?.id
+        let point = eventLocalPoint(with: event)
+        let hit = item(at: point)
+        fprint("TidyBarPanelView: rightMouseDown at \(point), hit=\(hit?.id ?? "none")")
+        rightPressedItemID = hit?.id
     }
 
     override public func rightMouseUp(with event: NSEvent) {
         let initialID = rightPressedItemID
         rightPressedItemID = nil
-        guard let item = item(at: convert(event.locationInWindow, from: nil)), item.id == initialID else { return }
+        let point = eventLocalPoint(with: event)
+        let hit = item(at: point)
+        fprint("TidyBarPanelView: rightMouseUp at \(point), hit=\(hit?.id ?? "none"), initialID=\(initialID ?? "none")")
+        guard let item = hit, (initialID == nil || item.id == initialID) else { return }
+        fprint("TidyBarPanelView: 触发 onRightClick item=\(item.id)")
         onRightClick?(item)
     }
 
@@ -336,8 +370,22 @@ public final class TidyBarPanelController: NSObject {
     public func prewarmBitmaps(for items: [ManagedItem], excludingWindowNumbers: [CGWindowID] = [], isValid: @escaping () -> Bool,
                               completion: @escaping () -> Void) {
         precondition(Thread.isMainThread)
+        let needed = bitmaps.needsCapture(items)
+        if !needed.isEmpty {
+            let direct = capturer.capture(items: needed)
+            for (id, image) in direct {
+                if let item = needed.first(where: { $0.id == id }) {
+                    bitmaps.ingest(image, for: item)
+                    attemptedFrames[item.id] = nil
+                }
+            }
+            if !direct.isEmpty { updateContent() }
+        }
+        let remaining = bitmaps.needsCapture(items)
+        guard !remaining.isEmpty else { completion(); return }
+
         let generation = bitmapGeneration
-        enqueueCapture(items, excludingWindowNumbers: excludingWindowNumbers, isValid: isValid) { [weak self] rejected in
+        enqueueCapture(remaining, excludingWindowNumbers: excludingWindowNumbers, isValid: isValid) { [weak self] rejected in
             guard let self, self.bitmapGeneration == generation, !rejected.isEmpty,
                   isValid(), self.capturer.isAuthorized else { completion(); return }
             // 位置在截图期间变化时只补抓一次，并重新获取观测绑定；不能反复截图旧坐标。
@@ -399,9 +447,30 @@ public final class TidyBarPanelController: NSObject {
         return result
     }
 
+    /// 获取单项已缓存截图
+    public func cachedImage(for item: ManagedItem) -> CGImage? {
+        panelView.images[item.id] ?? bitmaps.image(for: item)
+    }
+
     /// 显示时只补缺失且安全可见的项；失败的相同帧不因重复重绘而不断抓取。
     public func requestMissingBitmaps(for items: [ManagedItem], onBitmapsReady: @escaping () -> Void) {
         precondition(Thread.isMainThread)
+        let needed = bitmaps.needsCapture(items)
+        guard !needed.isEmpty else { onBitmapsReady(); return }
+
+        // 1. 优先尝试独立窗口隔离捕获（WindowList Capture，彻底消除阴影、残留，并支持屏外直截）
+        let directImages = capturer.capture(items: needed)
+        if !directImages.isEmpty {
+            for (id, image) in directImages {
+                if let item = needed.first(where: { $0.id == id }) {
+                    bitmaps.ingest(image, for: item)
+                    attemptedFrames[item.id] = nil
+                }
+            }
+            updateContent()
+        }
+
+        // 2. 对于剩余仍未获取到的项，若安全可见且已授权屏幕录制，走传统队列补齐
         let screens = screenObserver.screens
         let missing = bitmaps.needsCapture(items).filter { item in
             reservedCaptures[item.id] == nil && attemptedFrames[item.id] != item.frame

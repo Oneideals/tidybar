@@ -23,6 +23,7 @@ public protocol MenuBarIconCapturing: AnyObject {
     /// 抓取一块区域（AppKit 坐标，左下原点）。完成回调可能在任意线程。
     func capture(frame: CGRect, scale: CGFloat, completion: @escaping (Result<CGImage, IconCaptureError>) -> Void)
     func capture(frame: CGRect, scale: CGFloat, excludingWindowNumbers: [CGWindowID], completion: @escaping (Result<CGImage, IconCaptureError>) -> Void)
+    func capture(items: [ManagedItem]) -> [String: CGImage]
 }
 
 public extension MenuBarIconCapturing {
@@ -32,6 +33,10 @@ public extension MenuBarIconCapturing {
 
     func capture(frame: CGRect, scale: CGFloat, excludingWindowNumbers: [CGWindowID], completion: @escaping (Result<CGImage, IconCaptureError>) -> Void) {
         capture(frame: frame, scale: scale, completion: completion)
+    }
+
+    func capture(items: [ManagedItem]) -> [String: CGImage] {
+        [:]
     }
 }
 
@@ -175,6 +180,10 @@ public final class ScreenCaptureKitIconCapturer: MenuBarIconCapturing {
                 completion(.failure(.failed(String(describing: error))))
             }
         }
+    }
+
+    public func capture(items: [ManagedItem]) -> [String: CGImage] {
+        WindowListIconCapturer.captureAll(items: items)
     }
 }
 

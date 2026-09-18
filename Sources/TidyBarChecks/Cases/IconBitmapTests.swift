@@ -371,6 +371,35 @@ struct IconBitmapTests {
             expectEqual(outcome.map { String(describing: $0) }, "notAuthorized")
         }
     }
+
+    func hasVisiblePixelsDistinguishesContentFromTransparent() throws {
+        // 1. 全透明图
+        let transparent = image(width: 40, height: 40, fill: nil, foreground: nil)
+        expect(!WindowListIconCapturer.hasVisiblePixels(transparent), "纯透明图不应判定为有可见像素")
+
+        // 2. 有主体图标绘制的图
+        let colored = image(width: 40, height: 40, fill: nil, foreground: CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        expect(WindowListIconCapturer.hasVisiblePixels(colored), "有绘制内容的图应判定为有可见像素")
+    }
+
+    func appIconFallbackGeneratesCrispImage() throws {
+        let finderIcon = WindowListIconCapturer.appIconFallback(for: "com.apple.finder")
+        expect(finderIcon != nil, "系统有效应用应成功生成高清 AppIcon 兜底")
+        if let finderIcon {
+            expect(finderIcon.width >= 32, "兜底 AppIcon 尺寸需满足高分屏清晰度")
+            expect(finderIcon.height >= 32)
+        }
+    }
+
+    func windowListDiscoveryProducesValidDescriptors() throws {
+        let windows = WindowListIconCapturer.getMenuBarWindows()
+        // 系统正常运行环境下菜单栏窗口必然存在
+        expect(!windows.isEmpty, "菜单栏窗口列表获取不应为空")
+        for win in windows.prefix(5) {
+            expect(win.windowID > 0)
+            expect(win.bounds.height > 0)
+        }
+    }
 }
 
 extension IconBitmapTests {
@@ -397,6 +426,9 @@ extension IconBitmapTests {
             TestCase("missingCaptureRequestsSkipOffscreenFrames", suite.missingCaptureRequestsSkipOffscreenFrames),
             TestCase("placeholderCapturerAlwaysRefuses", suite.placeholderCapturerAlwaysRefuses),
             TestCase("captureDemandsMainThread", suite.captureDemandsMainThread),
+            TestCase("hasVisiblePixelsDistinguishesContentFromTransparent", suite.hasVisiblePixelsDistinguishesContentFromTransparent),
+            TestCase("appIconFallbackGeneratesCrispImage", suite.appIconFallbackGeneratesCrispImage),
+            TestCase("windowListDiscoveryProducesValidDescriptors", suite.windowListDiscoveryProducesValidDescriptors),
         ]
     }
 }

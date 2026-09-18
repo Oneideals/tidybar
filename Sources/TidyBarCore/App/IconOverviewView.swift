@@ -27,6 +27,12 @@ public final class IconOverviewView: NSView {
     /// 改分区的回调（itemID, targetZone）
     public var onReassign: (String, MenuBarZone) -> Bool
     public var onZoneChanged: (() -> Void)?
+    /// 一键将始终隐藏区恢复到隐藏区的回调
+    public var onRestoreAlwaysHidden: (() -> Void)? {
+        didSet {
+            lanes[.alwaysHidden]?.onRestoreAlwaysHidden = onRestoreAlwaysHidden
+        }
+    }
     public var physicalLayoutState: TidyBarController.PhysicalLayoutState = .idle {
         didSet { updateInspector(item: nil, zone: nil) }
     }
@@ -75,6 +81,9 @@ public final class IconOverviewView: NSView {
                     self?.updateInspector(item: item, zone: zone)
                 }
             )
+            if zone == .alwaysHidden {
+                lane.onRestoreAlwaysHidden = { [weak self] in self?.onRestoreAlwaysHidden?() }
+            }
             lanes[zone] = lane
             lanesStack.addArrangedSubview(lane)
         }
@@ -206,6 +215,12 @@ public final class IconOverviewView: NSView {
         }
     }
 
+    public func reportNotice(_ message: String, isFailure: Bool = false) {
+        persistentNotice = message
+        noticeIsFailure = isFailure
+        updateInspector(item: nil, zone: nil)
+    }
+
     /// 唯一的刷新入口：整表按分区重画。
     public func reload(rows: [Row]) {
         self.rows = rows
@@ -224,6 +239,8 @@ private final class LaneView: NSView {
     let onMoveItem: (String, MenuBarZone) -> Bool
     let onHoverItem: (ManagedItem?, MenuBarZone) -> Void
 
+    var onRestoreAlwaysHidden: (() -> Void)?
+    private let restoreButton = NSButton(title: "全部移回隐藏区", target: nil, action: nil)
     private let titleLabel = NSTextField(labelWithString: "")
     private let hintLabel = NSTextField(labelWithString: "")
     private let countBadge = NSTextField(labelWithString: "")
@@ -289,7 +306,18 @@ private final class LaneView: NSView {
         countBadge.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(countBadge)
 
-        NSLayoutConstraint.activate([
+        if zone == .alwaysHidden {
+            restoreButton.bezelStyle = .rounded
+            restoreButton.controlSize = .small
+            restoreButton.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            restoreButton.target = self
+            restoreButton.action = #selector(restoreAllClicked)
+            restoreButton.translatesAutoresizingMaskIntoConstraints = false
+            restoreButton.isHidden = true
+            header.addSubview(restoreButton)
+        }
+
+        var headerConstraints = [
             header.topAnchor.constraint(equalTo: topAnchor),
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -303,7 +331,12 @@ private final class LaneView: NSView {
 
             countBadge.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -4),
             countBadge.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-        ])
+        ]
+        if zone == .alwaysHidden {
+            headerConstraints.append(restoreButton.trailingAnchor.constraint(equalTo: countBadge.leadingAnchor, constant: -8))
+            headerConstraints.append(restoreButton.centerYAnchor.constraint(equalTo: header.centerYAnchor))
+        }
+        NSLayoutConstraint.activate(headerConstraints)
 
         shelf.translatesAutoresizingMaskIntoConstraints = false
         addSubview(shelf)
@@ -316,8 +349,15 @@ private final class LaneView: NSView {
         ])
     }
 
+    @objc private func restoreAllClicked() {
+        onRestoreAlwaysHidden?()
+    }
+
     func reload(rows: [IconOverviewView.Row]) {
         countBadge.stringValue = "\(rows.count) 项"
+        if zone == .alwaysHidden {
+            restoreButton.isHidden = rows.isEmpty
+        }
         shelf.reload(rows: rows)
     }
 }

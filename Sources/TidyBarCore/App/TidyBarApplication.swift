@@ -42,7 +42,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var searchUI: TidyBarSearchUI?
     /// 抽屉单项物理浮现协调器与幕布截图扫描器
     private var peekCoordinator: PeekCoordinator?
+    private var proxyStatusItem: NSStatusItem?
+    private var proxyPresentedItem: ManagedItem?
     private var captureSweep: CaptureSweep?
+    private var isPusherCollapsedOverride = false
     /// 注销/关机/launchd 回收发来的信号不保证会走 applicationWillTerminate，显式挂信号源
     private var shutdown: GracefulShutdown?
     private var isExiting = false
@@ -161,17 +164,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let coordinator = PeekCoordinator(
             services: services,
             controller: barController,
-            makeSession: { MenuBarAccessSession() },
-            curtainFactory: { [weak panel, weak barController] toggleMinX in
-                let screen = NSScreen.main ?? NSScreen.screens.first ?? NSScreen()
-                let cached = Array((panel?.cachedImages(for: barController?.drawerItems ?? []) ?? [:]).values)
-                return CurtainWindow(screen: screen, toggleMinX: toggleMinX, cachedBitmaps: cached)
-            },
             setPusherCollapsed: { [weak self] collapsed in
                 self?.setPusherCollapsed(collapsed)
             },
             proxyClickRelay: { [weak self] item, button in
                 _ = self?.requestProxyClick(item, button: button, unfold: false)
+            },
+            presentProxy: { [weak self] item, autoRightClick in
+                self?.presentProxyItem(item: item, autoRightClick: autoRightClick)
+            },
+            dismissProxy: { [weak self] in
+                self?.dismissProxyItem()
             }
         )
         self.peekCoordinator = coordinator
@@ -620,6 +623,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         ruleTimer?.invalidate()
         sessionObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
         sessionObservers.removeAll()
+        if let proxy = proxyStatusItem {
+            NSStatusBar.system.removeStatusItem(proxy)
+            proxyStatusItem = nil
+        }
         controller?.flushForTermination()
         endMenuBarAccess()
         fprint("退出收尾完成｜原因=\(reason)｜半空拖拽已抬起")
@@ -735,7 +742,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 self.syncDividerPositions(from: items)
                 if self.needsManualRealignment, NSEvent.pressedMouseButtons == 0 {
                     self.needsManualRealignment = false
-                    controller.realignToDividers()
+                    if !self.isMenuBarFolded {
+                        controller.realignToDividers()
+                    }
                 }
                 self.evaluateAutomaticRules()
                 self.settingsWindow?.refresh()
@@ -1017,46 +1026,179 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private func handleDrawerItemClick(_ item: ManagedItem, autoRightClick: Bool) {
-        guard !terminationRequested else { return }
-        guard let controller else { return }
-        NSLog("TIDYBAR: handleDrawerItemClick item=\(item.id) capability=\(controller.capability) autoRightClick=\(autoRightClick)")
+        guard !terminationRequested, let controller else { return }
+        fprint("handleDrawerItemClick item=\(item.id) capability=\(controller.capability) autoRightClick=\(autoRightClick)")
         panelController?.hide()
         searchUI?.dismiss()
         endHeldMenuAccess()
-        // 核心协同架构：优先走 0ms 原位极速代理点击；
-        // 若在单刘海屏等窄小安全区下展开后撞入硬件刘海盲区导致不可操作（.notInteractable），自动平滑降级由 PeekCoordinator 执行单项浮现至常显区安全位
-        requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: true) { [weak self] outcome in
-            guard let self else { return }
-            if (outcome == .notInteractable || outcome == .itemNotFound),
-               self.controller?.capability == .fullDrag,
-               self.peekCoordinator?.state == .idle {
-                NSLog("TIDYBAR: 代理点击受刘海硬件遮挡或溢出，自动无缝启动 PeekCoordinator 常显区单项浮现 item=\(item.id)")
-                self.peekCoordinator?.peek(item: item, autoRightClick: autoRightClick)
+        // 方案 A（虚拟代理图标模式）：点击抽屉里的图标，直接在长显（常显）区域瞬间呈现代理图标，零推杆折叠、零全展开
+        if let peek = peekCoordinator {
+            if case .presented = peek.state {
+                peek.cancelAndDrain()
             }
+            if peek.state == .idle {
+                fprint("启动 PeekCoordinator 将图标直接显示在长显区域 item=\(item.id)")
+                peek.peek(item: item, autoRightClick: autoRightClick)
+                return
+            }
+        }
+        // 降级兜底：若暂不具备浮现能力，走代理展开点击
+        requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: true)
+    }
+
+    // MARK: - 常显区虚拟代理状态项（方案 A）
+
+    private func presentProxyItem(item: ManagedItem, autoRightClick: Bool) -> CGRect? {
+        fprint("presentProxyItem item=\(item.id) title=\(item.title)")
+        if let togglePos = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Double {
+            UserDefaults.standard.set(togglePos - 1.0, forKey: "NSStatusItem Preferred Position tidybar_proxy")
+            UserDefaults.standard.synchronize()
+        } else if let togglePosInt = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Int {
+            UserDefaults.standard.set(Double(togglePosInt) - 1.0, forKey: "NSStatusItem Preferred Position tidybar_proxy")
+            UserDefaults.standard.synchronize()
+        } else {
+            UserDefaults.standard.set(644.0, forKey: "NSStatusItem Preferred Position tidybar_proxy")
+            UserDefaults.standard.synchronize()
+        }
+
+        let proxy: NSStatusItem
+        if let existing = proxyStatusItem {
+            proxy = existing
+        } else {
+            let newItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            newItem.autosaveName = "tidybar_proxy"
+            newItem.button?.target = self
+            newItem.button?.action = #selector(proxyStatusItemClicked(_:))
+            newItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            self.proxyStatusItem = newItem
+            proxy = newItem
+        }
+
+        self.proxyPresentedItem = item
+
+        var iconImg: NSImage?
+        if let bitmap = panelController?.cachedImage(for: item) {
+            let glyphHeight: CGFloat = 18
+            let aspect = CGFloat(bitmap.width) / max(1, CGFloat(bitmap.height))
+            let width = max(18, min(40, glyphHeight * aspect))
+            let rep = NSBitmapImageRep(cgImage: bitmap)
+            rep.size = NSSize(width: width, height: glyphHeight)
+            let img = NSImage(size: NSSize(width: width, height: glyphHeight))
+            img.addRepresentation(rep)
+            img.isTemplate = false
+            iconImg = img
+            proxy.length = width + 6
+        } else if let bundleID = item.ownerBundleID,
+                  let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            let appIcon = NSWorkspace.shared.icon(forFile: appURL.path)
+            appIcon.size = NSSize(width: 18, height: 18)
+            iconImg = appIcon
+            proxy.length = 24
+        }
+        if let iconImg {
+            proxy.button?.image = iconImg
+            proxy.button?.imagePosition = .imageOnly
+            proxy.button?.title = ""
+        } else {
+            proxy.button?.image = nil
+            let title = !item.title.isEmpty ? item.title : (item.ownerBundleID ?? "App")
+            proxy.button?.title = title
+            proxy.button?.imagePosition = .noImage
+            proxy.length = NSStatusItem.variableLength
+        }
+        proxy.button?.toolTip = !item.title.isEmpty ? item.title : (item.ownerBundleID ?? "App")
+        proxy.button?.window?.ignoresMouseEvents = false
+        proxy.isVisible = true
+
+        if autoRightClick, let btn = proxy.button {
+            DispatchQueue.main.async { [weak self] in
+                self?.handleProxyItemRightClick(item: item, sender: btn)
+            }
+        }
+
+        return proxy.button?.window?.frame
+    }
+
+    private func dismissProxyItem() {
+        fprint("dismissProxyItem")
+        proxyStatusItem?.isVisible = false
+        proxyStatusItem?.length = 0
+        proxyStatusItem?.button?.image = nil
+        proxyStatusItem?.button?.title = ""
+        proxyPresentedItem = nil
+    }
+
+    @objc private func proxyStatusItemClicked(_ sender: NSStatusBarButton) {
+        guard let item = proxyPresentedItem else { return }
+        peekCoordinator?.noteInteraction()
+        let isRightClick = NSApp.currentEvent?.type == .rightMouseUp || (NSApp.currentEvent?.modifierFlags.contains(.control) ?? false)
+        fprint("proxyStatusItemClicked isRight=\(isRightClick) item=\(item.id)")
+        if isRightClick {
+            handleProxyItemRightClick(item: item, sender: sender)
+        } else {
+            handleProxyItemLeftClick(item: item)
         }
     }
 
-    public func setPusherCollapsed(_ collapsed: Bool) {
-        let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
-        let separatorConstraint = dividerConstraints["tidybar_separator"]
-        let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
-        let alwaysHiddenConstraint = dividerConstraints["tidybar_always_hidden_separator"]
-        if collapsed {
-            separator?.length = 0
-            separatorConstraint?.isActive = false
-            if let window = separator?.button?.window {
-                window.setContentSize(CGSize(width: 0, height: window.frame.height))
-                window.ignoresMouseEvents = true
-            }
-            alwaysHiddenSeparator?.length = 0
-            alwaysHiddenConstraint?.isActive = false
-            if let ahWindow = alwaysHiddenSeparator?.button?.window {
-                ahWindow.setContentSize(CGSize(width: 0, height: ahWindow.frame.height))
-                ahWindow.ignoresMouseEvents = true
-            }
-        } else {
-            applyMenuBarFoldState()
+    private func handleProxyItemLeftClick(item: ManagedItem) {
+        peekCoordinator?.noteInteraction()
+        var activated = false
+        if let bundleID = item.ownerBundleID,
+           let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) {
+            app.activate()
+            activated = app.activationPolicy != .accessory
         }
+        let outcome = services.activator?.activate(itemID: item.id) ?? (services.reader as? MenuBarActivating)?.activate(itemID: item.id) ?? .actionUnsupported
+        if outcome.countsAsPressed {
+            activated = true
+        }
+        if !activated, let btn = proxyStatusItem?.button {
+            handleProxyItemRightClick(item: item, sender: btn)
+        }
+    }
+
+    private func handleProxyItemRightClick(item: ManagedItem, sender: NSStatusBarButton) {
+        peekCoordinator?.noteInteraction()
+        let outcome = services.activator?.showMenu(itemID: item.id) ?? (services.reader as? MenuBarActivating)?.showMenu(itemID: item.id) ?? .actionUnsupported
+        if !outcome.countsAsPressed {
+            // 弹出优雅的操作菜单兜底
+            let menu = NSMenu(title: item.title)
+            let appName = !item.title.isEmpty ? item.title : (item.ownerBundleID ?? "应用")
+            let openItem = NSMenuItem(title: "打开 \(appName)", action: #selector(openProxyAppFromMenu(_:)), keyEquivalent: "")
+            openItem.target = self
+            menu.addItem(openItem)
+
+            let showDrawerItem = NSMenuItem(title: "在收纳抽屉中查看", action: #selector(showInDrawerFromProxy(_:)), keyEquivalent: "")
+            showDrawerItem.target = self
+            menu.addItem(showDrawerItem)
+
+            menu.addItem(NSMenuItem.separator())
+            let dismissItem = NSMenuItem(title: "收起图标", action: #selector(dismissProxyItemManually(_:)), keyEquivalent: "")
+            dismissItem.target = self
+            menu.addItem(dismissItem)
+
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+        }
+    }
+
+    @objc private func openProxyAppFromMenu(_ sender: NSMenuItem) {
+        guard let item = proxyPresentedItem else { return }
+        handleProxyItemLeftClick(item: item)
+    }
+
+    @objc private func showInDrawerFromProxy(_ sender: NSMenuItem) {
+        peekCoordinator?.cancelAndDrain()
+        toggleDrawer()
+    }
+
+    @objc private func dismissProxyItemManually(_ sender: NSMenuItem) {
+        peekCoordinator?.cancelAndDrain()
+    }
+
+    public func setPusherCollapsed(_ collapsed: Bool) {
+        fprint("setPusherCollapsed collapsed=\(collapsed) dividerCount=\(dividerItems.count)")
+        isPusherCollapsedOverride = collapsed
+        applyMenuBarFoldState()
     }
 
     /// 呼出搜索面板。
@@ -1176,7 +1318,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         alwaysHiddenSeparator?.button?.action = nil
 
         let separatorConstraint = dividerConstraints["tidybar_separator"]
-        if isMenuBarFolded {
+        let effectiveFolded = isMenuBarFolded && !isPusherCollapsedOverride
+        if effectiveFolded {
             separatorConstraint?.isActive = true
             separator?.length = Self.expandedPushLength
             separator?.button?.window?.ignoresMouseEvents = true

@@ -1015,6 +1015,46 @@ struct ReviewRegressionTests {
         expect(journal.hasPendingIntent, "保存失败必须保留恢复依据")
         expectEqual(engine.layout.zone(of: "a"), .visible, "保存失败不能对外发布新分区")
     }
+
+    func realignToDividersSkipsWhenOffscreenItemsPresent() throws {
+        let owner = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
+        let toggle = ManagedItem(id: "own-toggle", ownerBundleID: owner, title: "◀",
+                                 frame: CGRect(x: 688, y: 1176, width: 24, height: 24))
+        // 模拟折叠推杆展开时被推出屏幕外的收纳项（负坐标）
+        let foldedHiddenItem = ManagedItem(id: "folded-app", ownerBundleID: "com.test.folded", title: "FoldedApp",
+                                          frame: CGRect(x: -8500, y: 1176, width: 24, height: 24))
+        let visibleItem = ManagedItem(id: "visible-app", ownerBundleID: "com.test.visible", title: "VisibleApp",
+                                      frame: CGRect(x: 750, y: 1176, width: 24, height: 24))
+        let reader = FakeMenuBarReader(items: [foldedHiddenItem, toggle, visibleItem])
+        let journal = LayoutJournal(directory: TestPaths.journalDirectory("folded-offscreen-guard"))
+        let engine = LayoutEngine(layout: MenuBarLayout(zones: ["hidden": ["folded-app"], "visible": ["visible-app"]]),
+                                  services: makeServices(reader: reader, mover: nil), journal: journal)
+        let controller = TidyBarController(engine: engine, reveal: RevealStateMachine(),
+                                          settings: AppSettings(), store: FakeSettingsStore())
+        controller.dividerIDs = ["left", "right"]
+        controller.applyScan(reader.items)
+        controller.dividerCenters = (400, 600)
+
+        var requested = 0
+        controller.onRequestPhysicalArrangement = { _ in requested += 1 }
+
+        controller.realignToDividers()
+
+        // 验证：绝对不能因为负坐标而将 folded-app 误判入 alwaysHidden！
+        expectEqual(engine.layout.zone(of: "folded-app"), .hidden, "屏幕外负坐标图标绝不能被误判入始终隐藏区")
+        expectEqual(requested, 0, "检测到推杆展开时应直接跳过重排")
+    }
+
+    func restoreAlwaysHiddenToHiddenRestoresAllItems() throws {
+        let journal = LayoutJournal(directory: TestPaths.journalDirectory("restore-always-hidden"))
+        let engine = LayoutEngine(layout: MenuBarLayout(zones: ["alwaysHidden": ["app1", "app2", "app3"]]),
+                                  services: makeServices(mover: nil), journal: journal)
+        let controller = TidyBarController(engine: engine, reveal: RevealStateMachine(),
+                                          settings: AppSettings(), store: FakeSettingsStore())
+        controller.restoreAlwaysHiddenToHidden()
+        expectEqual(engine.layout.items(in: .hidden), ["app1", "app2", "app3"], "一键恢复必须将所有始终隐藏项归入隐藏区")
+        expectEqual(engine.layout.items(in: .alwaysHidden), [String](), "始终隐藏区应当被清空")
+    }
 }
 
 extension ReviewRegressionTests {
@@ -1064,6 +1104,8 @@ extension ReviewRegressionTests {
             TestCase("abandonedRenamedRecoveryDoesNotReappearFromLedger", suite.abandonedRenamedRecoveryDoesNotReappearFromLedger),
             TestCase("twoDividersKeepIndependentZonesAndLegalLandingSlots", suite.twoDividersKeepIndependentZonesAndLegalLandingSlots),
             TestCase("overviewDoesNotReportRejectedMovesAsCompleted", suite.overviewDoesNotReportRejectedMovesAsCompleted),
+            TestCase("realignToDividersSkipsWhenOffscreenItemsPresent", suite.realignToDividersSkipsWhenOffscreenItemsPresent),
+            TestCase("restoreAlwaysHiddenToHiddenRestoresAllItems", suite.restoreAlwaysHiddenToHiddenRestoresAllItems),
         ]
     }
 }

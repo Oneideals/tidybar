@@ -335,7 +335,13 @@ public final class TidyBarController {
     /// 用户手动拖动后按按钮位置重算，再将折叠分隔符归位。
     public func realignToDividers() {
         guard let rightEdge = visibleBoundary, !isDemoMode, !isAwaitingRecovery, !isPhysicalLayoutBusy else { return }
-        let eligible = assignableItems.filter { $0.id != peekedItemID }
+        // 关键防御：若存在屏幕外或负坐标（centerX <= 0）的图标，说明推杆正将收纳项推出屏幕，
+        // 此时物理坐标不代表真实分区，坚决跳过，防止将负坐标的收纳项误判入始终隐藏区。
+        if assignableItems.contains(where: { $0.centerX <= 0 }) {
+            record("存在屏幕外图标（推杆展开中），跳过物理对齐以保护收纳分区")
+            return
+        }
+        let eligible = assignableItems.filter { $0.id != peekedItemID && $0.centerX > 0 }
         let ordered = MenuBarEnumeration.sortedLeftToRight(eligible)
         for zone in MenuBarZone.allCases {
             let members = ordered.filter { DividerGeometry.zone(forX: $0.centerX, leftEdge: dividerCenters.left, rightEdge: rightEdge) == zone }
@@ -350,6 +356,17 @@ public final class TidyBarController {
         }
         publish()
         onRequestPhysicalArrangement?(false)
+    }
+
+    /// 一键将所有处于始终隐藏区（alwaysHidden）的非系统图标恢复到收纳隐藏区（hidden）
+    public func restoreAlwaysHiddenToHidden() {
+        let alwaysHiddenIDs = engine.layout.items(in: .alwaysHidden).filter { !ManagedItem.isSystemOwned(itemID: $0) }
+        guard !alwaysHiddenIDs.isEmpty else { return }
+        for id in alwaysHiddenIDs {
+            _ = reassignZone(id, to: .hidden)
+        }
+        record("已将 \(alwaysHiddenIDs.count) 个始终隐藏图标恢复至隐藏区")
+        publish()
     }
 
     /// 更新条目的实时物理位置（供浮现状态下点击命中与坐标校验使用）。

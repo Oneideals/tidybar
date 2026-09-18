@@ -57,6 +57,12 @@ public final class CaptureSweep {
             return
         }
 
+        // 优先利用 WindowListIconCapturer 尝试直截（无需升幕布、无需折叠推杆，完全零视觉打扰）
+        let initialNeeded = items.filter { panelController.cachedImages(for: [$0])[$0.id] == nil }
+        if !initialNeeded.isEmpty {
+            panelController.requestMissingBitmaps(for: initialNeeded) {}
+        }
+
         let needed = items.filter { panelController.cachedImages(for: [$0])[$0.id] == nil }
         guard !needed.isEmpty else {
             drainCompletions()
