@@ -80,6 +80,40 @@ struct IconOverviewBuilderTests {
         expectEqual(rows.first(where: { $0.item.id == item.id })?.zone, .hidden)
     }
 
+    /// 托盘中的图标顺序必须与菜单栏物理视觉顺序（从左到右 minX 递增）保持一致，而非字母顺序。
+    func rowsMatchMenuBarPhysicalOrder() throws {
+        let zebra = ManagedItem(
+            id: "com.test.zebra", ownerBundleID: "com.zebra", title: "Zebra",
+            frame: CGRect(x: 100, y: 1_188, width: 24, height: 24),
+            isSystemOwned: false
+        )
+        let beta = ManagedItem(
+            id: "com.test.beta", ownerBundleID: "com.beta", title: "Beta",
+            frame: CGRect(x: 150, y: 1_188, width: 24, height: 24),
+            isSystemOwned: false
+        )
+        let alpha = ManagedItem(
+            id: "com.test.alpha", ownerBundleID: "com.alpha", title: "Alpha",
+            frame: CGRect(x: 200, y: 1_188, width: 24, height: 24),
+            isSystemOwned: false
+        )
+        // 乱序传入
+        let controller = make([alpha, zebra, beta])
+        let rows = IconOverviewBuilder.rows(from: controller)
+        // 必须按物理坐标 minX 从左到右: zebra (100) -> beta (150) -> alpha (200)
+        expectEqual(rows.map(\.item.id), ["com.test.zebra", "com.test.beta", "com.test.alpha"])
+    }
+
+    /// 当物理坐标缺失（zero frame）时，依次回退到布局次序和名称排序。
+    func sortByMenuBarOrderFallsBackToLayoutPositionAndTitle() throws {
+        let zeroA = ManagedItem(id: "com.zero.a", ownerBundleID: "com.a", title: "A", frame: .zero, isSystemOwned: false)
+        let zeroB = ManagedItem(id: "com.zero.b", ownerBundleID: "com.b", title: "B", frame: .zero, isSystemOwned: false)
+        let rowB = IconOverviewView.Row(item: zeroB, zone: .hidden, isPositionalIdentity: false, layoutPosition: 0)
+        let rowA = IconOverviewView.Row(item: zeroA, zone: .hidden, isPositionalIdentity: false, layoutPosition: 1)
+        let sorted = IconOverviewView.sortByMenuBarOrder([rowA, rowB])
+        expectEqual(sorted.map(\.item.id), ["com.zero.b", "com.zero.a"], "零尺寸时应优先回退到 layoutPosition")
+    }
+
     private func make(_ items: [ManagedItem]) -> TidyBarController {
         let reader = FakeMenuBarReader(items: items)
         let engine = LayoutEngine(layout: MenuBarLayout(),
@@ -100,6 +134,8 @@ extension IconOverviewBuilderTests {
             TestCase("unassignedItemsAreExcluded", suite.unassignedItemsAreExcluded),
             TestCase("positionalIdentityFlagTravelsWithRow", suite.positionalIdentityFlagTravelsWithRow),
             TestCase("reassignZonePersistsEvenWithoutLandingPoint", suite.reassignZonePersistsEvenWithoutLandingPoint),
+            TestCase("rowsMatchMenuBarPhysicalOrder", suite.rowsMatchMenuBarPhysicalOrder),
+            TestCase("sortByMenuBarOrderFallsBackToLayoutPositionAndTitle", suite.sortByMenuBarOrderFallsBackToLayoutPositionAndTitle),
         ]
     }
 }

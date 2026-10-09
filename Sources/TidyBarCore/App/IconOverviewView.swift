@@ -16,11 +16,13 @@ public final class IconOverviewView: NSView {
         public let item: ManagedItem
         public let zone: MenuBarZone
         public let isPositionalIdentity: Bool
+        public let layoutPosition: Int?
 
-        public init(item: ManagedItem, zone: MenuBarZone, isPositionalIdentity: Bool) {
+        public init(item: ManagedItem, zone: MenuBarZone, isPositionalIdentity: Bool, layoutPosition: Int? = nil) {
             self.item = item
             self.zone = zone
             self.isPositionalIdentity = isPositionalIdentity
+            self.layoutPosition = layoutPosition
         }
     }
 
@@ -229,6 +231,30 @@ public final class IconOverviewView: NSView {
             lanes[zone]?.reload(rows: members)
         }
         updateInspector(item: nil, zone: nil)
+    }
+
+    /// 按照菜单栏物理视觉顺序（从左到右）排序
+    public static func sortByMenuBarOrder(_ rows: [Row]) -> [Row] {
+        rows.sorted { a, b in
+            let frameA = a.item.frame
+            let frameB = b.item.frame
+            let hasValidFrameA = frameA.width > 0 && frameA.height > 0
+            let hasValidFrameB = frameB.width > 0 && frameB.height > 0
+
+            if hasValidFrameA && hasValidFrameB {
+                if abs(frameA.minX - frameB.minX) >= 1 {
+                    return frameA.minX < frameB.minX
+                }
+            } else if hasValidFrameA {
+                return true
+            } else if hasValidFrameB {
+                return false
+            }
+            if let posA = a.layoutPosition, let posB = b.layoutPosition, posA != posB {
+                return posA < posB
+            }
+            return a.item.title.localizedCaseInsensitiveCompare(b.item.title) == .orderedAscending
+        }
     }
 }
 
@@ -464,7 +490,7 @@ private final class LaneShelfView: NSView {
 
         emptyLabel.isHidden = !rows.isEmpty
 
-        let sorted = rows.sorted { $0.item.title.localizedCaseInsensitiveCompare($1.item.title) == .orderedAscending }
+        let sorted = IconOverviewView.sortByMenuBarOrder(rows)
         for row in sorted {
             let presentation = MenuBarIconStyle.presentation(
                 for: row.item,
@@ -715,14 +741,17 @@ private final class DraggableIconCellView: NSView, NSDraggingSource {
 public enum IconOverviewBuilder {
     public static func rows(from controller: TidyBarController) -> [IconOverviewView.Row] {
         let snapshot = controller.snapshot
-        return controller.assignableItems
+        let rawRows = controller.assignableItems
             .map { item in
                 let zone = snapshot.layout.zone(of: item.id) ?? controller.settings.newItemZone
+                let position = snapshot.layout.position(of: item.id)
                 return IconOverviewView.Row(
                     item: item,
                     zone: zone,
-                    isPositionalIdentity: item.isPositionalIdentity
+                    isPositionalIdentity: item.isPositionalIdentity,
+                    layoutPosition: position
                 )
             }
+        return IconOverviewView.sortByMenuBarOrder(rawRows)
     }
 }
