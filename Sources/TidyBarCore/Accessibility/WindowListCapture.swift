@@ -38,6 +38,13 @@ public struct MenuBarWindowDescriptor: Sendable {
     public let windowID: CGWindowID
     public let title: String
     public let bounds: CGRect
+
+    public init(index: Int, windowID: CGWindowID, title: String, bounds: CGRect) {
+        self.index = index
+        self.windowID = windowID
+        self.title = title
+        self.bounds = bounds
+    }
 }
 
 /// 借鉴 Ice 与 Bartender 的原生独立窗口隔离捕获器。
@@ -119,6 +126,8 @@ public enum WindowListIconCapturer {
             return nil
         }
         let rawImage = unmanaged.takeRetainedValue()
+        // 过滤超宽整屏辅助窗口（单图标裁剪前像素宽度绝不应超过 600，即使 3x Retina 屏上也仅 200pt）
+        guard rawImage.width <= 600 else { return nil }
         guard hasVisiblePixels(rawImage) else { return nil }
 
         guard trimToThickness else { return rawImage }
@@ -136,7 +145,7 @@ public enum WindowListIconCapturer {
         return rawImage
     }
 
-    /// 高效采样检查图片是否包含有效非透明像素（耗时 < 0.5ms）
+    /// 高效采样检查图片是否包含有效非透明像素且非纯黑/纯色死块（耗时 < 0.5ms）
     public static func hasVisiblePixels(_ image: CGImage, minCount: Int = 10) -> Bool {
         guard let dataProvider = image.dataProvider,
               let data = dataProvider.data,
@@ -146,25 +155,44 @@ public enum WindowListIconCapturer {
         let bytesPerRow = image.bytesPerRow
         let bpp = image.bitsPerPixel / 8
         guard bpp == 4 else { return true }
-        var count = 0
+        var visibleCount = 0
+        var nonBlackCount = 0
+        var totalSampled = 0
         let stepX = max(1, width / 16)
         let stepY = max(1, height / 16)
         for y in stride(from: 0, to: height, by: stepY) {
             let rowPtr = ptr + y * bytesPerRow
             for x in stride(from: 0, to: width, by: stepX) {
+                totalSampled += 1
                 let alpha = rowPtr[x * bpp + 3]
                 if alpha > 15 {
-                    count += 1
-                    if count >= minCount { return true }
+                    visibleCount += 1
+                    let r = rowPtr[x * bpp]
+                    let g = rowPtr[x * bpp + 1]
+                    let b = rowPtr[x * bpp + 2]
+                    // 只要有一个像素具备可辨识亮度（RGB > 18），即非纯黑
+                    if r > 18 || g > 18 || b > 18 {
+                        nonBlackCount += 1
+                    }
                 }
             }
         }
-        return count >= minCount
+        guard visibleCount >= minCount else { return false }
+        // 纯黑死块检测：若采样像素绝大多数均为不透明（>=80%），但其中没有任何非黑色有效像素（全为黑底），
+        // 判定为无效死黑缓冲区（如 Qt/Electron 空白全屏缓冲层），不作为有效图标展示
+        if visibleCount >= Int(Double(totalSampled) * 0.80) && nonBlackCount == 0 {
+            return false
+        }
+        return true
     }
 
     /// 为指定条目捕获高质量纯净位图
     public static func capture(for item: ManagedItem, in windows: [MenuBarWindowDescriptor]? = nil) -> CGImage? {
-        let descriptors = windows ?? getMenuBarWindows()
+        let allDescriptors = windows ?? getMenuBarWindows()
+        // 过滤掉整个屏幕宽度的系统菜单栏全宽底栏/跨带辅助窗口（单图标绝不可能超过 250pt，高度在 10pt~50pt 之间）
+        let descriptors = allDescriptors.filter { desc in
+            desc.bounds.width > 0 && desc.bounds.width <= 250 && desc.bounds.height > 0 && desc.bounds.height <= 50
+        }
         guard !descriptors.isEmpty else {
             return appIconFallback(for: item.ownerBundleID)
         }
@@ -172,11 +200,12 @@ public enum WindowListIconCapturer {
         // 收集所有可能的候选窗口（按相关度排序）
         var candidates: [CGWindowID] = []
 
-        // 1. Bundle ID 匹配
+        // 1. Bundle ID 匹配（必须排除空标题，严防 b.contains("") 误命中全部无标题窗口）
         if let bundleID = item.ownerBundleID, !bundleID.isEmpty {
+            let b = bundleID.lowercased()
             let matches = descriptors.filter { desc in
-                let t = desc.title.lowercased()
-                let b = bundleID.lowercased()
+                let t = desc.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !t.isEmpty else { return false }
                 return t == b || t.contains(b) || b.contains(t)
             }
             for match in matches {
@@ -187,11 +216,12 @@ public enum WindowListIconCapturer {
             }
         }
 
-        // 2. 屏幕坐标与屏外坐标匹配
+        // 2. 屏幕坐标与屏外坐标匹配（限定有效状态项宽度 <= 250）
         let tolerance: CGFloat = 24.0
         let coordMatches = descriptors.filter { desc in
+            guard desc.bounds.width <= 250 else { return false }
             // 屏内直接比对，屏外比对负坐标
-            abs(desc.bounds.origin.x - item.frame.minX) < tolerance
+            return abs(desc.bounds.origin.x - item.frame.minX) < tolerance
                 || abs(desc.bounds.midX - item.centerX) < tolerance
         }
         for match in coordMatches {
@@ -200,10 +230,14 @@ public enum WindowListIconCapturer {
             }
         }
 
-        // 3. 标题匹配
-        if !item.title.isEmpty {
-            let titleMatches = descriptors.filter {
-                $0.title.localizedCaseInsensitiveContains(item.title)
+        // 3. 标题匹配（必须排除空标题）
+        let trimmedTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty {
+            let titleMatches = descriptors.filter { desc in
+                let t = desc.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { return false }
+                return t.localizedCaseInsensitiveContains(trimmedTitle)
+                    || trimmedTitle.localizedCaseInsensitiveContains(t)
             }
             for match in titleMatches where !candidates.contains(match.windowID) {
                 candidates.append(match.windowID)

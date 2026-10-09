@@ -1,13 +1,13 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-10-09T14:55:34Z (read-only projection)
-> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 263
+> **Last Updated:** 2026-10-09T15:56:05Z (read-only projection)
+> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 263
 
 ---
 
 ## 🎯 Recent Milestones & Completed Tasks ([DONE])
 
-- [DONE] `peek-interaction-and-cursor-teleport-fix-20261009` — 修复临时浮现图标（Peek）导致的菜单栏空白区判定污染与光标瞬移问题：1. 彻底移除 PeekCoordinator 中的 CGWarpMouseCursorPosition 调用，光标保持在用户点击抽屉的原位，不再瞬移；2. 在 TidyBarApplication 的 emptySpacePredicate 中排除浮现项对状态栏全局左边界（leftmostStatusItemX）的污染，恢复浮现状态下点击菜单栏空白处弹出收纳抽屉的功能；3. 单元测试全部通过（332/332 条用例，41 个套件）。
+- [DONE] (agy, 2026-10-09) fix(panel): 过滤全屏辅助窗口与死黑缓冲区，彻底杜绝收纳抽屉内误显黑色长条，支持纯黑死块检测与原生高清 App 图标兜底
 - [DONE] `native-fold-acceptance-20260909` — 最终63716565包自身两项权限已生效，完整原生验收完成：AdGuard抽屉右键、4.2秒保活、主动关闭后复位；主按钮展开与折叠时8常显/19隐藏分界正确；真实图标19/19及悬停收起通过。Debug与Release各312条41套件通过，配置保持。详见docs/findings/17-final-drawer-acceptance.md。
 - [DONE] `native-test-permission-20260908` — 用户已为b82694测试包授权；同包重启PID25636启动日志确认辅助功能已授予、完整接管，读取35至38项。权限阻塞已消除，后续锁屏及原生交互验收另行记录。
 - [DONE] `review-1935331` — 原始16项审查问题及复核追加的恢复保护、同区保序、手动扫描时序、事件隔离和UI结果链问题已修复。Debug与最终Release回归均253/253、38套件通过；全目标编译、应用打包、签名及plist校验通过。详见docs/findings/10-review-fixes.md；真实菜单栏拖拽未做现场验证。
@@ -27,7 +27,9 @@ _No active leases._
 
 ## 📝 Working Tree Changes
 
-_Working tree is clean._
+- `.M` `Sources/TidyBarChecks/Cases/IconBitmapTests.swift`
+- `.M` `Sources/TidyBarCore/Accessibility/WindowListCapture.swift`
+- `.M` `Sources/TidyBarCore/Panel/MenuBarIconPresentation.swift`
 
 ## 💡 Handoff Instructions for Next Agent
 

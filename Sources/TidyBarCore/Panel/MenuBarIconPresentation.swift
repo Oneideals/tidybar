@@ -29,7 +29,14 @@ public enum MenuBarIconStyle {
     /// 4. 否则 -> notCapturedYet
     public static func presentation(for item: ManagedItem, bitmap: CGImage?, captureAuthorized: Bool) -> IconPresentation {
         if let bitmap {
-            return .bitmap(bitmap)
+            // 防御纯黑/空白死块位图，优先回退至原生高清 App 图标
+            if !WindowListIconCapturer.hasVisiblePixels(bitmap) {
+                if let fallback = WindowListIconCapturer.appIconFallback(for: item.ownerBundleID) {
+                    return .bitmap(fallback)
+                }
+            } else {
+                return .bitmap(bitmap)
+            }
         }
         if !captureAuthorized {
             return .placeholder(reason: .captureNotAuthorized)

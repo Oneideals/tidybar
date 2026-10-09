@@ -377,9 +377,39 @@ struct IconBitmapTests {
         let transparent = image(width: 40, height: 40, fill: nil, foreground: nil)
         expect(!WindowListIconCapturer.hasVisiblePixels(transparent), "纯透明图不应判定为有可见像素")
 
-        // 2. 有主体图标绘制的图
+        // 2. 有主体图标绘制的图（彩色）
         let colored = image(width: 40, height: 40, fill: nil, foreground: CGColor(red: 1, green: 0, blue: 0, alpha: 1))
         expect(WindowListIconCapturer.hasVisiblePixels(colored), "有绘制内容的图应判定为有可见像素")
+
+        // 3. 浅色模式透明底黑色线稿图标
+        let blackGlyph = image(width: 40, height: 40, fill: nil, foreground: CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+        expect(WindowListIconCapturer.hasVisiblePixels(blackGlyph), "透明背景上的黑色线稿图标应判定为有效")
+
+        // 4. 纯黑不透明死块（Qt/Electron 全黑背景缓冲窗口）
+        let solidBlack = image(width: 40, height: 40, fill: CGColor(red: 0, green: 0, blue: 0, alpha: 1), foreground: nil)
+        expect(!WindowListIconCapturer.hasVisiblePixels(solidBlack), "纯黑不透明死块不应判定为有效图标")
+    }
+
+    func windowListCapturerRejectsOversizedAndBlackBlocks() throws {
+        let fakeOversized = MenuBarWindowDescriptor(
+            index: 0,
+            windowID: 99999,
+            title: "",
+            bounds: CGRect(x: 0, y: 0, width: 1920, height: 30)
+        )
+        let item = ManagedItem(
+            id: "io.github.xiaoyouchr.ghostdownloader.#item0",
+            ownerBundleID: "io.github.xiaoyouchr.GhostDownloader",
+            title: "Ghost-Downloader-3",
+            frame: CGRect(x: 950, y: 1052, width: 34, height: 24),
+            isSystemOwned: false
+        )
+        // 过滤超宽窗口后，无法命中 1920 宽的辅助窗口，应自动回退到 AppIcon
+        let captured = WindowListIconCapturer.capture(for: item, in: [fakeOversized])
+        if let captured {
+            expect(captured.width <= 512, "兜底 AppIcon 尺寸正常")
+            expect(WindowListIconCapturer.hasVisiblePixels(captured), "兜底 AppIcon 具备有效可见像素且非纯黑")
+        }
     }
 
     func appIconFallbackGeneratesCrispImage() throws {
@@ -427,6 +457,7 @@ extension IconBitmapTests {
             TestCase("placeholderCapturerAlwaysRefuses", suite.placeholderCapturerAlwaysRefuses),
             TestCase("captureDemandsMainThread", suite.captureDemandsMainThread),
             TestCase("hasVisiblePixelsDistinguishesContentFromTransparent", suite.hasVisiblePixelsDistinguishesContentFromTransparent),
+            TestCase("windowListCapturerRejectsOversizedAndBlackBlocks", suite.windowListCapturerRejectsOversizedAndBlackBlocks),
             TestCase("appIconFallbackGeneratesCrispImage", suite.appIconFallbackGeneratesCrispImage),
             TestCase("windowListDiscoveryProducesValidDescriptors", suite.windowListDiscoveryProducesValidDescriptors),
         ]
