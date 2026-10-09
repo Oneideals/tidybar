@@ -288,6 +288,116 @@ struct ActivationTests {
             expectEqual(controller.peekedItemID, "com.test.peekedApp")
         }
     }
+
+    /// 浮现状态下点击菜单栏空白区域（无论在浮现图标左侧还是右侧），必须顺利触发空白区回调并唤出抽屉
+    func emptyBarClickWhilePeekedDismissesPeekAndTriggersDrawer() throws {
+        MainActor.assumeIsolated {
+            ApplicationMenuGeometry.menuWidthProvider = { 200 }
+            defer { ApplicationMenuGeometry.menuWidthProvider = nil }
+
+            let (controller, reader) = makeController(activator: SpyActivator())
+            let screens = FakeScreens(screenFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+            let screen = screens.primaryScreen!
+            let services = SystemServices(
+                reader: reader,
+                mover: FakeMenuBarMover(),
+                cursor: FakeCursor(),
+                accessibility: FakeTrust(),
+                screens: screens,
+                activator: SpyActivator()
+            )
+
+            // 1. 设置常显区图标与隐藏区图标
+            let visibleItem = ManagedItem(
+                id: "com.test.visibleApp",
+                ownerBundleID: "com.test.visibleApp",
+                title: "Visible App",
+                frame: CGRect(x: 1288, y: 1056, width: 30, height: 24)
+            )
+            let hiddenItem = ManagedItem(
+                id: "com.test.hiddenApp",
+                ownerBundleID: "com.test.hiddenApp",
+                title: "Hidden App",
+                frame: CGRect(x: 783, y: 1056, width: 30, height: 24)
+            )
+            controller.applyScan([visibleItem, hiddenItem])
+            _ = controller.reassignZone(visibleItem.id, to: .visible)
+            _ = controller.reassignZone(hiddenItem.id, to: .hidden)
+            controller.setMenuBarFolded(true)
+
+            var dismissProxyCalled = false
+            let coordinator = PeekCoordinator(
+                services: services,
+                controller: controller,
+                setPusherCollapsed: { _ in },
+                proxyClickRelay: { _, _ in },
+                presentProxy: { item, _ in
+                    CGRect(x: 783, y: 1056, width: 30, height: 24)
+                },
+                dismissProxy: {
+                    dismissProxyCalled = true
+                    controller.peekedItemID = nil
+                }
+            )
+
+            // 配置与 TidyBarApplication 一致的 emptySpacePredicate
+            controller.emptySpacePredicate = { location in
+                if let peekedID = controller.peekedItemID {
+                    if let peekedFrame = controller.snapshot.items.first(where: { $0.id == peekedID })?.frame,
+                       peekedFrame.width > 0, peekedFrame.minX > 0 {
+                        let hitArea = peekedFrame.insetBy(dx: -6, dy: -6)
+                        if hitArea.contains(location) {
+                            return false
+                        }
+                    }
+                }
+                let stableVisibleItems = controller.currentlyVisibleItems.filter { item in
+                    if let peekedID = controller.peekedItemID {
+                        if item.id == peekedID || item.id.caseInsensitiveCompare(peekedID) == .orderedSame {
+                            return false
+                        }
+                    }
+                    return true
+                }
+                return ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+                    point: location,
+                    screen: screen,
+                    statusItems: stableVisibleItems
+                )
+            }
+
+            var emptyClicks = 0
+            controller.onEmptyBarClick = {
+                emptyClicks += 1
+                if coordinator.state != .idle {
+                    coordinator.cancelAndDrain()
+                }
+                controller.toggleDrawer()
+            }
+
+            // 2. 浮现隐藏项
+            coordinator.peek(item: hiddenItem, autoRightClick: false)
+            expectEqual(coordinator.state, .presented(itemID: "com.test.hiddenApp"))
+            expectEqual(controller.peekedItemID, "com.test.hiddenApp")
+
+            // 3. 点击浮现图标自身（x=790）：防误触拦截，绝不触发空白区点击
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 790, y: 1068)))
+            expectEqual(emptyClicks, 0, "点击浮现图标本身不能触发空白区点击")
+            expectEqual(coordinator.state, .presented(itemID: "com.test.hiddenApp"), "浮现状态保持")
+
+            // 4. 点击浮现图标右侧的真实空白区（x=1000）：必须放行！
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1000, y: 1068)))
+            expectEqual(emptyClicks, 1, "浮现图标右侧的真实空白区点击必须成功触发 onEmptyBarClick")
+            expect(dismissProxyCalled, "浮现图标必须被收回")
+            expectEqual(coordinator.state, .idle, "状态机恢复为 idle")
+            expect(controller.snapshot.isRevealed, "抽屉必须成功打开展示")
+
+            // 5. 点击浮现图标左侧的真实空白区（x=500）：关闭抽屉
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 500, y: 1068)))
+            expectEqual(emptyClicks, 2, "再次点击空白区成功触发收起")
+            expect(!controller.snapshot.isRevealed, "抽屉成功收起")
+        }
+    }
 }
 
 extension ActivationTests {
@@ -304,6 +414,7 @@ extension ActivationTests {
             TestCase("proxyStatusItemPeekNeverCollapsesPusher", suite.proxyStatusItemPeekNeverCollapsesPusher),
             TestCase("drawerItemClickConcealsDrawerAndPresentsPeek", suite.drawerItemClickConcealsDrawerAndPresentsPeek),
             TestCase("clickingPeekedItemOnMenuBarDoesNotTriggerEmptySpaceOrRehide", suite.clickingPeekedItemOnMenuBarDoesNotTriggerEmptySpaceOrRehide),
+            TestCase("emptyBarClickWhilePeekedDismissesPeekAndTriggersDrawer", suite.emptyBarClickWhilePeekedDismissesPeekAndTriggersDrawer),
         ]
     }
 }

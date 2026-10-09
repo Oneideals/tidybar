@@ -91,9 +91,6 @@ public final class PeekCoordinator {
                     ownerItemCount: item.ownerItemCount
                 )
                 controller?.updateItemFrame(id: item.id, frame: frame)
-                let primaryHeight = services.screens.primaryScreen?.frame.height ?? CGDisplayBounds(CGMainDisplayID()).height
-                let cgPoint = CGPoint(x: frame.midX, y: primaryHeight - frame.midY)
-                CGWarpMouseCursorPosition(cgPoint)
             }
             currentPresentedItem = targetItem
             startRehidePolling(item: targetItem)
@@ -227,11 +224,6 @@ public final class PeekCoordinator {
         currentPresentedItem = verifiedItem
         controller?.updateItemFrame(id: verifiedItem.id, frame: verifiedItem.frame)
         state = .presented(itemID: verifiedItem.id)
-
-        // 光标平滑吸附至目标图标物理中心
-        let primaryHeight = services.screens.primaryScreen?.frame.height ?? CGDisplayBounds(CGMainDisplayID()).height
-        let cgPoint = CGPoint(x: verifiedItem.centerX, y: primaryHeight - verifiedItem.frame.midY)
-        CGWarpMouseCursorPosition(cgPoint)
 
         // 若要求自动右键，派发带 syntheticEventTag 的原生右键交互
         if autoRightClick {

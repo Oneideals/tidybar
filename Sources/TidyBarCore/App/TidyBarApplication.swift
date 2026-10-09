@@ -262,16 +262,26 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             guard let screen = screens.first(where: { $0.frame.contains(location) }) ?? self.services.screens.primaryScreen else {
                 return false
             }
-            var visibleItems = barController.currentlyVisibleItems
-            if let peeked = self.proxyPresentedItem, peeked.frame.width > 0 && peeked.frame.minX > 0,
-               !visibleItems.contains(where: { $0.id.caseInsensitiveCompare(peeked.id) == .orderedSame }) {
-                visibleItems.append(peeked)
+            // 排除临时浮现项（Peek Item），确保中央空白区的最左侧状态图标基准（leftmostStatusItemX）
+            // 始终由稳定常显项决定，绝不受临时展开项污染！
+            var stableVisibleItems = barController.currentlyVisibleItems.filter { item in
+                if let peekedID = barController.peekedItemID {
+                    if item.id == peekedID || item.id.caseInsensitiveCompare(peekedID) == .orderedSame {
+                        return false
+                    }
+                }
+                if let proxyPresented = self.proxyPresentedItem {
+                    if item.id == proxyPresented.id || item.id.caseInsensitiveCompare(proxyPresented.id) == .orderedSame {
+                        return false
+                    }
+                }
+                return true
             }
-            // 若自身折叠按钮窗口已知且未被纳入 visibleItems，动态补充其几何信息以防止误判
+            // 若自身折叠按钮窗口已知且未被纳入 stableVisibleItems，动态补充其几何信息以防止误判
             if let toggleFrame = self.statusItem?.button?.window?.frame,
                toggleFrame.width > 0,
-               !visibleItems.contains(where: { $0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier }) {
-                visibleItems.append(ManagedItem(
+               !stableVisibleItems.contains(where: { $0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier }) {
+                stableVisibleItems.append(ManagedItem(
                     id: "local.tidybar.app.toggle",
                     ownerBundleID: "local.tidybar.app",
                     title: "◀",
@@ -281,7 +291,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             return ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
                 point: location,
                 screen: screen,
-                statusItems: visibleItems,
+                statusItems: stableVisibleItems,
                 ignoredItemIDs: barController.dividerIDs
             )
         }
