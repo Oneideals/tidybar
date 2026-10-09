@@ -77,17 +77,26 @@ public final class PeekCoordinator {
         if let presentProxy {
             state = .presented(itemID: item.id)
             controller?.peekedItemID = item.id
-            lastInteractionAt = Date()
-            currentPresentedItem = item
-
+            var targetItem = item
             if let frame = presentProxy(item, autoRightClick), frame.width > 10, frame.minX > 0 {
+                targetItem = ManagedItem(
+                    id: item.id,
+                    ownerBundleID: item.ownerBundleID,
+                    title: item.title,
+                    frame: frame,
+                    isSystemOwned: item.isSystemOwned,
+                    lastActivatedAt: item.lastActivatedAt,
+                    identitySource: item.identitySource,
+                    ordinalInOwner: item.ordinalInOwner,
+                    ownerItemCount: item.ownerItemCount
+                )
                 controller?.updateItemFrame(id: item.id, frame: frame)
                 let primaryHeight = services.screens.primaryScreen?.frame.height ?? CGDisplayBounds(CGMainDisplayID()).height
                 let cgPoint = CGPoint(x: frame.midX, y: primaryHeight - frame.midY)
                 CGWarpMouseCursorPosition(cgPoint)
             }
-
-            startRehidePolling(item: item)
+            currentPresentedItem = targetItem
+            startRehidePolling(item: targetItem)
             return
         }
 
@@ -256,7 +265,9 @@ public final class PeekCoordinator {
         let delay = controller?.settings.rehideDelay ?? 2.0
 
         // 交互续期：如果菜单处于呈现状态、用户按着鼠标或光标正位于该图标附近（±4pt 容差），重置最后交互时间
-        let itemFrame = controller?.snapshot.items.first(where: { $0.id == item.id })?.frame ?? item.frame
+        let itemFrame = controller?.snapshot.items.first(where: { $0.id == item.id || $0.id.caseInsensitiveCompare(item.id) == .orderedSame })?.frame
+            ?? currentPresentedItem?.frame
+            ?? item.frame
         let hoverArea = itemFrame.insetBy(dx: -4, dy: -4)
         if isPresented != false || isMouseDown || hoverArea.contains(mouseLoc) {
             lastInteractionAt = Date()

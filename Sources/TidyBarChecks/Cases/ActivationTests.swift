@@ -233,6 +233,61 @@ struct ActivationTests {
             expect(controller.snapshot.isRevealed, "后续点击应能顺利重新打开抽屉")
         }
     }
+
+    /// 点击菜单栏上已浮现的图标，绝不能被当作空白区点击而误收起或误打开抽屉
+    func clickingPeekedItemOnMenuBarDoesNotTriggerEmptySpaceOrRehide() throws {
+        MainActor.assumeIsolated {
+            let (controller, reader) = makeController(activator: SpyActivator())
+            let services = SystemServices(
+                reader: reader,
+                mover: FakeMenuBarMover(),
+                cursor: FakeCursor(),
+                accessibility: FakeTrust(),
+                screens: FakeScreens(),
+                activator: SpyActivator()
+            )
+
+            let targetItem = ManagedItem(
+                id: "com.test.peekedApp",
+                ownerBundleID: "com.test.peekedApp",
+                title: "Peeked App",
+                frame: CGRect(x: 1200, y: 10, width: 24, height: 24)
+            )
+
+            var emptyBarClickCount = 0
+            controller.onEmptyBarClick = {
+                emptyBarClickCount += 1
+            }
+
+            let coordinator = PeekCoordinator(
+                services: services,
+                controller: controller,
+                setPusherCollapsed: { _ in },
+                proxyClickRelay: { _, _ in },
+                presentProxy: { item, _ in
+                    CGRect(x: 1200, y: 10, width: 24, height: 24)
+                },
+                dismissProxy: { }
+            )
+
+            // 1. 浮现目标图标
+            coordinator.peek(item: targetItem, autoRightClick: false)
+            expectEqual(coordinator.state, .presented(itemID: "com.test.peekedApp"))
+            expectEqual(controller.peekedItemID, "com.test.peekedApp")
+
+            // 2. 校验浮现图标在菜单栏可见性识别中必须被视为「可见」
+            expect(controller.isItemVisibleOnMenuBar(targetItem), "浮现中的图标必须被 isItemVisibleOnMenuBar 识别为可见")
+            expect(controller.currentlyVisibleItems.contains(where: { $0.id == "com.test.peekedApp" }), "currentlyVisibleItems 必须包含浮现图标")
+
+            // 3. 用户在菜单栏上左键点击该浮现图标（坐标位于其 frame 内）
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1210, y: 15)))
+
+            // 4. 断言：点击该图标绝不能触发 onEmptyBarClick，浮现状态必须完好保持！
+            expectEqual(emptyBarClickCount, 0, "点击浮现图标绝对不能触发空白菜单栏点击回调")
+            expectEqual(coordinator.state, .presented(itemID: "com.test.peekedApp"), "点击浮现图标后必须保持 presented 状态，绝不消失")
+            expectEqual(controller.peekedItemID, "com.test.peekedApp")
+        }
+    }
 }
 
 extension ActivationTests {
@@ -248,6 +303,7 @@ extension ActivationTests {
             TestCase("activationDoesNotTouchJournal", suite.activationDoesNotTouchJournal),
             TestCase("proxyStatusItemPeekNeverCollapsesPusher", suite.proxyStatusItemPeekNeverCollapsesPusher),
             TestCase("drawerItemClickConcealsDrawerAndPresentsPeek", suite.drawerItemClickConcealsDrawerAndPresentsPeek),
+            TestCase("clickingPeekedItemOnMenuBarDoesNotTriggerEmptySpaceOrRehide", suite.clickingPeekedItemOnMenuBarDoesNotTriggerEmptySpaceOrRehide),
         ]
     }
 }

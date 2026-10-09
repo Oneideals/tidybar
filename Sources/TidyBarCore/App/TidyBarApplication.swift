@@ -243,11 +243,30 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             if let toggleWindow = self.statusItem?.button?.window, toggleWindow.frame.contains(location) {
                 return false
             }
+            if let proxyWindow = self.proxyStatusItem?.button?.window, proxyWindow.frame.contains(location) {
+                return false
+            }
+            // 排除落在当前临时浮现（Peek）图标区域内的点击，绝不能当作空白区点击触发折叠/抽屉！
+            if let peekedID = barController.peekedItemID {
+                let peekedFrame = self.proxyPresentedItem?.frame
+                    ?? barController.snapshot.items.first(where: { $0.id == peekedID || $0.id.caseInsensitiveCompare(peekedID) == .orderedSame })?.frame
+                if let peekedFrame, peekedFrame.width > 0 && peekedFrame.minX > 0 {
+                    let hitArea = peekedFrame.insetBy(dx: -6, dy: -6)
+                    if hitArea.contains(location) {
+                        self.peekCoordinator?.noteInteraction()
+                        return false
+                    }
+                }
+            }
             let screens = self.services.screens.screens
             guard let screen = screens.first(where: { $0.frame.contains(location) }) ?? self.services.screens.primaryScreen else {
                 return false
             }
             var visibleItems = barController.currentlyVisibleItems
+            if let peeked = self.proxyPresentedItem, peeked.frame.width > 0 && peeked.frame.minX > 0,
+               !visibleItems.contains(where: { $0.id.caseInsensitiveCompare(peeked.id) == .orderedSame }) {
+                visibleItems.append(peeked)
+            }
             // 若自身折叠按钮窗口已知且未被纳入 visibleItems，动态补充其几何信息以防止误判
             if let toggleFrame = self.statusItem?.button?.window?.frame,
                toggleFrame.width > 0,
@@ -1106,6 +1125,20 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 } else if let btnFrame = statusItem?.button?.window?.frame {
                     realFrame = btnFrame
                 }
+            }
+            if let frame = realFrame {
+                proxyPresentedItem = ManagedItem(
+                    id: item.id,
+                    ownerBundleID: item.ownerBundleID,
+                    title: item.title,
+                    frame: frame,
+                    isSystemOwned: item.isSystemOwned,
+                    lastActivatedAt: item.lastActivatedAt,
+                    identitySource: item.identitySource,
+                    ordinalInOwner: item.ordinalInOwner,
+                    ownerItemCount: item.ownerItemCount
+                )
+                controller?.updateItemFrame(id: item.id, frame: frame)
             }
             if autoRightClick, realFrame != nil {
                 DispatchQueue.main.async { [weak self] in

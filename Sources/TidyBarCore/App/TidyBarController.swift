@@ -180,6 +180,9 @@ public final class TidyBarController {
         if item.isSystemOwned {
             return true
         }
+        if let peeked = peekedItemID, (item.id == peeked || item.id.caseInsensitiveCompare(peeked) == .orderedSame) {
+            return true
+        }
         let zone = presentationLayout.zone(of: item.id) ?? settings.newItemZone
         if isMenuBarFolded {
             return zone == .visible
@@ -399,7 +402,7 @@ public final class TidyBarController {
 
     /// 更新条目的实时物理位置（供浮现状态下点击命中与坐标校验使用）。
     public func updateItemFrame(id: String, frame: CGRect) {
-        if let idx = items.firstIndex(where: { $0.id == id }) {
+        if let idx = items.firstIndex(where: { $0.id == id || $0.id.caseInsensitiveCompare(id) == .orderedSame }) {
             let old = items[idx]
             items[idx] = ManagedItem(
                 id: old.id,
@@ -412,6 +415,13 @@ public final class TidyBarController {
                 ordinalInOwner: old.ordinalInOwner,
                 ownerItemCount: old.ownerItemCount
             )
+        } else {
+            items.append(ManagedItem(
+                id: id,
+                ownerBundleID: ManagedItem.ownerFromID(id),
+                title: id,
+                frame: frame
+            ))
         }
     }
 
@@ -578,6 +588,9 @@ public final class TidyBarController {
                 && isItemVisibleOnMenuBar($0)
             }
             if hitItem != nil {
+                if let peeked = peekedItemID, (hitItem?.id == peeked || hitItem?.id.caseInsensitiveCompare(peeked) == .orderedSame) {
+                    noteInteraction(at: date)
+                }
                 if snapshot.isRevealed {
                     reveal.conceal()
                     publish()

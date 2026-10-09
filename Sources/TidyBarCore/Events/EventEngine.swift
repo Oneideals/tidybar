@@ -79,6 +79,9 @@ public final class EventEngine {
         guard event.cgEvent?.getIntegerValueField(.eventSourceUserData) != CGDragEventPoster.syntheticEventTag else { return }
         switch event.type {
         case .leftMouseDown:
+            if menuBarFrames().contains(where: { $0.contains(NSEvent.mouseLocation) }) {
+                onMenuBarInteraction?()
+            }
             receive(.init(trigger: .emptyBarClick, location: NSEvent.mouseLocation))
         case .rightMouseDown:
             receiveRightClick(at: NSEvent.mouseLocation)
