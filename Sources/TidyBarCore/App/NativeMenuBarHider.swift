@@ -30,6 +30,7 @@ public final class NativeMenuBarHider: @unchecked Sendable {
     }
 
     private var lastAllowedBundleIDs: Set<String>? = nil
+    private var assertionGeneration: Int = 0
 
     /// 隐藏非白名单项。
     /// - Parameters:
@@ -47,7 +48,9 @@ public final class NativeMenuBarHider: @unchecked Sendable {
         guard let configClass = configClass as? NSObject.Type,
               let assertionClass = assertionClass as? NSObject.Type else { return }
 
-        let old = activeAssertion
+        assertionGeneration += 1
+        let thisGeneration = assertionGeneration
+        let oldToInvalidate = activeAssertion
         lastAllowedBundleIDs = allowedBundleIDs
 
         let allocSel = NSSelectorFromString("alloc")
@@ -61,11 +64,31 @@ public final class NativeMenuBarHider: @unchecked Sendable {
         let config = initCallable(allocated, initSel, allowedSystemItems as NSArray, Array(allowedBundleIDs) as NSArray)
 
         let assertion = assertionClass.init()
+        activeAssertion = assertion
+
         let activateSel = NSSelectorFromString("activateWithConfiguration:completionHandler:")
         typealias ActivateBlock = @convention(block) (NSError?) -> Void
-        let block: ActivateBlock = { err in
+        let block: ActivateBlock = { [weak self, weak assertion] err in
             if let err {
                 NSLog("TidyBar: NativeMenuBarHider activate error: %@", err.localizedDescription)
+            }
+            guard let self, let assertion else { return }
+            self.lock.lock()
+            defer { self.lock.unlock() }
+
+            let invalSel = NSSelectorFromString("invalidate")
+            if thisGeneration == self.assertionGeneration {
+                // 关键无缝过渡：新断言已在系统 WindowServer 中完全生效后，才释放旧断言！
+                // 绝不能在激活完成前同步调用 invalidate，否则会导致系统瞬间失去管控、所有隐藏图标全部弹出并与常显区重叠。
+                if let oldToInvalidate {
+                    _ = (oldToInvalidate as AnyObject).perform(invalSel)
+                }
+            } else {
+                // 若在激活期间白名单已更新或调用了 unhideAll，说明当前断言已过时，立即失效本断言
+                _ = (assertion as AnyObject).perform(invalSel)
+                if let oldToInvalidate {
+                    _ = (oldToInvalidate as AnyObject).perform(invalSel)
+                }
             }
         }
         typealias ActivateIMP = @convention(c) (AnyObject, Selector, AnyObject, AnyObject) -> Void
@@ -73,15 +96,6 @@ public final class NativeMenuBarHider: @unchecked Sendable {
         let actCallable = unsafeBitCast(method_getImplementation(actMethod), to: ActivateIMP.self)
 
         actCallable(assertion, activateSel, config, unsafeBitCast(block, to: AnyObject.self))
-        activeAssertion = assertion
-
-        // 关键平滑过渡：必须先激活新断言，再失效旧断言！
-        // 如果先 invalidate 旧断言，系统会瞬间解除管控，导致所有已隐藏的图标全部弹出展开并立即再次缩回，
-        // 从而引发严重的视觉闪烁与动画混乱。通过先挂载新断言再释放旧断言，WindowServer 可以平滑无缝地增量更新。
-        if let old {
-            let invalSel = NSSelectorFromString("invalidate")
-            _ = (old as AnyObject).perform(invalSel)
-        }
     }
 
     /// 恢复所有菜单栏项目全部可见
@@ -89,6 +103,7 @@ public final class NativeMenuBarHider: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        assertionGeneration += 1
         lastAllowedBundleIDs = nil
         if let assertion = activeAssertion {
             let invalSel = NSSelectorFromString("invalidate")
