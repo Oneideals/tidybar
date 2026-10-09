@@ -704,6 +704,7 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
         "com.apple.systempreferences",
         "com.apple.coreaudio",
         "com.apple.TextInputMenuAgent",
+        "com.apple.MenuBarAgent",
     ]
 }
 

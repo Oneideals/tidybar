@@ -1532,7 +1532,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 } else { self.scheduleRefresh(reason: .userRequested, allowAlignment: false) }
                 return
             }
-            runner.start(layout: controller.snapshot.layout, controls: controls,
+            let started = runner.start(layout: controller.snapshot.layout, controls: controls,
                          expectedItems: Set(controller.assignableItems.map(\.id)), defaultZone: controller.settings.newItemZone,
                          screens: services.screens.screens,
                          restoreSavedOrder: self.restoreSavedOrderRequested || controller.settings.activeProfileName != nil) { [weak self] result in
@@ -1596,6 +1596,25 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     }
                     finish(mayRetryAfterScan)
                     controller.reportPhysicalLayout(.failed("菜单栏整理未完成：\(failure.message)"))
+                }
+            }
+            if !started {
+                self.isReconcilingLayout = false
+                controller.setPhysicalLayoutBusy(false)
+                let shouldRestoreSettings = self.settingsWindow?.window?.isVisible == true
+                if shouldRestoreSettings {
+                    self.menuBarAccess?.preventForegroundRestoration(cancelling: false)
+                }
+                self.endLayoutAdjustment()
+                self.endMenuBarAccess()
+                if shouldRestoreSettings {
+                    self.settingsWindow?.showAgain()
+                }
+                if self.alignmentRequested {
+                    self.alignmentRequested = false
+                    self.scheduleAlignment()
+                } else {
+                    self.scheduleRefresh(reason: .userRequested, allowAlignment: false)
                 }
             }
         }

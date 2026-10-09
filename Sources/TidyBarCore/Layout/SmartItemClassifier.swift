@@ -62,7 +62,7 @@ public enum SmartItemClassifier {
         }
 
         // 1. 系统核心状态（时间、输入法、控制中心、麦克风安全指示）
-        if item.isSystemOwned || bundleID.contains("controlcenter") || bundleID.contains("textinput") {
+        if item.isSystemOwned || bundleID.contains("controlcenter") || bundleID.contains("textinput") || bundleID.contains("menubaragent") {
             if combined.contains("时钟") || combined.contains("clock") || combined.contains("time") || combined.contains("星期") || combined.contains("年") {
                 return Recommendation(
                     itemID: item.id,
