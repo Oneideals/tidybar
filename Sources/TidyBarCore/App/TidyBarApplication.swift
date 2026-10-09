@@ -644,6 +644,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private func stopBeforeExit(reason: String, completion: @escaping @MainActor @Sendable () -> Void) {
         terminationRequested = true
+        NativeMenuBarHider.shared.unhideAll()
         peekCoordinator?.cancelAndDrain()
         enumerator.invalidatePendingResults()
         controller?.setPhysicalLayoutBusy(true)
@@ -1298,10 +1299,34 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             dividerConstraints["tidybar_always_hidden_separator"] = fetchHorizontalConstraint(for: ahSep)
         }
 
+        let effectiveFolded = isMenuBarFolded && !isPusherCollapsedOverride
+
+        if NativeMenuBarHider.shared.isAvailable {
+            if effectiveFolded {
+                var allowedBundles = Set<String>()
+                let ownID = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
+                allowedBundles.insert(ownID)
+                allowedBundles.insert("local.tidybar.app")
+                allowedBundles.insert("com.apple.TextInputMenuAgent")
+
+                if let controller = self.controller {
+                    let layout = controller.snapshot.layout
+                    for item in controller.assignableItems {
+                        if layout.zone(of: item.id) == .visible, let bundleID = item.ownerBundleID {
+                            allowedBundles.insert(bundleID)
+                        }
+                    }
+                }
+                NativeMenuBarHider.shared.hideItems(except: allowedBundles)
+            } else {
+                NativeMenuBarHider.shared.unhideAll()
+            }
+        }
+
         let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
         let shouldShowAlwaysHidden = permanentlyHidden && !revealsAlwaysHiddenForClick
         let alwaysHiddenConstraint = dividerConstraints["tidybar_always_hidden_separator"]
-        if shouldShowAlwaysHidden {
+        if shouldShowAlwaysHidden && !NativeMenuBarHider.shared.isAvailable {
             alwaysHiddenConstraint?.isActive = true
             alwaysHiddenSeparator?.length = Self.expandedPushLength
             alwaysHiddenSeparator?.button?.window?.ignoresMouseEvents = true
@@ -1318,8 +1343,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         alwaysHiddenSeparator?.button?.action = nil
 
         let separatorConstraint = dividerConstraints["tidybar_separator"]
-        let effectiveFolded = isMenuBarFolded && !isPusherCollapsedOverride
-        if effectiveFolded {
+        if effectiveFolded && !NativeMenuBarHider.shared.isAvailable {
             separatorConstraint?.isActive = true
             separator?.length = Self.expandedPushLength
             separator?.button?.window?.ignoresMouseEvents = true
@@ -1378,6 +1402,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         layoutAdjustmentDepth += 1
         if layoutAdjustmentDepth == 1 {
             setupDividers()
+            NativeMenuBarHider.shared.unhideAll()
             let separator = dividerItems.first { $0.autosaveName == "tidybar_separator" }
             let alwaysHiddenSeparator = dividerItems.first { $0.autosaveName == "tidybar_always_hidden_separator" }
             dividerConstraints["tidybar_always_hidden_separator"]?.isActive = false
@@ -1443,6 +1468,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             dividerItems.removeAll()
             controller?.dividerCenters = (nil, nil)
             controller?.dividerIDs = []
+            NativeMenuBarHider.shared.unhideAll()
             fprint("已收起分隔符")
         }
         controller?.refreshItems()
@@ -1672,9 +1698,6 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 }
             case .hidden, .alwaysHidden:
                 if item.centerX >= toggle.centerX {
-                    return false
-                }
-                if self.isMenuBarFolded && item.centerX > 0 {
                     return false
                 }
             }

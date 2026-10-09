@@ -1,7 +1,7 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-10-09T05:38:06Z (read-only projection)
-> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 259
+> **Last Updated:** 2026-10-09T06:08:30Z (read-only projection)
+> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 260
 
 ---
 
@@ -26,10 +26,8 @@ _No active leases._
 
 ## 📝 Working Tree Changes
 
-- `.M` `Sources/TidyBarCore/Accessibility/AccessibilityMenuBarReader.swift`
 - `.M` `Sources/TidyBarCore/App/TidyBarApplication.swift`
-- `.M` `Sources/TidyBarCore/Layout/SmartItemClassifier.swift`
-- `.M` `Sources/TidyBarCore/Model/ManagedItem.swift`
+- `??` `Sources/TidyBarCore/App/NativeMenuBarHider.swift`
 
 ## 💡 Handoff Instructions for Next Agent
 
