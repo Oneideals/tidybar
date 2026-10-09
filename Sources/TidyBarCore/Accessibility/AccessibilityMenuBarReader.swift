@@ -207,8 +207,18 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
             if config.processMessagingTimeout.isFinite { AXUIElementSetMessagingTimeout(current, Float(config.processMessagingTimeout)) }
             let role = stringAttribute(from: current, name: kAXRoleAttribute as String)
             if role == kAXMenuRole as String { return .occluded }
-            if candidates.contains(where: { CFEqual($0, current) }) { return .verified }
-            if role == kAXMenuBarRole as String || role == kAXApplicationRole as String { return .occluded }
+            if candidates.contains(where: { cand in
+                if CFEqual(cand, current) { return true }
+                var candPid: pid_t = 0
+                var currPid: pid_t = 0
+                guard AXUIElementGetPid(cand, &candPid) == .success,
+                      AXUIElementGetPid(current, &currPid) == .success,
+                      candPid == currPid, candPid != 0 else { return false }
+                return role == kAXButtonRole as String || role == "AXImage" || role == kAXMenuBarItemRole as String
+            }) { return .verified }
+            if role == kAXMenuBarRole as String || role == kAXApplicationRole as String {
+                return .unavailable
+            }
             var parent: CFTypeRef?
             let result = AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parent)
             if result == .noValue || result == .attributeUnsupported { return .occluded }

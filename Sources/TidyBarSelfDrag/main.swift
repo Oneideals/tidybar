@@ -63,9 +63,9 @@ let mover = AccessibilityMenuBarMover(
     reader: reader,
     cursor: cursor,
     poster: poster,
-    sentinel: EventSentinel(driftTolerance: 6, minIntervalBetweenOperations: 0.05),
+    sentinel: EventSentinel(driftTolerance: 16, minIntervalBetweenOperations: 0.05),
     // 产品侧闸门仍是 false，这里只为完成验证显式打开
-    config: AccessibilityMenuBarMover.Config(isConfirmedSupportedOS: true)
+    config: AccessibilityMenuBarMover.Config(settleInterval: 0.05, isConfirmedSupportedOS: true)
 )
 let journal = LayoutJournal(directory: journalDirectory)
 let engine = LayoutEngine(layout: MenuBarLayout(), services: SystemServices(
@@ -492,8 +492,13 @@ print("路径: " + (useEngine ? "LayoutEngine（产品主路径）" : "直连 mo
 print("被拖对象: \(selfBundle) 自有图标 ｜ 邻居: 用户真实图标 ｜ 计划次数: \(repeatCount)")
 
 let opening = globalOrder()
-guard let selfIndex = opening.firstIndex(where: { $0.ownerBundleID == selfBundle }) else {
-    print("⛔ 没找到 \(selfBundle) 的图标。先跑：./scripts/build-app.sh && open dist/TidyBar.app")
+func isSelfToggleItem(_ item: ManagedItem) -> Bool {
+    item.ownerBundleID == selfBundle &&
+    item.title != "┆" && item.title != "│" && item.title != "╎" &&
+    item.frame.width > 10
+}
+guard let selfIndex = opening.firstIndex(where: isSelfToggleItem) else {
+    print("⛔ 没找到 \(selfBundle) 的主按钮图标。先跑：./scripts/build-app.sh && open dist/TidyBar.app")
     exit(2)
 }
 guard opening.count >= 3 else {
@@ -525,22 +530,29 @@ func dragToSlot(of itemID: String, offset: Int) -> (ok: Bool, ms: Double, error:
     guard let target = MenuBarDropTarget.targetX(in: current, moving: from, to: to) else {
         return (false, 0, "算不出合法落点，拒绝硬拖")
     }
+    let expectedTargets = MenuBarDropTarget.expectedHitTargets(in: current, moving: from, to: to)
     let started = Date()
     do {
         if useEngine {
-            try engine.apply(itemID: itemID, to: .visible, targetX: target)
+            try engine.apply(itemID: itemID, to: .visible, targetX: target, expectedTargets: expectedTargets)
         } else {
-            _ = try mover.move(itemID: itemID, toX: target)
+            _ = try mover.move(itemID: itemID, toX: target, expectedTargets: expectedTargets, isCancelled: { false })
         }
     } catch {
         return (false, Date().timeIntervalSince(started) * 1000, String(describing: error))
     }
     let ms = Date().timeIntervalSince(started) * 1000
-    // 重排是异步的，采样取后者
-    usleep(240_000)
-    let after = globalOrder()
-    let movedOK = after.firstIndex(where: { $0.id == itemID }) == to
-    if movedOK { return (true, ms, "") }
+    // 重排在 WindowServer 中是异步动画，轮询等待落位（上限 800ms，落位即返）
+    var after = globalOrder()
+    let limit = Date().addingTimeInterval(0.8)
+    while true {
+        if after.firstIndex(where: { $0.id == itemID }) == to {
+            return (true, ms, "")
+        }
+        if Date() >= limit { break }
+        usleep(40_000)
+        after = globalOrder()
+    }
     // 失败必须自带现场：没有前后帧与落点，归因就只能靠猜（这一轮就先猜错了两次）
     let landed = after.firstIndex(where: { $0.id == itemID }) ?? -1
     let frameText: (CGRect?) -> String = { frame in
@@ -555,7 +567,7 @@ func dragToSlot(of itemID: String, offset: Int) -> (ok: Bool, ms: Double, error:
 
 func runRound() -> Round? {
     let current = globalOrder()
-    guard let index = current.firstIndex(where: { $0.ownerBundleID == selfBundle }) else {
+    guard let index = current.firstIndex(where: isSelfToggleItem) else {
         print("  ✗ 我方图标在轮次开始前已不可见，停止后续轮次")
         return nil
     }
@@ -572,6 +584,8 @@ func runRound() -> Round? {
         if isCommandStuck() || isButtonStuck() { round.stuck = 1 }
         return round
     }
+    // 往返之间留出短暂间隔，让系统动画稳定且避免连续事件抢占
+    usleep(200_000)
     let back = dragToSlot(of: current[index].id, offset: -direction)
     if back.ok {
         round.restored = 1
@@ -588,6 +602,10 @@ func runRound() -> Round? {
 }
 
 header("真机闸门：我方图标 × 真实邻居，共 \(repeatCount) 轮")
+if repeatCount > 0 {
+    print("  ⏳ 准备开始，请勿移动鼠标或触摸板（1秒后起跑）...")
+    sleep(1)
+}
 var totals = Round()
 var roundIndex = 0
 while roundIndex < repeatCount {

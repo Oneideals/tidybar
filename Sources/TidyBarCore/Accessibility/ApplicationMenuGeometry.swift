@@ -54,7 +54,7 @@ public enum ApplicationMenuGeometry {
     /// 获取前台应用在指定屏幕上的文字主菜单占据的最大 X 边界（水平坐标）。
     /// 如果 AX 暂时不可用，使用保守的安全下限（默认至少 280pt，确保绝不误触菜单文字）。
     public static func frontmostApplicationMenuMaxX(on screen: ScreenInfo) -> CGFloat {
-        let width = menuWidthProvider?() ?? readFrontmostAppMenuWidth()
+        let width = menuWidthProvider != nil ? menuWidthProvider!() : readFrontmostAppMenuWidth()
         if let liveWidth = width, liveWidth > 50 {
             return screen.frame.minX + max(260, liveWidth)
         }

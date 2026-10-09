@@ -37,7 +37,7 @@ public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
             settleInterval: TimeInterval = 0.015,
             initialHoldInterval: TimeInterval = 0.07,
             maxLagPoints: CGFloat = 30,
-            maxPlacementDriftPoints: CGFloat = 8,
+            maxPlacementDriftPoints: CGFloat = 16,
             postsPhysicalCommandKey: Bool = false,
             isConfirmedSupportedOS: Bool = false
         ) {
@@ -146,6 +146,8 @@ public final class AccessibilityMenuBarMover: MenuBarMoving, DragReleasing {
             }
             let targetVerified = expectedTargets.map { candidates in
                 candidates.contains { reader.hitTest(expected: $0, at: target) == .verified }
+                    || (candidates.contains { abs(target.x - $0.frame.maxX) <= 6 || abs(target.x - $0.frame.minX) <= 6 }
+                        && reader.hitTest(expected: nil, at: target) != .occluded)
             } ?? (reader.hitTest(expected: nil, at: target) == .verified)
             guard targetVerified else {
                 totalAborts += 1; consecutiveSuccesses = 0

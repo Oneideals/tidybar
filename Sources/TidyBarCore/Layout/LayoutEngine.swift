@@ -397,7 +397,7 @@ public final class LayoutEngine {
     // MARK: - 变更
 
     /// 把图标移入目标分区。targetX 由调用方（UI/策略层）给出；nil 表示当前环境不允许真实移动。
-    public func apply(itemID: String, to zone: MenuBarZone, targetX: CGFloat?, targetPosition: Int? = nil) throws {
+    public func apply(itemID: String, to zone: MenuBarZone, targetX: CGFloat?, targetPosition: Int? = nil, expectedTargets: [ManagedItem]? = nil) throws {
         guard !ManagedItem.isSystemOwned(itemID: itemID) else { return }
         let prev = layout.zone(of: itemID).flatMap { z -> (MenuBarZone, Int)? in
             layout.items(in: z).firstIndex(of: itemID).map { (z, $0) }
@@ -434,7 +434,7 @@ public final class LayoutEngine {
         }
 
         do {
-            try performDrag(mover: mover, itemID: itemID, x: x)
+            try performDrag(mover: mover, itemID: itemID, x: x, expectedTargets: expectedTargets)
             try commit(intent)
         } catch let error as MenuBarMoveError {
             rollback(intent)
@@ -451,7 +451,7 @@ public final class LayoutEngine {
     /// pending 的生死由调用方决定（apply 失败即回滚清除；replay 失败保留意图等下次重试）。
     /// 抽出来的目的不是省代码，是保证"重放走的就是产品主路径上那条执行链"，
     /// 免得两条路径各测各的绿（验证项 3 就是这么被骗过一次）。
-    private func performDrag(mover: MenuBarMoving, itemID: String, x: CGFloat) throws {
+    private func performDrag(mover: MenuBarMoving, itemID: String, x: CGFloat, expectedTargets: [ManagedItem]? = nil) throws {
         // 注意：这里**不能**再拿"当前光标位置"与图标中心比较。验证项 2 已证伪这种写法：
         // 光标是我们稍后 warp 过去的，动手前它本来就不在图标上，比较的结果是永远中止。
         let cursor = services.cursor
@@ -468,7 +468,7 @@ public final class LayoutEngine {
 
         let beforeItem = services.reader.item(withID: itemID)
         do {
-            _ = try mover.move(itemID: itemID, toX: x)
+            _ = try mover.move(itemID: itemID, toX: x, expectedTargets: expectedTargets, isCancelled: { false })
         } catch let error as MenuBarMoveError {
             if error == .unsupportedOS {
                 markDraggingUnsupported()
