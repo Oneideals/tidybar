@@ -1035,6 +1035,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     @objc public func toggleDrawer() {
         guard !isRelayingClick else { return }
         endHeldMenuAccess()
+        if peekCoordinator?.state != .idle {
+            peekCoordinator?.cancelAndDrain()
+        }
         if controller?.snapshot.isRevealed != true { panelController?.setActivationNotice(nil) }
         controller?.toggleDrawer()
     }
@@ -1045,6 +1048,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         panelController?.hide()
         searchUI?.dismiss()
         endHeldMenuAccess()
+        controller.conceal()
         // 方案 A（虚拟代理图标模式）：点击抽屉里的图标，直接在长显（常显）区域瞬间呈现代理图标，零推杆折叠、零全展开
         if let peek = peekCoordinator {
             if case .presented = peek.state {
@@ -1289,6 +1293,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     @objc public func toggleMenuBarFold() {
         guard !isRelayingClick else { return }
         endHeldMenuAccess()
+        if peekCoordinator?.state != .idle {
+            peekCoordinator?.cancelAndDrain()
+        }
         NSLog("TIDYBAR: toggleMenuBarFold! now folded=\(isMenuBarFolded), will set to \(!isMenuBarFolded)")
         setMenuBarFolded(!isMenuBarFolded)
     }

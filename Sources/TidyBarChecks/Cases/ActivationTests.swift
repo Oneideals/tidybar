@@ -172,6 +172,67 @@ struct ActivationTests {
             expectNil(controller.peekedItemID)
         }
     }
+
+    /// 点击抽屉内图标后，抽屉必须立即关闭（逻辑与视觉同步收起），同时在菜单栏呈现该图标
+    func drawerItemClickConcealsDrawerAndPresentsPeek() throws {
+        MainActor.assumeIsolated {
+            let (controller, reader) = makeController(activator: SpyActivator())
+            let services = SystemServices(
+                reader: reader,
+                mover: FakeMenuBarMover(),
+                cursor: FakeCursor(),
+                accessibility: FakeTrust(),
+                screens: FakeScreens(),
+                activator: SpyActivator()
+            )
+
+            // 1. 用户打开收纳抽屉
+            controller.toggleDrawer()
+            expect(controller.snapshot.isRevealed, "抽屉应处于展开状态")
+
+            var presentProxyCalls = 0
+            var dismissProxyCalls = 0
+            let targetItem = ManagedItem(
+                id: "com.test.drawerItem",
+                ownerBundleID: "com.test.drawerItem",
+                title: "Drawer Item",
+                frame: CGRect(x: 100, y: 10, width: 24, height: 24)
+            )
+
+            let coordinator = PeekCoordinator(
+                services: services,
+                controller: controller,
+                setPusherCollapsed: { _ in },
+                proxyClickRelay: { _, _ in },
+                presentProxy: { item, _ in
+                    presentProxyCalls += 1
+                    return CGRect(x: 500, y: 10, width: 30, height: 24)
+                },
+                dismissProxy: {
+                    dismissProxyCalls += 1
+                }
+            )
+
+            // 2. 点击抽屉里的图标：抽屉立即关闭（conceal），同时启动浮现
+            controller.conceal()
+            expect(!controller.snapshot.isRevealed, "抽屉必须立即关闭且状态机置为隐藏")
+
+            coordinator.peek(item: targetItem, autoRightClick: false)
+            expectEqual(coordinator.state, .presented(itemID: "com.test.drawerItem"), "目标图标应浮现于菜单栏")
+            expectEqual(controller.peekedItemID, "com.test.drawerItem")
+            expect(!controller.snapshot.isRevealed, "浮现过程中抽屉绝不能重新展开")
+
+            // 3. 浮现结束后收起目标图标
+            coordinator.rehide(item: targetItem)
+            expectEqual(coordinator.state, .idle)
+            expectNil(controller.peekedItemID)
+            expect(!controller.snapshot.isRevealed, "收回后抽屉依旧保持关闭")
+
+            // 4. 后续用户再次点击折叠开关/空白处，抽屉能正常单次点击打开
+            controller.toggleDrawer()
+            expect(controller.snapshot.isRevealed, "后续点击应能顺利重新打开抽屉")
+        }
+    }
 }
 
 extension ActivationTests {
@@ -186,6 +247,7 @@ extension ActivationTests {
             TestCase("activatingAlwaysHiddenItemRevealsFirst", suite.activatingAlwaysHiddenItemRevealsFirst),
             TestCase("activationDoesNotTouchJournal", suite.activationDoesNotTouchJournal),
             TestCase("proxyStatusItemPeekNeverCollapsesPusher", suite.proxyStatusItemPeekNeverCollapsesPusher),
+            TestCase("drawerItemClickConcealsDrawerAndPresentsPeek", suite.drawerItemClickConcealsDrawerAndPresentsPeek),
         ]
     }
 }
