@@ -150,9 +150,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             self.restoreSavedOrderRequested = self.restoreSavedOrderRequested || restoreOrder
             self.hasPerformedInitialFold = false
             self.lastLayoutError = nil
-            self.setupDividers()
             self.applyMenuBarFoldState()
-            self.scheduleAlignment()
+            if !NativeMenuBarHider.shared.isAvailable {
+                self.scheduleAlignment()
+            }
         }
         self.controller = barController
         barController.onBeginLayoutAdjustment = { [weak self] in self?.beginLayoutAdjustment() ?? [] }
@@ -1312,8 +1313,13 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 if let controller = self.controller {
                     let layout = controller.snapshot.layout
                     for item in controller.assignableItems {
-                        if layout.zone(of: item.id) == .visible, let bundleID = item.ownerBundleID {
-                            allowedBundles.insert(bundleID)
+                        if layout.zone(of: item.id) == .visible {
+                            let bundleID = item.ownerBundleID
+                                ?? controller.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == item.id || $0.aliases.contains(item.id) })?.ownerBundleID
+                                ?? ManagedItem.ownerFromID(item.id)
+                            if let bundleID, !bundleID.isEmpty {
+                                allowedBundles.insert(bundleID)
+                            }
                         }
                     }
                 }

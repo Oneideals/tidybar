@@ -47,12 +47,7 @@ public final class NativeMenuBarHider: @unchecked Sendable {
         guard let configClass = configClass as? NSObject.Type,
               let assertionClass = assertionClass as? NSObject.Type else { return }
 
-        // 释放旧断言
-        if let old = activeAssertion {
-            let invalSel = NSSelectorFromString("invalidate")
-            _ = (old as AnyObject).perform(invalSel)
-            activeAssertion = nil
-        }
+        let old = activeAssertion
         lastAllowedBundleIDs = allowedBundleIDs
 
         let allocSel = NSSelectorFromString("alloc")
@@ -79,6 +74,14 @@ public final class NativeMenuBarHider: @unchecked Sendable {
 
         actCallable(assertion, activateSel, config, unsafeBitCast(block, to: AnyObject.self))
         activeAssertion = assertion
+
+        // 关键平滑过渡：必须先激活新断言，再失效旧断言！
+        // 如果先 invalidate 旧断言，系统会瞬间解除管控，导致所有已隐藏的图标全部弹出展开并立即再次缩回，
+        // 从而引发严重的视觉闪烁与动画混乱。通过先挂载新断言再释放旧断言，WindowServer 可以平滑无缝地增量更新。
+        if let old {
+            let invalSel = NSSelectorFromString("invalidate")
+            _ = (old as AnyObject).perform(invalSel)
+        }
     }
 
     /// 恢复所有菜单栏项目全部可见

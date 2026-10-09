@@ -705,8 +705,13 @@ public final class TidyBarController {
             pendingReplayID = nil
             engine.pinAsUser(itemID: itemID)
         }
-        reportPhysicalLayout(.queued)
-        request(position != nil)
+        if NativeMenuBarHider.shared.isAvailable {
+            request(position != nil)
+            reportPhysicalLayout(.idle)
+        } else {
+            reportPhysicalLayout(.queued)
+            request(position != nil)
+        }
         return true
     }
 
