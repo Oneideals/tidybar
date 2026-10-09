@@ -1052,6 +1052,53 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private func presentProxyItem(item: ManagedItem, autoRightClick: Bool) -> CGRect? {
         fprint("presentProxyItem item=\(item.id) title=\(item.title)")
+        if NativeMenuBarHider.shared.isAvailable {
+            // macOS 27 原生浮现：直接通过 MenuBarClientCore 白名单将该图标的真实原生 NSStatusItem 呈现于菜单栏！
+            // 彻底杜绝虚拟占位按钮与真实菜单弹窗坐标割裂（相距甚远）的问题。
+            controller?.peekedItemID = item.id
+            proxyPresentedItem = item
+            proxyStatusItem?.isVisible = false
+            proxyStatusItem?.length = 0
+            applyMenuBarFoldState()
+
+            let bundleID = item.ownerBundleID
+                ?? controller?.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == item.id || $0.aliases.contains(item.id) })?.ownerBundleID
+                ?? ManagedItem.ownerFromID(item.id)
+            var realFrame: CGRect?
+            if let bundleID {
+                for _ in 1...12 {
+                    let items = services.reader.items(ownedBy: bundleID)
+                    for cand in items where cand.frame.width > 0 && cand.frame.minX > 0 {
+                        let idMatches = cand.id.caseInsensitiveCompare(item.id) == .orderedSame
+                        let bundleMatches = cand.ownerBundleID?.caseInsensitiveCompare(bundleID) == .orderedSame
+                        if idMatches || bundleMatches {
+                            realFrame = cand.frame
+                            break
+                        }
+                    }
+                    if realFrame != nil {
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.025)
+                }
+            }
+            if realFrame == nil || (realFrame?.minX ?? 0) <= 0 {
+                if let found = services.reader.currentFrame(of: item), found.width > 0, found.minX > 0 {
+                    realFrame = found
+                } else if item.frame.width > 0 && item.frame.minX > 0 {
+                    realFrame = item.frame
+                } else if let btnFrame = statusItem?.button?.window?.frame {
+                    realFrame = btnFrame
+                }
+            }
+            if autoRightClick, realFrame != nil {
+                DispatchQueue.main.async { [weak self] in
+                    _ = self?.requestProxyClick(item, button: .secondary, unfold: false)
+                }
+            }
+            return realFrame ?? CGRect(x: 100, y: 10, width: 30, height: 24)
+        }
+
         if let togglePos = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Double {
             UserDefaults.standard.set(togglePos - 1.0, forKey: "NSStatusItem Preferred Position tidybar_proxy")
             UserDefaults.standard.synchronize()
@@ -1128,6 +1175,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         proxyStatusItem?.button?.image = nil
         proxyStatusItem?.button?.title = ""
         proxyPresentedItem = nil
+        controller?.peekedItemID = nil
+        if NativeMenuBarHider.shared.isAvailable {
+            applyMenuBarFoldState()
+        }
     }
 
     @objc private func proxyStatusItemClicked(_ sender: NSStatusBarButton) {
@@ -1144,19 +1195,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private func handleProxyItemLeftClick(item: ManagedItem) {
         peekCoordinator?.noteInteraction()
-        var activated = false
-        if let bundleID = item.ownerBundleID,
-           let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) {
-            app.activate()
-            activated = app.activationPolicy != .accessory
-        }
-        let outcome = services.activator?.activate(itemID: item.id) ?? (services.reader as? MenuBarActivating)?.activate(itemID: item.id) ?? .actionUnsupported
-        if outcome.countsAsPressed {
-            activated = true
-        }
-        if !activated, let btn = proxyStatusItem?.button {
-            handleProxyItemRightClick(item: item, sender: btn)
-        }
+        // 若在非原生降级模式下使用了 proxyStatusItem，点击时应通过 requestProxyClick 原位展开点击真实图标，
+        // 确保弹出菜单与图标视觉完全吻合
+        requestProxyClick(item, button: .primary, unfold: true)
     }
 
     private func handleProxyItemRightClick(item: ManagedItem, sender: NSStatusBarButton) {
@@ -1321,6 +1362,22 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                                 allowedBundles.insert(bundleID)
                             }
                         }
+                    }
+
+                    if let peekedID = controller.peekedItemID ?? proxyPresentedItem?.id {
+                        let peekedBundleID = proxyPresentedItem?.ownerBundleID
+                            ?? controller.assignableItems.first(where: { $0.id == peekedID })?.ownerBundleID
+                            ?? controller.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == peekedID || $0.aliases.contains(peekedID) })?.ownerBundleID
+                            ?? ManagedItem.ownerFromID(peekedID)
+                        if let peekedBundleID, !peekedBundleID.isEmpty {
+                            allowedBundles.insert(peekedBundleID)
+                        }
+                    }
+                } else if let proxyPresentedItem {
+                    let peekedBundleID = proxyPresentedItem.ownerBundleID
+                        ?? ManagedItem.ownerFromID(proxyPresentedItem.id)
+                    if let peekedBundleID, !peekedBundleID.isEmpty {
+                        allowedBundles.insert(peekedBundleID)
                     }
                 }
                 NativeMenuBarHider.shared.hideItems(except: allowedBundles)

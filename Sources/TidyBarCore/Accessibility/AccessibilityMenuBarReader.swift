@@ -135,7 +135,9 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     /// 单进程读取只有几毫秒，是拖拽期间采样的唯一可行工具。
     public func discoverItems(owning bundleID: String) -> [ManagedItem] {
         let generation = beginObservation()
-        guard let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) else {
+        guard let application = workspace.runningApplications.first(where: {
+            $0.bundleIdentifier?.caseInsensitiveCompare(bundleID) == .orderedSame
+        }) else {
             return []
         }
         let result = scan(
