@@ -103,9 +103,11 @@ public final class MenuBarArrangement {
                 let physicalIDs = Set(physical.map(\.id))
                 let hasToggle = physicalIDs.contains(controls.toggle)
                     || physical.contains(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "☰" || $0.title == "▶" || $0.title == "◀") })
-                let hasLeft = physicalIDs.contains(controls.leftDivider)
+                let hasLeft = controls.leftDivider == nil
+                    || physicalIDs.contains(controls.leftDivider!)
                     || physical.contains(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "┆" || $0.id.contains("always_hidden")) })
-                let hasRight = physicalIDs.contains(controls.rightDivider)
+                let hasRight = controls.rightDivider == nil
+                    || physicalIDs.contains(controls.rightDivider!)
                     || physical.contains(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "│" || $0.id.contains("separator")) })
                 guard hasToggle && hasLeft && hasRight else {
                     if ProcessInfo.processInfo.systemUptime < deadline {
@@ -114,10 +116,14 @@ public final class MenuBarArrangement {
                     }
                     throw Failure.controlsUnavailable
                 }
-                let foundLeft = physical.first(where: { $0.id == controls.leftDivider })
-                    ?? physical.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "┆" || $0.id.contains("always_hidden")) })
-                let foundRight = physical.first(where: { $0.id == controls.rightDivider })
-                    ?? physical.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "│" || $0.id.contains("separator")) })
+                let foundLeft = controls.leftDivider.flatMap { id in
+                    physical.first(where: { $0.id == id })
+                        ?? physical.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "┆" || $0.id.contains("always_hidden")) })
+                }
+                let foundRight = controls.rightDivider.flatMap { id in
+                    physical.first(where: { $0.id == id })
+                        ?? physical.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "│" || $0.id.contains("separator")) })
+                }
                 let currentControlIDs = Set([foundLeft?.id, foundRight?.id, controls.leftDivider, controls.rightDivider, controls.toggle].compactMap { $0 })
                 let managed = Set(physical.filter { !$0.isSystemOwned && !currentControlIDs.contains($0.id) && $0.ownerBundleID != "local.tidybar.app" && $0.ownerBundleID != Bundle.main.bundleIdentifier }.map(\.id))
                 guard managed == expectedItems else {
@@ -176,12 +182,16 @@ public final class MenuBarArrangement {
             let toggleID = current.first(where: { $0.id == controls.toggle })?.id
                 ?? current.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "☰" || $0.title == "▶" || $0.title == "◀") })?.id
                 ?? controls.toggle
-            let leftID = current.first(where: { $0.id == controls.leftDivider })?.id
+            let leftID = controls.leftDivider != nil ? (
+                current.first(where: { $0.id == controls.leftDivider })?.id
                 ?? current.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "┆" || $0.id.contains("always_hidden")) })?.id
                 ?? controls.leftDivider
-            let rightID = current.first(where: { $0.id == controls.rightDivider })?.id
+            ) : nil
+            let rightID = controls.rightDivider != nil ? (
+                current.first(where: { $0.id == controls.rightDivider })?.id
                 ?? current.first(where: { ($0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier) && ($0.title == "│" || $0.id.contains("separator")) })?.id
                 ?? controls.rightDivider
+            ) : nil
             let effectiveControls = DividerGeometry.Controls(leftDivider: leftID, rightDivider: rightID, toggle: toggleID)
             let desired = desiredOrder(for: current, controls: effectiveControls)
             if restoreSavedOrder ? current.map(\.id) == desired
@@ -233,8 +243,8 @@ public final class MenuBarArrangement {
                 if progress.isCancelled { throw Failure.cancelled }
                 guard cursor.isSessionInteractive else { throw Failure.sessionUnavailable }
                 let after = try readMenuBar().current
-                let afterLeftID = after.first(where: { $0.id == effectiveControls.leftDivider })?.id ?? leftID
-                let afterRightID = after.first(where: { $0.id == effectiveControls.rightDivider })?.id ?? rightID
+                let afterLeftID = effectiveControls.leftDivider != nil ? (after.first(where: { $0.id == effectiveControls.leftDivider })?.id ?? leftID) : nil
+                let afterRightID = effectiveControls.rightDivider != nil ? (after.first(where: { $0.id == effectiveControls.rightDivider })?.id ?? rightID) : nil
                 let afterToggleID = after.first(where: { $0.id == effectiveControls.toggle })?.id ?? toggleID
                 let afterControls = DividerGeometry.Controls(leftDivider: afterLeftID, rightDivider: afterRightID, toggle: afterToggleID)
                 advanced = disorder(of: after, controls: afterControls) < previousDisorder

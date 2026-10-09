@@ -144,6 +144,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         barController.onSearchRequested = { [weak self] in
             self?.presentSearch()
         }
+        barController.onReconcilePartitions = { [weak self] in
+            self?.reconcilePhysicalPartitioning()
+        }
         barController.onRequestPhysicalArrangement = { [weak self] restoreOrder in
             guard let self else { return }
             self.endHeldMenuAccess()
@@ -151,9 +154,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             self.hasPerformedInitialFold = false
             self.lastLayoutError = nil
             self.applyMenuBarFoldState()
-            if !NativeMenuBarHider.shared.isAvailable {
-                self.scheduleAlignment()
-            }
+            self.scheduleAlignment()
         }
         self.controller = barController
         barController.onBeginLayoutAdjustment = { [weak self] in self?.beginLayoutAdjustment() ?? [] }
@@ -403,6 +404,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     }
                 }
             },
+            sessions.addObserver(forName: .init("local.tidybar.reconcilePartitions"), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.reconcilePhysicalPartitioning()
+                }
+            },
         ]
 
         let hotKey = GlobalHotKey { [weak self, weak barController] in
@@ -478,7 +484,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
 
         statusItem = makeStatusItem(controller: barController)
-        setupDividers()
+        if !NativeMenuBarHider.shared.isAvailable {
+            setupDividers()
+        }
         applyMenuBarFoldState()
         presentWizardIfNeeded(barController: barController)
         barController.start(scansSynchronously: false)
@@ -943,8 +951,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 这个意图本身不依赖拖拽，不必让它陪着闸门一起等着。
         menu.addItem(withTitle: "搜索图标…", action: #selector(presentSearch), keyEquivalent: "f")
         menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",")
-        menu.addItem(withTitle: dividerItems.isEmpty ? "摆放分隔符（划定三个区）" : "收起分隔符",
-                     action: #selector(toggleDividers), keyEquivalent: "")
+        if NativeMenuBarHider.shared.isAvailable {
+            menu.addItem(withTitle: "✨ 规整菜单栏分区", action: #selector(reconcilePhysicalPartitioningAction), keyEquivalent: "")
+        } else {
+            menu.addItem(withTitle: dividerItems.isEmpty ? "摆放分隔符（划定三个区）" : "收起分隔符",
+                         action: #selector(toggleDividers), keyEquivalent: "")
+        }
         if !barController.pendingNewItems.isEmpty {
             menu.addItem(TidyBarMenuBuilder.newItemQuestions(
                 controller: barController,
@@ -1283,7 +1295,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     public func setMenuBarFolded(_ folded: Bool) {
         guard let controller else { return }
-        if dividerItems.isEmpty {
+        if !NativeMenuBarHider.shared.isAvailable && dividerItems.isEmpty {
             setupDividers()
         }
         NSLog("TIDYBAR: setMenuBarFolded to \(folded)")
@@ -1441,6 +1453,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     /// 两个独立分界：普通展开只缩回右侧分隔符，左侧始终隐藏区仍保持遮挡。
     public func setupDividers() {
+        if NativeMenuBarHider.shared.isAvailable {
+            dividerItems.forEach { NSStatusBar.system.removeStatusItem($0) }
+            dividerItems.removeAll()
+            dividerConstraints.removeAll()
+            return
+        }
         guard dividerItems.isEmpty else { return }
         if let togglePos = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Double {
             UserDefaults.standard.set(togglePos + 1, forKey: "NSStatusItem Preferred Position tidybar_separator")
@@ -1477,7 +1495,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private func expandDividersForAdjustment() {
-        guard !NativeMenuBarHider.shared.isAvailable else { return }
+        if NativeMenuBarHider.shared.isAvailable {
+            layoutAdjustmentDepth += 1
+            NativeMenuBarHider.shared.unhideAll()
+            return
+        }
         layoutAdjustmentDepth += 1
         if layoutAdjustmentDepth == 1 {
             setupDividers()
@@ -1514,8 +1536,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleAlignment(after delay: TimeInterval = 0.3) {
-        if NativeMenuBarHider.shared.isAvailable { return }
-        guard !terminationRequested, !dividerItems.isEmpty, services.cursor.isSessionInteractive else { return }
+        guard !terminationRequested, services.cursor.isSessionInteractive else { return }
+        if !NativeMenuBarHider.shared.isAvailable && dividerItems.isEmpty { return }
         if isRelayingClick || isHoldingUnobservedMenu || peekCoordinator?.state != .idle { alignmentRequested = true; return }
         if isReconcilingLayout {
             alignmentRequested = true
@@ -1528,9 +1550,21 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.alignmentScheduled = false
-            guard !self.dividerItems.isEmpty else { return }
+            if !NativeMenuBarHider.shared.isAvailable && self.dividerItems.isEmpty { return }
             self.executeFoldingByCalculatedZones()
         }
+    }
+
+    @objc public func reconcilePhysicalPartitioningAction() {
+        reconcilePhysicalPartitioning()
+    }
+
+    public func reconcilePhysicalPartitioning() {
+        guard controller != nil, !terminationRequested, services.cursor.isSessionInteractive else { return }
+        fprint("开始规整菜单栏物理分区...")
+        self.hasPerformedInitialFold = false
+        self.lastLayoutError = nil
+        alignDividerToVisibleBoundary()
     }
 
     /// 摆出/收起分隔符
@@ -1610,9 +1644,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         menuBarAccess = access
         statusItem?.button?.toolTip = "正在整理菜单栏位置…"
         let owner = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
+        let isModernHider = NativeMenuBarHider.shared.isAvailable
         let controls = DividerGeometry.Controls(
-            leftDivider: ManagedItem.stableID(ownerBundleID: owner, title: Self.alwaysHiddenDividerGlyph),
-            rightDivider: ManagedItem.stableID(ownerBundleID: owner, title: Self.dividerGlyph),
+            leftDivider: (isModernHider || dividerItems.isEmpty) ? nil : ManagedItem.stableID(ownerBundleID: owner, title: Self.alwaysHiddenDividerGlyph),
+            rightDivider: (isModernHider || dividerItems.isEmpty) ? nil : ManagedItem.stableID(ownerBundleID: owner, title: Self.dividerGlyph),
             toggle: ManagedItem.stableID(ownerBundleID: owner, title: statusItem?.button?.title ?? "☰"))
         let wasDemo = controller.isDemoMode
         let runner = arrangement ?? MenuBarArrangement(reader: services.reader, mover: mover, cursor: services.cursor)
@@ -1731,60 +1766,22 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private func isCurrentLayoutCorrectlyPartitioned(from items: [ManagedItem]) -> Bool {
-        if NativeMenuBarHider.shared.isAvailable { return true }
         guard let controller else { return true }
         let owner = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
+        let isModernHider = NativeMenuBarHider.shared.isAvailable
         let controls = DividerGeometry.Controls(
-            leftDivider: ManagedItem.stableID(ownerBundleID: owner, title: Self.alwaysHiddenDividerGlyph),
-            rightDivider: ManagedItem.stableID(ownerBundleID: owner, title: Self.dividerGlyph),
+            leftDivider: (isModernHider || dividerItems.isEmpty) ? nil : ManagedItem.stableID(ownerBundleID: owner, title: Self.alwaysHiddenDividerGlyph),
+            rightDivider: (isModernHider || dividerItems.isEmpty) ? nil : ManagedItem.stableID(ownerBundleID: owner, title: Self.dividerGlyph),
             toggle: ManagedItem.stableID(ownerBundleID: owner, title: statusItem?.button?.title ?? "☰")
         )
         let exemptIDs: Set<String> = controller.peekedItemID.map { [$0] } ?? []
-        if DividerGeometry.isCorrectlyPartitioned(
+        return DividerGeometry.isCorrectlyPartitioned(
             items: items,
             layout: controller.snapshot.layout,
             controls: controls,
             defaultZone: controller.settings.newItemZone,
             exempt: exemptIDs
-        ) {
-            return true
-        }
-
-        // 真实运行时判定：推杆折叠或 0 宽态下，分隔符无可见字符或处于离屏推开状态
-        // 此时以 toggle（折叠控制按钮）为物理界限：
-        // - 所有常显项（.visible）及系统项必须位于 toggle 右侧（centerX > toggle.centerX）
-        // - 所有收纳隐藏项（.hidden 及 .alwaysHidden）必须位于 toggle 左侧（centerX < toggle.centerX，包含负坐标离屏区）
-        guard let toggle = items.first(where: {
-            ($0.ownerBundleID == owner || $0.ownerBundleID == "local.tidybar.app") &&
-            ($0.title == statusItem?.button?.title || $0.title == "◀" || $0.title == "▶" || $0.title == "☰" || $0.id == controls.toggle || $0.frame.width >= 16)
-        }) else {
-            return false
-        }
-
-        let defaultZone = controller.settings.newItemZone
-        let layout = controller.snapshot.layout
-
-        let nonTidyBarItems = items.filter {
-            $0.ownerBundleID != owner && $0.ownerBundleID != "local.tidybar.app"
-        }
-        guard !nonTidyBarItems.isEmpty else { return true }
-
-        for item in nonTidyBarItems {
-            if exemptIDs.contains(item.id) { continue }
-            let zone = item.isSystemOwned ? .visible : (layout.zone(of: item.id) ?? defaultZone)
-            switch zone {
-            case .visible:
-                if item.centerX <= toggle.centerX {
-                    return false
-                }
-            case .hidden, .alwaysHidden:
-                if item.centerX >= toggle.centerX {
-                    return false
-                }
-            }
-        }
-
-        return true
+        )
     }
 
     /// 只更新真实边界。后台扫描不应把暂时的物理位置覆盖成用户分配。

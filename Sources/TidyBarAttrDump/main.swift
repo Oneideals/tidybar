@@ -31,6 +31,44 @@ let selfFixtureCount = arguments.firstIndex(of: "--self").flatMap { index -> Int
 }
 let myPID = ProcessInfo.processInfo.processIdentifier
 
+if arguments.contains("--check-arrangement") {
+    let reader = AccessibilityMenuBarReader()
+    let raw = reader.discoverItems()
+    let physical = DividerGeometry.physicalItems(raw)
+    let journal = LayoutJournal(directory: AppPaths.journalDirectory)
+    guard let layout = journal.readCommittedLayout() else {
+        print("未找到 committed layout")
+        exit(1)
+    }
+    let controls = DividerGeometry.Controls(leftDivider: nil, rightDivider: nil, toggle: "local.tidybar.app.◀")
+    print("Physical items count: \(physical.count)")
+    for (i, it) in physical.enumerated() {
+        let z = layout.zone(of: it.id) ?? .hidden
+        print("[\(i)] x=\(Int(it.frame.minX)) id=\(it.id) title=\(it.title) zone=\(z) sys=\(it.isSystemOwned)")
+    }
+    let desired = DividerGeometry.foldingOrder(items: physical, layout: layout, controls: controls)
+    print("\nDesired count: \(desired.count)")
+    for (i, id) in desired.enumerated() {
+        print("[\(i)] desired: \(id)")
+    }
+    if let dest = desired.indices.first(where: { physical[$0].id != desired[$0] }) {
+        let src = physical.firstIndex(where: { $0.id == desired[dest] })
+        print("\nDiff at dest=\(dest), desiredItem=\(desired[dest]), src=\(String(describing: src))")
+        if let s = src {
+            print("Moving item: \(physical[s].title) (\(physical[s].id)) from \(s) to \(dest)")
+            let targetX = MenuBarDropTarget.targetX(in: physical, moving: s, to: dest)
+            print("TargetX: \(String(describing: targetX))")
+        }
+    } else {
+        print("\nAll match!")
+    }
+    let isPart = DividerGeometry.isCorrectlyPartitioned(items: physical, layout: layout, controls: controls)
+    print("isCorrectlyPartitioned: \(isPart)")
+    let disorder = DividerGeometry.partitionDisorder(items: physical, layout: layout, controls: controls)
+    print("partitionDisorder: \(disorder)")
+    exit(0)
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 

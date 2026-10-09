@@ -1,12 +1,13 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-10-09T09:10:09Z (read-only projection)
-> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 263
+> **Last Updated:** 2026-10-09T11:16:27Z (read-only projection)
+> **Git State:** `dirty` | **Branch:** `main` | **Events Count:** 263
 
 ---
 
 ## 🎯 Recent Milestones & Completed Tasks ([DONE])
 
+- [DONE] `native-partition-alignment-20261009` — 实现原生折叠模式（NativeMenuBarHider）下的菜单栏物理分区规整架构。支持无推杆分隔符环境下的物理边界与逆序检测（isCorrectlyPartitioned / partitionDisorder），使所有隐藏区图标在 macOS WindowServer 底层物理排布上统一归拢至最左侧常显图标（BetterDisplay，x=1288）左侧。点击收纳抽屉图标浮现时，凭借系统连续流式紧凑排布（contiguous flow packing），浮现图标统一在常显区域最左侧边缘（紧邻 BetterDisplay）弹出，杜绝随机穿插与坐标位移；内存常驻 34MB（在 ≤40MB 预算内），329 项单元与回归测试全部通过。
 - [DONE] `native-fold-acceptance-20260909` — 最终63716565包自身两项权限已生效，完整原生验收完成：AdGuard抽屉右键、4.2秒保活、主动关闭后复位；主按钮展开与折叠时8常显/19隐藏分界正确；真实图标19/19及悬停收起通过。Debug与Release各312条41套件通过，配置保持。详见docs/findings/17-final-drawer-acceptance.md。
 - [DONE] `native-test-permission-20260908` — 用户已为b82694测试包授权；同包重启PID25636启动日志确认辅助功能已授予、完整接管，读取35至38项。权限阻塞已消除，后续锁屏及原生交互验收另行记录。
 - [DONE] `review-1935331` — 原始16项审查问题及复核追加的恢复保护、同区保序、手动扫描时序、事件隔离和UI结果链问题已修复。Debug与最终Release回归均253/253、38套件通过；全目标编译、应用打包、签名及plist校验通过。详见docs/findings/10-review-fixes.md；真实菜单栏拖拽未做现场验证。
@@ -26,7 +27,11 @@ _No active leases._
 
 ## 📝 Working Tree Changes
 
-_Working tree is clean._
+- `.M` `Sources/TidyBarCore/App/SettingsWindow.swift`
+- `.M` `Sources/TidyBarCore/App/TidyBarApplication.swift`
+- `.M` `Sources/TidyBarCore/App/TidyBarController.swift`
+- `.M` `Sources/TidyBarCore/Layout/DividerGeometry.swift`
+- `.M` `Sources/TidyBarCore/Layout/MenuBarArrangement.swift`
 
 ## 💡 Handoff Instructions for Next Agent
 

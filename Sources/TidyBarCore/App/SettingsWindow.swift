@@ -589,12 +589,18 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             launchToggle.title = "开机自动启动 TidyBar"
         }
 
-        if let arePlaced = controller.areDividersPlaced?(), arePlaced {
+        if NativeMenuBarHider.shared.isAvailable {
+            dividerButton.title = "✨ 规整菜单栏分区"
+            dividerButton.contentTintColor = .controlAccentColor
+            dividerButton.toolTip = "将隐藏区与始终隐藏区的所有图标一次性规整至显示区左侧，确保抽屉呼出时永远位于最左侧"
+        } else if let arePlaced = controller.areDividersPlaced?(), arePlaced {
             dividerButton.title = "收起菜单栏分隔符"
             dividerButton.contentTintColor = .secondaryLabelColor
+            dividerButton.toolTip = nil
         } else {
             dividerButton.title = "│ 摆放菜单栏分隔符"
             dividerButton.contentTintColor = .controlAccentColor
+            dividerButton.toolTip = nil
         }
 
         let isFolded = controller.isMenuBarFoldedQuery?() ?? false
@@ -663,6 +669,11 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     }
 
     @objc private func toggleDividers() {
+        if NativeMenuBarHider.shared.isAvailable {
+            controller.onReconcilePartitions?()
+            refresh()
+            return
+        }
         controller.onToggleDividers?()
         refresh()
     }

@@ -8,12 +8,12 @@ import Foundation
 /// 位置也靠读回来（AX 帧），不靠我们自己记账——系统是最终真相，记住了反而出偏差。
 public enum DividerGeometry {
     public struct Controls: Sendable {
-        public let leftDivider: String
-        public let rightDivider: String
+        public let leftDivider: String?
+        public let rightDivider: String?
         public let toggle: String
-        public var ids: Set<String> { [leftDivider, rightDivider, toggle] }
+        public var ids: Set<String> { Set([leftDivider, rightDivider, toggle].compactMap { $0 }) }
 
-        public init(leftDivider: String, rightDivider: String, toggle: String) {
+        public init(leftDivider: String? = nil, rightDivider: String? = nil, toggle: String) {
             self.leftDivider = leftDivider
             self.rightDivider = rightDivider
             self.toggle = toggle
@@ -42,19 +42,51 @@ public enum DividerGeometry {
                 return ($0.isSystemOwned ? .visible : layout.zone(of: $0.id) ?? defaultZone) == zone
             }.map(\.id)
         }
-        return members(.alwaysHidden) + [controls.leftDivider] + members(.hidden)
-            + [controls.rightDivider, controls.toggle] + members(.visible)
+        var result = members(.alwaysHidden)
+        if let left = controls.leftDivider { result.append(left) }
+        result.append(contentsOf: members(.hidden))
+        if let right = controls.rightDivider { result.append(right) }
+        if controls.leftDivider != nil || controls.rightDivider != nil {
+            result.append(controls.toggle)
+            result.append(contentsOf: members(.visible))
+        } else {
+            let physical = physicalItems(items)
+            let visibleSet = Set(members(.visible))
+            for item in physical {
+                if item.id == controls.toggle || visibleSet.contains(item.id) {
+                    result.append(item.id)
+                }
+            }
+            if !result.contains(controls.toggle) {
+                result.append(controls.toggle)
+            }
+        }
+        return result
     }
 
     public static func isCorrectlyPartitioned(items: [ManagedItem], layout: MenuBarLayout,
                                               controls: Controls, defaultZone: MenuBarZone = .hidden,
                                               exempt: Set<String> = []) -> Bool {
         let ordered = physicalItems(items)
-        guard let left = ordered.first(where: { $0.id == controls.leftDivider })?.centerX,
-              let right = ordered.first(where: { $0.id == controls.rightDivider })?.centerX,
-              let toggle = ordered.first(where: { $0.id == controls.toggle })?.centerX,
-              left < right, right < toggle else { return false }
-        // 验收与进展采用同一分区顺序：隐藏项在按钮左侧，全部常显项在按钮右侧。
+        if let leftID = controls.leftDivider, let rightID = controls.rightDivider,
+           let left = ordered.first(where: { $0.id == leftID })?.centerX,
+           let right = ordered.first(where: { $0.id == rightID })?.centerX,
+           let toggle = ordered.first(where: { $0.id == controls.toggle })?.centerX {
+            guard left < right, right < toggle else { return false }
+        } else {
+            let hiddenMaxX = ordered.filter {
+                !exempt.contains($0.id) &&
+                !$0.isSystemOwned &&
+                $0.id != controls.toggle &&
+                (layout.zone(of: $0.id) ?? defaultZone) != .visible
+            }.map(\.centerX).max() ?? -1
+            let visibleMinX = ordered.filter {
+                !exempt.contains($0.id) &&
+                $0.id != controls.toggle &&
+                ($0.isSystemOwned || (layout.zone(of: $0.id) ?? defaultZone) == .visible)
+            }.map(\.frame.minX).min() ?? CGFloat.infinity
+            guard hiddenMaxX < visibleMinX else { return false }
+        }
         return partitionDisorder(items: ordered, layout: layout, controls: controls, defaultZone: defaultZone, exempt: exempt) == 0
     }
 
@@ -63,10 +95,13 @@ public enum DividerGeometry {
                                          controls: Controls, defaultZone: MenuBarZone = .hidden,
                                          exempt: Set<String> = []) -> Int {
         let ranks = physicalItems(items).map { item -> Int in
-            if item.id == controls.leftDivider { return 1 }
-            if item.id == controls.rightDivider { return 3 }
-            if item.id == controls.toggle { return 4 }
+            if let left = controls.leftDivider, item.id == left { return 1 }
+            if let right = controls.rightDivider, item.id == right { return 3 }
+            if controls.leftDivider != nil || controls.rightDivider != nil {
+                if item.id == controls.toggle { return 4 }
+            }
             if exempt.contains(item.id) { return 5 }
+            if item.id == controls.toggle { return 5 }
             switch item.isSystemOwned ? .visible : layout.zone(of: item.id) ?? defaultZone {
             case .alwaysHidden: return 0
             case .hidden: return 2
@@ -93,17 +128,35 @@ public enum DividerGeometry {
 
     /// 包括两条真实分界的完整顺序；系统项保持相对顺序且留在右侧。
     public static func arrangementOrder(items: [ManagedItem], layout: MenuBarLayout,
-                                        leftDivider: String, rightDivider: String, toggle: String,
+                                        leftDivider: String? = nil, rightDivider: String? = nil, toggle: String,
                                         defaultZone: MenuBarZone = .hidden) -> [String] {
-        let controls: Set<String> = [leftDivider, rightDivider, toggle]
+        let controls: Set<String> = Set([leftDivider, rightDivider, toggle].compactMap { $0 })
         let users = items.filter { !$0.isSystemOwned && !controls.contains($0.id) }
         let userIDs = Set(users.map(\.id))
         func members(_ zone: MenuBarZone) -> [String] {
             layout.items(in: zone).filter { userIDs.contains($0) }
                 + users.filter { layout.zone(of: $0.id) == nil && defaultZone == zone }.map(\.id)
         }
-        let order = members(.alwaysHidden) + [leftDivider] + members(.hidden)
-            + [rightDivider, toggle] + members(.visible) + items.filter(\.isSystemOwned).map(\.id)
+        var order = members(.alwaysHidden)
+        if let left = leftDivider { order.append(left) }
+        order.append(contentsOf: members(.hidden))
+        if let right = rightDivider { order.append(right) }
+        if leftDivider != nil || rightDivider != nil {
+            order.append(toggle)
+            order.append(contentsOf: members(.visible))
+        } else {
+            let physical = physicalItems(items)
+            let visibleSet = Set(members(.visible))
+            for item in physical {
+                if item.id == toggle || visibleSet.contains(item.id) {
+                    order.append(item.id)
+                }
+            }
+            if !order.contains(toggle) {
+                order.append(toggle)
+            }
+        }
+        order.append(contentsOf: items.filter(\.isSystemOwned).map(\.id))
         let live = Set(items.map(\.id))
         var seen: Set<String> = []
         return order.filter { live.contains($0) && seen.insert($0).inserted }

@@ -265,10 +265,15 @@ public final class TidyBarController {
     /// 供设置窗口或菜单触发/查询菜单栏物理分隔符与折叠状态
     public var onToggleDividers: (() -> Void)?
     public var areDividersPlaced: (() -> Bool)?
+    public var onReconcilePartitions: (() -> Void)?
     public var onToggleMenuBarFold: (() -> Void)?
     public var isMenuBarFoldedQuery: (() -> Bool)?
     public var onToggleDrawer: (() -> Void)?
     public var onSearchRequested: (() -> Void)?
+
+    public func reconcilePhysicalPartitioning() {
+        onReconcilePartitions?()
+    }
     /// 保存期望后由装配层排队整理；参数表示还须恢复分区内部的保存顺序。
     public var onRequestPhysicalArrangement: ((_ restoreSavedOrder: Bool) -> Void)?
     /// 装配层暂时展开自有分隔符，返回可用于实际移动的最新坐标。
