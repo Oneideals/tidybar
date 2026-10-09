@@ -238,36 +238,36 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         barController.emptySpacePredicate = { [weak self, weak barController] location in
             guard let self, let barController else { return true }
+            // 排除落在自身折叠按钮窗口内的点击（交由 AppKit 按钮自身的 action 响应）
+            if let toggleWindow = self.statusItem?.button?.window, toggleWindow.frame.contains(location) {
+                return false
+            }
             let screens = self.services.screens.screens
             guard let screen = screens.first(where: { $0.frame.contains(location) }) ?? self.services.screens.primaryScreen else {
                 return false
             }
+            var visibleItems = barController.currentlyVisibleItems
+            // 若自身折叠按钮窗口已知且未被纳入 visibleItems，动态补充其几何信息以防止误判
+            if let toggleFrame = self.statusItem?.button?.window?.frame,
+               toggleFrame.width > 0,
+               !visibleItems.contains(where: { $0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier }) {
+                visibleItems.append(ManagedItem(
+                    id: "local.tidybar.app.toggle",
+                    ownerBundleID: "local.tidybar.app",
+                    title: "◀",
+                    frame: toggleFrame
+                ))
+            }
             return ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
                 point: location,
                 screen: screen,
-                statusItems: barController.snapshot.items,
+                statusItems: visibleItems,
                 ignoredItemIDs: barController.dividerIDs
             )
         }
 
         barController.onEmptyBarClick = { [weak self] in
             guard let self, let barController = self.controller else { return }
-            let mouseLoc = NSEvent.mouseLocation
-            // 仅当点击直接落在折叠按钮自身窗口内时排除（交由按钮自身 action 响应）
-            if let toggleWindow = self.statusItem?.button?.window, toggleWindow.frame.contains(mouseLoc) {
-                return
-            }
-            let screens = self.services.screens.screens
-            if let screen = screens.first(where: { $0.frame.contains(mouseLoc) }) ?? self.services.screens.primaryScreen {
-                guard ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
-                    point: mouseLoc,
-                    screen: screen,
-                    statusItems: barController.snapshot.items,
-                    ignoredItemIDs: barController.dividerIDs
-                ) else {
-                    return
-                }
-            }
             switch barController.settings.emptyBarClickAction {
             case .toggleFold:
                 self.toggleMenuBarFold()

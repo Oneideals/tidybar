@@ -1055,6 +1055,62 @@ struct ReviewRegressionTests {
         expectEqual(engine.layout.items(in: .hidden), ["app1", "app2", "app3"], "一键恢复必须将所有始终隐藏项归入隐藏区")
         expectEqual(engine.layout.items(in: .alwaysHidden), [String](), "始终隐藏区应当被清空")
     }
+
+    func emptyBarClickWorksWhenMenuBarIsFoldedWithHiddenItems() throws {
+        let journal = LayoutJournal(directory: TestPaths.journalDirectory("empty-bar-folded-hidden"))
+        let layout = MenuBarLayout(zones: [
+            "visible": ["vis1"],
+            "hidden": ["hid1", "hid2"],
+            "alwaysHidden": ["ah1"]
+        ])
+        let engine = LayoutEngine(layout: layout, services: makeServices(mover: nil), journal: journal)
+        let controller = TidyBarController(
+            engine: engine,
+            reveal: RevealStateMachine(),
+            settings: AppSettings(revealTriggers: [.emptyBarClick]),
+            store: FakeSettingsStore()
+        )
+        let items = [
+            ManagedItem(id: "vis1", ownerBundleID: "com.app.vis1", title: "Vis1", frame: CGRect(x: 1500, y: 1050, width: 30, height: 24)),
+            ManagedItem(id: "hid1", ownerBundleID: "com.app.hid1", title: "Hid1", frame: CGRect(x: 1000, y: 1050, width: 30, height: 24)),
+            ManagedItem(id: "hid2", ownerBundleID: "com.app.hid2", title: "Hid2", frame: CGRect(x: 800, y: 1050, width: 30, height: 24)),
+            ManagedItem(id: "ah1", ownerBundleID: "com.app.ah1", title: "AH1", frame: CGRect(x: 600, y: 1050, width: 30, height: 24))
+        ]
+        controller.applyScan(items)
+
+        // 1. 折叠状态：isMenuBarFolded == true
+        expect(controller.isMenuBarFolded, "初始应为折叠状态")
+        let visibleWhenFolded = controller.currentlyVisibleItems
+        expectEqual(visibleWhenFolded.map(\.id), ["vis1"], "折叠时目前可见图标仅限 visible 区")
+
+        var clicks = 0
+        controller.onEmptyBarClick = { clicks += 1 }
+
+        // 点击在已折叠/隐藏图标 hid1 原来的坐标（x=1010）：此时该区域在视觉上为空白区，必须放行！
+        controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1010, y: 1060)))
+        expectEqual(clicks, 1, "折叠时点击隐藏图标留下的空白区域必须成功触发 onEmptyBarClick")
+
+        // 点击在常显图标 vis1 上（x=1510）：此时该图标真实显示，必须被拦截，不能被当作空白区点击
+        controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1510, y: 1060)))
+        expectEqual(clicks, 1, "点击真实常显图标不能触发 onEmptyBarClick")
+
+        // 2. 展开状态：isMenuBarFolded == false
+        controller.setMenuBarFolded(false)
+        expect(!controller.isMenuBarFolded, "应已切换至展开状态")
+        let visibleWhenExpanded = controller.currentlyVisibleItems
+        expect(visibleWhenExpanded.contains { $0.id == "vis1" })
+        expect(visibleWhenExpanded.contains { $0.id == "hid1" })
+        expect(visibleWhenExpanded.contains { $0.id == "hid2" })
+        expect(!visibleWhenExpanded.contains { $0.id == "ah1" }, "展开时始终隐藏区图标默认仍不可见")
+
+        // 展开后再次点击 hid1（x=1010）：此时 hid1 真实可见，必须被拦截！
+        controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1010, y: 1060)))
+        expectEqual(clicks, 1, "展开后点击真实可见的隐藏区图标不能触发 onEmptyBarClick")
+
+        // 点击真实空白区（x=400）：放行！
+        controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 400, y: 1060)))
+        expectEqual(clicks, 2, "展开后点击真实空白区应触发 onEmptyBarClick")
+    }
 }
 
 extension ReviewRegressionTests {
@@ -1106,6 +1162,7 @@ extension ReviewRegressionTests {
             TestCase("overviewDoesNotReportRejectedMovesAsCompleted", suite.overviewDoesNotReportRejectedMovesAsCompleted),
             TestCase("realignToDividersSkipsWhenOffscreenItemsPresent", suite.realignToDividersSkipsWhenOffscreenItemsPresent),
             TestCase("restoreAlwaysHiddenToHiddenRestoresAllItems", suite.restoreAlwaysHiddenToHiddenRestoresAllItems),
+            TestCase("emptyBarClickWorksWhenMenuBarIsFoldedWithHiddenItems", suite.emptyBarClickWorksWhenMenuBarIsFoldedWithHiddenItems),
         ]
     }
 }

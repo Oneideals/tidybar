@@ -170,6 +170,29 @@ public final class TidyBarController {
         }
     }
 
+    /// 判断某个图标当前是否物理显示在菜单栏上（用于空白区点击精准命中测试）
+    public func isItemVisibleOnMenuBar(_ item: ManagedItem) -> Bool {
+        guard item.frame.width > 0 && item.frame.height > 0 else { return false }
+        if owns(item) {
+            // TidyBar 自身状态项：折叠按钮始终可见，撑开推杆/分隔符不作为状态图标阻挡空白区点击
+            return !dividerIDs.contains(item.id) && item.title != "┆" && item.title != "╎"
+        }
+        if item.isSystemOwned {
+            return true
+        }
+        let zone = presentationLayout.zone(of: item.id) ?? settings.newItemZone
+        if isMenuBarFolded {
+            return zone == .visible
+        } else {
+            return zone != .alwaysHidden
+        }
+    }
+
+    /// 当前物理显示在菜单栏上的图标（折叠时排除隐藏区/始终隐藏区，展开时排除始终隐藏区）
+    public var currentlyVisibleItems: [ManagedItem] {
+        items.filter { isItemVisibleOnMenuBar($0) }
+    }
+
     public func setMenuBarFolded(_ folded: Bool, at date: Date = Date()) {
         if folded { reveal.conceal() }
         else {
@@ -547,6 +570,7 @@ public final class TidyBarController {
                 $0.frame.contains(event.location)
                 && !dividerIDs.contains($0.id)
                 && !owns($0)
+                && isItemVisibleOnMenuBar($0)
             }
             if hitItem != nil {
                 if snapshot.isRevealed {
