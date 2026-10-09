@@ -29,6 +29,8 @@ public final class NativeMenuBarHider: @unchecked Sendable {
         }
     }
 
+    private var lastAllowedBundleIDs: Set<String>? = nil
+
     /// 隐藏非白名单项。
     /// - Parameters:
     ///   - allowedBundleIDs: 允许在菜单栏保持可见的第三方应用 Bundle ID 集合
@@ -36,6 +38,11 @@ public final class NativeMenuBarHider: @unchecked Sendable {
     public func hideItems(except allowedBundleIDs: Set<String>, allowedSystemItems: [Int] = [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
         lock.lock()
         defer { lock.unlock() }
+
+        // 幂等保护：如果当前断言处于活跃状态且白名单未变更，直接保持，避免重复销毁重建立即造成图标闪烁或自动弹开
+        if activeAssertion != nil && lastAllowedBundleIDs == allowedBundleIDs {
+            return
+        }
 
         guard let configClass = configClass as? NSObject.Type,
               let assertionClass = assertionClass as? NSObject.Type else { return }
@@ -46,6 +53,7 @@ public final class NativeMenuBarHider: @unchecked Sendable {
             _ = (old as AnyObject).perform(invalSel)
             activeAssertion = nil
         }
+        lastAllowedBundleIDs = allowedBundleIDs
 
         let allocSel = NSSelectorFromString("alloc")
         let initSel = NSSelectorFromString("initWithAllowedSystemItems:allowedBundleIdentifiers:")
@@ -78,6 +86,7 @@ public final class NativeMenuBarHider: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        lastAllowedBundleIDs = nil
         if let assertion = activeAssertion {
             let invalSel = NSSelectorFromString("invalidate")
             _ = (assertion as AnyObject).perform(invalSel)

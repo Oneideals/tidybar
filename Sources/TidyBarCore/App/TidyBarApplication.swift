@@ -1403,6 +1403,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private func beginLayoutAdjustment() -> [ManagedItem] {
+        if NativeMenuBarHider.shared.isAvailable {
+            return services.reader.discoverItems()
+        }
         guard controller?.capability == .fullDrag else { return services.reader.discoverItems() }
         expandDividersForAdjustment()
         let live = services.reader.discoverItems()
@@ -1411,6 +1414,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private func expandDividersForAdjustment() {
+        guard !NativeMenuBarHider.shared.isAvailable else { return }
         layoutAdjustmentDepth += 1
         if layoutAdjustmentDepth == 1 {
             setupDividers()
@@ -1447,6 +1451,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleAlignment(after delay: TimeInterval = 0.3) {
+        if NativeMenuBarHider.shared.isAvailable { return }
         guard !terminationRequested, !dividerItems.isEmpty, services.cursor.isSessionInteractive else { return }
         if isRelayingClick || isHoldingUnobservedMenu || peekCoordinator?.state != .idle { alignmentRequested = true; return }
         if isReconcilingLayout {
@@ -1663,6 +1668,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     }
 
     private func isCurrentLayoutCorrectlyPartitioned(from items: [ManagedItem]) -> Bool {
+        if NativeMenuBarHider.shared.isAvailable { return true }
         guard let controller else { return true }
         let owner = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
         let controls = DividerGeometry.Controls(
