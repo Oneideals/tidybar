@@ -12,7 +12,10 @@ public final class NativeMenuBarHider: @unchecked Sendable {
     private let lock = NSLock()
 
     public var isAvailable: Bool {
-        configClass != nil && assertionClass != nil
+        guard configClass != nil && assertionClass != nil else { return false }
+        // macOS 27 WindowServer 严格安全机制：MenuBarClientCore 的白名单机制强制要求 App 安装在 /Applications 目录下。
+        // 若在开发构建目录直接运行，系统拒绝将其加入白名单，会导致 TidyBar 自身菜单项被系统屏蔽。
+        return Bundle.main.bundlePath.hasPrefix("/Applications/")
     }
 
     private init() {

@@ -44,4 +44,9 @@ if (( SIZE_BYTES > LIMIT_BYTES )); then
 fi
 echo "  ✓ 体积 $((SIZE_BYTES / 1024))KB，在预算内"
 
-echo "▸ 完成：open $BUNDLE"
+echo "▸ 同步安装到 /Applications/$APP_NAME.app"
+rm -rf "/Applications/$APP_NAME.app"
+cp -R "$BUNDLE" "/Applications/$APP_NAME.app"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/$APP_NAME.app" 2>/dev/null || true
+
+echo "▸ 完成：open /Applications/$APP_NAME.app"

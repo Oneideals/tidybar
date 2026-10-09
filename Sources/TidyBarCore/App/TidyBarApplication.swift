@@ -1326,11 +1326,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let permanentlyHidden = !(controller?.snapshot.layout.items(in: .alwaysHidden).isEmpty ?? true)
         let shouldShowAlwaysHidden = permanentlyHidden && !revealsAlwaysHiddenForClick
         let alwaysHiddenConstraint = dividerConstraints["tidybar_always_hidden_separator"]
-        if shouldShowAlwaysHidden && !NativeMenuBarHider.shared.isAvailable {
+        if NativeMenuBarHider.shared.isAvailable {
+            alwaysHiddenSeparator?.isVisible = false
+            alwaysHiddenSeparator?.length = 0
+            alwaysHiddenConstraint?.isActive = false
+        } else if shouldShowAlwaysHidden {
+            alwaysHiddenSeparator?.isVisible = true
             alwaysHiddenConstraint?.isActive = true
             alwaysHiddenSeparator?.length = Self.expandedPushLength
             alwaysHiddenSeparator?.button?.window?.ignoresMouseEvents = true
         } else {
+            alwaysHiddenSeparator?.isVisible = true
             alwaysHiddenSeparator?.length = 0
             alwaysHiddenConstraint?.isActive = false
             if let window = alwaysHiddenSeparator?.button?.window {
@@ -1343,11 +1349,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         alwaysHiddenSeparator?.button?.action = nil
 
         let separatorConstraint = dividerConstraints["tidybar_separator"]
-        if effectiveFolded && !NativeMenuBarHider.shared.isAvailable {
+        if NativeMenuBarHider.shared.isAvailable {
+            separator?.isVisible = false
+            separator?.length = 0
+            separatorConstraint?.isActive = false
+        } else if effectiveFolded {
+            separator?.isVisible = true
             separatorConstraint?.isActive = true
             separator?.length = Self.expandedPushLength
             separator?.button?.window?.ignoresMouseEvents = true
         } else {
+            separator?.isVisible = true
             separator?.length = 0
             separatorConstraint?.isActive = false
             if let window = separator?.button?.window {
