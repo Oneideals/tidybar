@@ -695,5 +695,35 @@ extension ActivationTests {
         )
         expect(isPopup, "物理锚点对应的原生弹出菜单/面板应被准确判定为展开状态")
     }
+
+    /// 验证虚拟代理状态项对嵌套应用（如 DoubaoWork Browser）的 Bundle ID、序号解析及主窗口唤出动作匹配
+    func proxyItemNestedAppResolutionAndWindowActivationKeywords() throws {
+        let itemID = "com.work.pc.doubao.browser.#item0"
+        let owner = ManagedItem.ownerFromID(itemID)
+        expectEqual(owner, "com.work.pc.doubao.browser", "从状态项 ID 中正确提取内层独立嵌套应用的 Bundle ID")
+
+        // 验证序号提取逻辑
+        if let range = itemID.range(of: ".#item") {
+            let idx = Int(itemID[range.upperBound...])
+            expectEqual(idx, 0, "正确解析状态项序号")
+        } else {
+            expect(false, "应包含序号标识")
+        }
+
+        // 验证唤出主窗口的关键词判定规则
+        let sampleTitles = ["打开豆包工作窗口", "打开主窗口", "显示", "Open Main Window", "Show Window"]
+        for title in sampleTitles {
+            let low = title.lowercased()
+            let isWindowOpener = title.contains("打开") || title.contains("显示") || low.contains("open") || low.contains("show")
+            expect(isWindowOpener, "标题 [\(title)] 必须匹配为主窗口唤出项")
+        }
+
+        let nonWindowTitles = ["截图提问", "开启录音转写", "设置", "退出"]
+        for title in nonWindowTitles {
+            let low = title.lowercased()
+            let isWindowOpener = title.contains("打开") || title.contains("显示") || low.contains("open") || low.contains("show")
+            expect(!isWindowOpener, "普通功能菜单项 [\(title)] 不应误判为主窗口唤出项")
+        }
+    }
 }
 

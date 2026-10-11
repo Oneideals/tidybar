@@ -1429,7 +1429,21 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         proxy.button?.window?.ignoresMouseEvents = false
         proxy.isVisible = true
 
-        let proxyFrame = proxy.button?.window?.frame ?? CGRect(x: 100, y: 1050, width: 26, height: 24)
+        let windowFrame = proxy.button?.window?.frame ?? .zero
+        let activeScreen = self.services.screens.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+            ?? self.services.screens.primaryScreen
+            ?? self.services.screens.screens.first
+        let menuBarHeight: CGFloat = activeScreen?.menuBarHeight ?? 30
+        let screenMaxY: CGFloat = activeScreen?.frame.maxY ?? 1080
+        let screenMaxX: CGFloat = activeScreen?.frame.maxX ?? 1920
+        let defaultY = screenMaxY - menuBarHeight
+        let proxyFrame: CGRect
+        if windowFrame.width > 5 && windowFrame.height > 5 {
+            proxyFrame = windowFrame
+        } else {
+            let toggleX = statusItem?.button?.window?.frame.minX ?? (screenMaxX - 100)
+            proxyFrame = CGRect(x: max(20, toggleX - 30), y: defaultY, width: 26, height: menuBarHeight)
+        }
         controller?.peekedItemID = item.id
         self.proxyPresentedItem = ManagedItem(
             id: item.id,
@@ -1446,6 +1460,27 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             peekCoordinator?.updatePresentedItem(proxyPresentedItem)
         }
         controller?.updateItemFrame(id: item.id, frame: proxyFrame)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, self.controller?.peekedItemID == item.id,
+                  let realBtnFrame = self.proxyStatusItem?.button?.window?.frame,
+                  realBtnFrame.width > 5 && realBtnFrame.height > 5 else { return }
+            self.proxyPresentedItem = ManagedItem(
+                id: item.id,
+                ownerBundleID: item.ownerBundleID,
+                title: item.title,
+                frame: realBtnFrame,
+                isSystemOwned: item.isSystemOwned,
+                lastActivatedAt: item.lastActivatedAt,
+                identitySource: item.identitySource,
+                ordinalInOwner: item.ordinalInOwner,
+                ownerItemCount: item.ownerItemCount
+            )
+            if let updated = self.proxyPresentedItem {
+                self.peekCoordinator?.updatePresentedItem(updated)
+            }
+            self.controller?.updateItemFrame(id: item.id, frame: realBtnFrame)
+        }
 
         if autoRightClick, let btn = proxy.button {
             DispatchQueue.main.async { [weak self] in
@@ -1772,76 +1807,211 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func handleProxyItemLeftClick(item: ManagedItem) {
-        peekCoordinator?.noteInteraction()
-        // 保持菜单栏折叠，严禁全展开导致图标跳乱与重排
-        let outcome = (services.reader as? MenuBarActivating)?.activate(itemID: item.id)
-            ?? services.activator?.activate(itemID: item.id)
-            ?? .actionUnsupported
+    private final class MirroredAXItemTarget: NSObject {
+        let element: AXUIElement
+        let app: NSRunningApplication
+        let title: String
+        init(element: AXUIElement, app: NSRunningApplication, title: String) {
+            self.element = element
+            self.app = app
+            self.title = title
+        }
+    }
 
-        fprint("handleProxyItemLeftClick: activate 结果 \(outcome) item=\(item.id)")
+    private struct AXStatusItemInfo {
+        let app: NSRunningApplication
+        let statusItem: AXUIElement
+        let menuElement: AXUIElement?
+        let menuItems: [AXUIElement]
+    }
 
-        if !outcome.countsAsPressed {
-            let proxyOutcome = requestProxyClick(item, button: .primary, unfold: false)
-            if !proxyOutcome.countsAsPressed {
-                if let bundleID = item.ownerBundleID,
-                   let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(bundleID) == .orderedSame }) {
-                    app.activate()
-                }
+    private func findAXStatusItemInfo(bundleID: String, itemID: String) -> AXStatusItemInfo? {
+        let running = NSWorkspace.shared.runningApplications.filter {
+            guard let bid = $0.bundleIdentifier else { return false }
+            let low = bid.lowercased(), target = bundleID.lowercased()
+            return low == target || low.hasPrefix(target) || target.hasPrefix(low)
+        }
+        for app in running {
+            let axApp = AXUIElementCreateApplication(app.processIdentifier)
+            var extras: AnyObject?
+            guard AXUIElementCopyAttributeValue(axApp, "AXExtrasMenuBar" as CFString, &extras) == .success,
+                  let extrasElement = extras else { continue }
+            var children: AnyObject?
+            guard AXUIElementCopyAttributeValue(extrasElement as! AXUIElement, "AXChildren" as CFString, &children) == .success,
+                  let itemElements = children as? [AXUIElement], !itemElements.isEmpty else { continue }
+
+            var selectedItem = itemElements[0]
+            if let itemRange = itemID.range(of: ".#item"),
+               let idx = Int(itemID[itemRange.upperBound...]),
+               idx >= 0 && idx < itemElements.count {
+                selectedItem = itemElements[idx]
             }
-        } else {
-            // 对 Chromium/Electron 类应用（AXPress 返回成功但未实际触发菜单展开）进行二次复核兜底
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-                guard let self, self.controller?.peekedItemID == item.id else { return }
-                if !self.isPeekedMenuOpen(for: item) {
-                    fprint("handleProxyItemLeftClick: AXPress 后菜单未展开（常见于 Chromium 应用），派发合成物理点击兜底 item=\(item.id)")
-                    let proxyOutcome = self.requestProxyClick(item, button: .primary, unfold: false)
-                    if !proxyOutcome.countsAsPressed {
-                        if let bundleID = item.ownerBundleID,
-                           let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(bundleID) == .orderedSame }) {
-                            app.activate()
+
+            var subChildren: AnyObject?
+            var menuElement: AXUIElement?
+            var menuItems: [AXUIElement] = []
+            if AXUIElementCopyAttributeValue(selectedItem, "AXChildren" as CFString, &subChildren) == .success,
+               let subList = subChildren as? [AXUIElement] {
+                for sub in subList {
+                    var role: AnyObject?
+                    AXUIElementCopyAttributeValue(sub, "AXRole" as CFString, &role)
+                    if (role as? String) == "AXMenu" {
+                        menuElement = sub
+                        var miVal: AnyObject?
+                        if AXUIElementCopyAttributeValue(sub, "AXChildren" as CFString, &miVal) == .success,
+                           let miList = miVal as? [AXUIElement] {
+                            menuItems = miList
                         }
+                        break
                     }
                 }
             }
+            return AXStatusItemInfo(app: app, statusItem: selectedItem, menuElement: menuElement, menuItems: menuItems)
+        }
+        return nil
+    }
+
+    private func buildMirroredMenu(for axMenu: AXUIElement, app: NSRunningApplication) -> NSMenu {
+        let menu = NSMenu(title: "")
+        menu.autoenablesItems = false
+        var miVal: AnyObject?
+        if AXUIElementCopyAttributeValue(axMenu, "AXChildren" as CFString, &miVal) == .success,
+           let miList = miVal as? [AXUIElement] {
+            for mi in miList {
+                var titleVal: AnyObject?
+                var enabledVal: AnyObject?
+                AXUIElementCopyAttributeValue(mi, "AXTitle" as CFString, &titleVal)
+                AXUIElementCopyAttributeValue(mi, "AXEnabled" as CFString, &enabledVal)
+                let title = (titleVal as? String) ?? ""
+                let isEnabled = (enabledVal as? Bool) ?? true
+                if title.isEmpty {
+                    menu.addItem(NSMenuItem.separator())
+                } else {
+                    let item = NSMenuItem(title: title, action: #selector(mirroredAXMenuItemClicked(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.isEnabled = isEnabled
+                    item.representedObject = MirroredAXItemTarget(element: mi, app: app, title: title)
+
+                    var subChildren: AnyObject?
+                    if AXUIElementCopyAttributeValue(mi, "AXChildren" as CFString, &subChildren) == .success,
+                       let subList = subChildren as? [AXUIElement] {
+                        for sc in subList {
+                            var role: AnyObject?
+                            AXUIElementCopyAttributeValue(sc, "AXRole" as CFString, &role)
+                            if (role as? String) == "AXMenu" {
+                                item.submenu = buildMirroredMenu(for: sc, app: app)
+                                break
+                            }
+                        }
+                    }
+                    menu.addItem(item)
+                }
+            }
+        }
+        return menu
+    }
+
+    @objc private func mirroredAXMenuItemClicked(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? MirroredAXItemTarget else { return }
+        peekCoordinator?.noteInteraction()
+        fprint("mirroredAXMenuItemClicked: 执行菜单项 [\(target.title)]")
+        let res = AXUIElementPerformAction(target.element, "AXPress" as CFString)
+        fprint("mirroredAXMenuItemClicked: AXPress 结果=\(res.rawValue)")
+        let low = target.title.lowercased()
+        if target.title.contains("打开") || target.title.contains("显示") || low.contains("open") || low.contains("show") {
+            target.app.activate()
+        }
+    }
+
+    private func handleProxyItemLeftClick(item: ManagedItem) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastPeekedClickTimestamp >= 0.2 else { return }
+        lastPeekedClickTimestamp = now
+        peekCoordinator?.noteInteraction()
+        fprint("handleProxyItemLeftClick: item=\(item.id)")
+
+        let bundleID = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id)
+
+        // 1. 优先通过 AX 探测目标应用的状态项与菜单
+        if let bundleID, let info = findAXStatusItemInfo(bundleID: bundleID, itemID: item.id) {
+            // 检查是否有唤出主窗口的菜单项（如「打开豆包工作窗口」）
+            if let openMenuItem = info.menuItems.first(where: { mi in
+                var titleVal: AnyObject?
+                AXUIElementCopyAttributeValue(mi, "AXTitle" as CFString, &titleVal)
+                guard let title = titleVal as? String, !title.isEmpty else { return false }
+                let low = title.lowercased()
+                return title.contains("打开") || title.contains("显示") || low.contains("open") || low.contains("show")
+            }) {
+                var titleVal: AnyObject?
+                AXUIElementCopyAttributeValue(openMenuItem, "AXTitle" as CFString, &titleVal)
+                let title = (titleVal as? String) ?? ""
+                fprint("handleProxyItemLeftClick: 发现主窗口唤出项 [\(title)]，执行 AXPress 并激活应用")
+                _ = AXUIElementPerformAction(openMenuItem, "AXPress" as CFString)
+                info.app.activate()
+                peekCoordinator?.noteInteraction()
+                return
+            }
+
+            // 若菜单项存在但不包含主窗口项，则说明是纯菜单应用（如系统工具、天气等），直接弹出其原生镜像菜单
+            if info.menuElement != nil, !info.menuItems.isEmpty, let btn = proxyStatusItem?.button {
+                fprint("handleProxyItemLeftClick: 目标为纯菜单状态项，直接弹出原生镜像菜单")
+                handleProxyItemRightClick(item: item, sender: btn)
+                return
+            }
+
+            // 若没有子菜单，直接尝试向该状态项派发 AXPress
+            fprint("handleProxyItemLeftClick: 向目标状态项派发原生 AXPress 并激活应用")
+            _ = AXUIElementPerformAction(info.statusItem, "AXPress" as CFString)
+            info.app.activate()
+            peekCoordinator?.noteInteraction()
+            return
+        }
+
+        // 2. 兜底方案：通过 services.reader/activator 进行激活
+        let outcome = (services.reader as? MenuBarActivating)?.activate(itemID: item.id)
+            ?? services.activator?.activate(itemID: item.id)
+            ?? .actionUnsupported
+        fprint("handleProxyItemLeftClick: activator outcome=\(outcome)")
+
+        // 3. 激活前置目标应用进程
+        if let bundleID,
+           let app = NSWorkspace.shared.runningApplications.first(where: {
+               guard let bid = $0.bundleIdentifier else { return false }
+               let low = bid.lowercased(), target = bundleID.lowercased()
+               return low == target || low.hasPrefix(target) || target.hasPrefix(low)
+           }) {
+            app.activate()
         }
     }
 
     private func handleProxyItemRightClick(item: ManagedItem, sender: NSStatusBarButton) {
         peekCoordinator?.noteInteraction()
+        fprint("handleProxyItemRightClick: item=\(item.id)")
+
+        let bundleID = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id)
+
+        // 1. 尝试动态提取目标应用的真实原生 AXMenu 并构建镜像 NSMenu
+        if let bundleID,
+           let info = findAXStatusItemInfo(bundleID: bundleID, itemID: item.id),
+           let menuElement = info.menuElement,
+           !info.menuItems.isEmpty {
+            let mirroredMenu = buildMirroredMenu(for: menuElement, app: info.app)
+            if !mirroredMenu.items.isEmpty {
+                fprint("handleProxyItemRightClick: 成功提取原生 AXMenu (\(mirroredMenu.items.count) 项)，弹出原生镜像菜单")
+                statusMenu = mirroredMenu
+                mirroredMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+                peekCoordinator?.noteInteraction()
+                return
+            }
+        }
+
+        // 2. 若目标应用不支持 AXMenu，尝试原生 showMenu
         let showOutcome = services.activator?.showMenu(itemID: item.id)
             ?? (services.reader as? MenuBarActivating)?.showMenu(itemID: item.id)
             ?? .actionUnsupported
         if showOutcome.countsAsPressed { return }
 
-        // 若 AXShowMenu 不支持，尝试通过物理右键事件代理投递
-        let proxyOutcome = requestProxyClick(item, button: .secondary, unfold: false)
-        if proxyOutcome.countsAsPressed {
-            // 对未实现独立右键事件处理的应用（如仅注册了 AXPress 的 Chromium / Electron 架构应用），
-            // 延时检测若原生菜单未弹出，则通过 activate 兜底呼出其原生状态菜单
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                guard let self, self.controller?.peekedItemID == item.id else { return }
-                if !self.isPeekedMenuOpen(for: item) {
-                    fprint("handleProxyItemRightClick: 物理右键后菜单未展开，尝试 activate 兜底 item=\(item.id)")
-                    let actOutcome = (self.services.reader as? MenuBarActivating)?.activate(itemID: item.id)
-                        ?? self.services.activator?.activate(itemID: item.id)
-                        ?? .actionUnsupported
-                    if !actOutcome.countsAsPressed && !self.isPeekedMenuOpen(for: item) {
-                        // 彻底无法唤起原生菜单时才展示占位菜单
-                        self.showProxyFallbackMenu(item: item, sender: sender)
-                    }
-                }
-            }
-            return
-        }
-
-        // 若物理右键无法排队投递，直接尝试 activate 激活原生菜单
-        let activateOutcome = (services.reader as? MenuBarActivating)?.activate(itemID: item.id)
-            ?? services.activator?.activate(itemID: item.id)
-            ?? .actionUnsupported
-        if activateOutcome.countsAsPressed { return }
-
-        // 仅在所有原生派发与辅助功能激活均彻底无法生效时，弹出操作菜单兜底
+        // 3. 兜底展示占位菜单
         showProxyFallbackMenu(item: item, sender: sender)
     }
 
@@ -2019,7 +2189,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                         }
                     }
 
-                    if let peekedID = controller.peekedItemID {
+                    if let peekedID = controller.peekedItemID ?? proxyPresentedItem?.id {
                         let peekedBundleID = proxyPresentedItem?.ownerBundleID
                             ?? controller.assignableItems.first(where: { $0.id == peekedID })?.ownerBundleID
                             ?? controller.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == peekedID || $0.aliases.contains(peekedID) })?.ownerBundleID
