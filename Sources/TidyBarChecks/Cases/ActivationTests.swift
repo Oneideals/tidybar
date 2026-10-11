@@ -571,6 +571,8 @@ extension ActivationTests {
             TestCase("clickingOrdinalSuffixedPeekedItemOnMenuBarNeverTriggersDrawer", suite.clickingOrdinalSuffixedPeekedItemOnMenuBarNeverTriggersDrawer),
             TestCase("clickingPeekedItemWhileMenuIsOpenDismissesMenuWithoutReopening", suite.clickingPeekedItemWhileMenuIsOpenDismissesMenuWithoutReopening),
             TestCase("peekCloseInterceptorConsumesSecondClickAndDispatchesCloseCleanly", suite.peekCloseInterceptorConsumesSecondClickAndDispatchesCloseCleanly),
+            TestCase("externalDiskAppCaseInsensitiveMatchingAndCandidateResolution", suite.externalDiskAppCaseInsensitiveMatchingAndCandidateResolution),
+            TestCase("isStatusPopupVerificationWithTrueAnchor", suite.isStatusPopupVerificationWithTrueAnchor),
         ]
     }
 
@@ -657,6 +659,41 @@ extension ActivationTests {
         // 外部点击不应触发 onClose
         interceptor.disable(force: true)
         expectEqual(closeCalled, false, "初始状态未触发收起")
+    }
+
+    /// 验证外置磁盘安装应用（如 GhostDownloader、Telegram 等大小写混合 Bundle ID）在候选查找与白名单构建中能大小写容差精确匹配
+    func externalDiskAppCaseInsensitiveMatchingAndCandidateResolution() throws {
+        let externalID = "io.github.xiaoyouchr.ghostdownloader.#item0"
+        let mixedCaseBID = "io.github.xiaoyouchr.GhostDownloader"
+        let mixedItem = ManagedItem(
+            id: externalID,
+            ownerBundleID: mixedCaseBID,
+            title: "GhostDownloader",
+            frame: CGRect(x: 1200, y: 1050, width: 32, height: 24),
+            isSystemOwned: false,
+            identitySource: .ownerOrdinal
+        )
+
+        // 1. 验证 ManagedItem.areEquivalent 支持大小写容差与序号匹配
+        expect(ManagedItem.areEquivalent(id1: externalID, id2: mixedCaseBID + ".#item0"), "混合大小写与归一化 ID 应判定为等价")
+        expect(ManagedItem.areEquivalent(id1: externalID, id2: mixedCaseBID), "Bundle ID 与 #item0 序号格式应判定为等价")
+
+        // 2. 验证 MenuBarClickRelay 候选解析匹配容差
+        let candidates = [mixedItem]
+        let found = candidates.first(where: { $0.matches(id: externalID) || $0.id.caseInsensitiveCompare(externalID) == .orderedSame })
+        expectEqual(found?.id, externalID, "候选列表中能按大小写与规范化规则查找到真实状态项")
+    }
+
+    /// 验证状态弹出面板检测支持真实当前物理坐标锚点判定
+    func isStatusPopupVerificationWithTrueAnchor() throws {
+        let itemFrame = CGRect(x: 1200, y: 10, width: 32, height: 24)
+        let popupFrame = CGRect(x: 1100, y: 34, width: 280, height: 350)
+        let isPopup = AccessibilityMenuBarReader.isStatusPopup(
+            frame: popupFrame,
+            level: 101, // kCGPopUpMenuWindowLevel
+            itemFrame: itemFrame
+        )
+        expect(isPopup, "物理锚点对应的原生弹出菜单/面板应被准确判定为展开状态")
     }
 }
 

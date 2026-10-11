@@ -233,9 +233,15 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
 
     public func isMenuPresented(for item: ManagedItem) -> Bool? {
         guard AXIsProcessTrusted(), let owner = item.ownerBundleID else { return nil }
-        guard let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == owner }) else { return false }
+        guard let application = workspace.runningApplications.first(where: {
+            $0.bundleIdentifier?.caseInsensitiveCompare(owner) == .orderedSame
+                || owner.caseInsensitiveCompare($0.bundleIdentifier ?? "") == .orderedSame
+                || ($0.bundleIdentifier?.lowercased().hasPrefix(owner.lowercased()) == true)
+                || (owner.lowercased().hasPrefix($0.bundleIdentifier?.lowercased() ?? "~~~"))
+        }) else { return false }
         guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else { return nil }
-        let anchor = ScreenCoordinateSpace.appKitToCG(item.frame, primaryScreenHeight: CGDisplayBounds(CGMainDisplayID()).height)
+        let effectiveFrame = currentFrame(of: item) ?? item.frame
+        let anchor = ScreenCoordinateSpace.appKitToCG(effectiveFrame, primaryScreenHeight: CGDisplayBounds(CGMainDisplayID()).height)
         var frames: [CGRect] = []
         for window in windows where (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == application.processIdentifier {
             guard let bounds = window[kCGWindowBounds as String] as? NSDictionary,

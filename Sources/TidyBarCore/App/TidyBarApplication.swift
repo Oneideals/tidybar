@@ -1210,16 +1210,30 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
             var realFrame: CGRect?
             let oldFrame = item.frame
-            if let bundleID {
+            var candidateBIDs: [String] = []
+            if let bundleID { candidateBIDs.append(bundleID) }
+            for app in NSWorkspace.shared.runningApplications {
+                guard let bid = app.bundleIdentifier, !bid.isEmpty else { continue }
+                if let bundleID {
+                    let lowBid = bid.lowercased(), lowTarget = bundleID.lowercased()
+                    if lowBid == lowTarget || lowBid.hasPrefix(lowTarget) || lowTarget.hasPrefix(lowBid) {
+                        if !candidateBIDs.contains(bid) { candidateBIDs.append(bid) }
+                    }
+                }
+            }
+            if !candidateBIDs.isEmpty {
                 for attempt in 1...12 {
-                    let items = services.reader.items(ownedBy: bundleID)
-                    for cand in items where isValidMenuBarRect(cand.frame) {
-                        let idMatches = cand.matches(id: item.id)
-                        let bundleMatches = cand.ownerBundleID?.caseInsensitiveCompare(bundleID) == .orderedSame
-                        if idMatches || bundleMatches {
-                            realFrame = cand.frame
-                            break
+                    for bid in candidateBIDs {
+                        let items = services.reader.items(ownedBy: bid)
+                        for cand in items where isValidMenuBarRect(cand.frame) {
+                            let idMatches = cand.matches(id: item.id)
+                            let bundleMatches = cand.ownerBundleID?.caseInsensitiveCompare(bid) == .orderedSame
+                            if idMatches || bundleMatches {
+                                realFrame = cand.frame
+                                break
+                            }
                         }
+                        if realFrame != nil { break }
                     }
                     if let rf = realFrame {
                         if isValidMenuBarRect(oldFrame), rf == oldFrame, attempt < 6 {
@@ -1246,8 +1260,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 let onActiveScreen = activeScreen.frame.contains(CGPoint(x: frame.midX, y: frame.midY))
                 if onActiveScreen {
                     let nearSlot = abs(frame.minX - expectedSlot.minX) <= 120 || frame.minX >= leftmostX - itemWidth - 60
-                    let notStrandedInHiddenZone = frame.minX >= activeScreen.frame.minX + 80
-                    isNativelyPresented = nearSlot || notStrandedInHiddenZone
+                    isNativelyPresented = nearSlot
                 } else {
                     // 跨屏显示（如外接显示器）：目标条目物理驻留在另一块屏幕上。
                     // 由于 macOS WindowServer 无法跨屏搬运第三方 NSStatusItem，在当前活跃屏幕上原生呈现不可能，
@@ -1276,52 +1289,58 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     peekCoordinator?.updatePresentedItem(proxyPresentedItem)
                 }
                 // 异步复核：在 WindowServer 完全落定（0.15s / 0.35s）后再次采样物理位置并更新
-                if let bundleID {
+                if !candidateBIDs.isEmpty {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                         guard let self, self.controller?.peekedItemID == item.id else { return }
-                        let items = self.services.reader.items(ownedBy: bundleID)
-                        if let found = items.first(where: { cand in
-                            (cand.matches(id: item.id) || cand.ownerBundleID?.caseInsensitiveCompare(bundleID) == .orderedSame)
-                            && isValidMenuBarRect(cand.frame)
-                        }) {
-                            self.controller?.updateItemFrame(id: item.id, frame: found.frame)
-                            self.proxyPresentedItem = ManagedItem(
-                                id: item.id,
-                                ownerBundleID: item.ownerBundleID,
-                                title: item.title,
-                                frame: found.frame,
-                                isSystemOwned: item.isSystemOwned,
-                                lastActivatedAt: item.lastActivatedAt,
-                                identitySource: item.identitySource,
-                                ordinalInOwner: item.ordinalInOwner,
-                                ownerItemCount: item.ownerItemCount
-                            )
-                            if let updated = self.proxyPresentedItem {
-                                self.peekCoordinator?.updatePresentedItem(updated)
+                        for bid in candidateBIDs {
+                            let items = self.services.reader.items(ownedBy: bid)
+                            if let found = items.first(where: { cand in
+                                (cand.matches(id: item.id) || cand.ownerBundleID?.caseInsensitiveCompare(bid) == .orderedSame)
+                                && isValidMenuBarRect(cand.frame)
+                            }) {
+                                self.controller?.updateItemFrame(id: item.id, frame: found.frame)
+                                self.proxyPresentedItem = ManagedItem(
+                                    id: item.id,
+                                    ownerBundleID: item.ownerBundleID,
+                                    title: item.title,
+                                    frame: found.frame,
+                                    isSystemOwned: item.isSystemOwned,
+                                    lastActivatedAt: item.lastActivatedAt,
+                                    identitySource: item.identitySource,
+                                    ordinalInOwner: item.ordinalInOwner,
+                                    ownerItemCount: item.ownerItemCount
+                                )
+                                if let updated = self.proxyPresentedItem {
+                                    self.peekCoordinator?.updatePresentedItem(updated)
+                                }
+                                break
                             }
                         }
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                         guard let self, self.controller?.peekedItemID == item.id else { return }
-                        let items = self.services.reader.items(ownedBy: bundleID)
-                        if let found = items.first(where: { cand in
-                            (cand.matches(id: item.id) || cand.ownerBundleID?.caseInsensitiveCompare(bundleID) == .orderedSame)
-                            && isValidMenuBarRect(cand.frame)
-                        }) {
-                            self.controller?.updateItemFrame(id: item.id, frame: found.frame)
-                            self.proxyPresentedItem = ManagedItem(
-                                id: item.id,
-                                ownerBundleID: item.ownerBundleID,
-                                title: item.title,
-                                frame: found.frame,
-                                isSystemOwned: item.isSystemOwned,
-                                lastActivatedAt: item.lastActivatedAt,
-                                identitySource: item.identitySource,
-                                ordinalInOwner: item.ordinalInOwner,
-                                ownerItemCount: item.ownerItemCount
-                            )
-                            if let updated = self.proxyPresentedItem {
-                                self.peekCoordinator?.updatePresentedItem(updated)
+                        for bid in candidateBIDs {
+                            let items = self.services.reader.items(ownedBy: bid)
+                            if let found = items.first(where: { cand in
+                                (cand.matches(id: item.id) || cand.ownerBundleID?.caseInsensitiveCompare(bid) == .orderedSame)
+                                && isValidMenuBarRect(cand.frame)
+                            }) {
+                                self.controller?.updateItemFrame(id: item.id, frame: found.frame)
+                                self.proxyPresentedItem = ManagedItem(
+                                    id: item.id,
+                                    ownerBundleID: item.ownerBundleID,
+                                    title: item.title,
+                                    frame: found.frame,
+                                    isSystemOwned: item.isSystemOwned,
+                                    lastActivatedAt: item.lastActivatedAt,
+                                    identitySource: item.identitySource,
+                                    ordinalInOwner: item.ordinalInOwner,
+                                    ownerItemCount: item.ownerItemCount
+                                )
+                                if let updated = self.proxyPresentedItem {
+                                    self.peekCoordinator?.updatePresentedItem(updated)
+                                }
+                                break
                             }
                         }
                     }
@@ -1459,14 +1478,22 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private func isPeekedMenuOpen(for item: ManagedItem) -> Bool {
         let owner = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id)
         if let owner, !owner.isEmpty {
-            if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(owner) == .orderedSame }) {
+            let matchingApps = NSWorkspace.shared.runningApplications.filter {
+                guard let bid = $0.bundleIdentifier else { return false }
+                let low = bid.lowercased(), target = owner.lowercased()
+                return low == target || low.hasPrefix(target) || target.hasPrefix(low)
+            }
+            if !matchingApps.isEmpty {
+                let matchingPIDs = Set(matchingApps.map(\.processIdentifier))
                 // 1. 毫秒级极速检测：直接通过 WindowServer 查询该应用是否有在屏弹窗/面板（layer >= 3 且高度 > 28）
                 let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
                 for w in list {
                     let pid = w[kCGWindowOwnerPID as String] as? Int32 ?? 0
                     let ownerName = w[kCGWindowOwnerName as String] as? String ?? ""
-                    let isApp = pid == app.processIdentifier
-                        || (app.localizedName != nil && !app.localizedName!.isEmpty && ownerName.caseInsensitiveCompare(app.localizedName!) == .orderedSame)
+                    let isApp = matchingPIDs.contains(pid)
+                        || matchingApps.contains { app in
+                            app.localizedName != nil && !app.localizedName!.isEmpty && ownerName.caseInsensitiveCompare(app.localizedName!) == .orderedSame
+                        }
                     guard isApp else { continue }
                     guard let boundsDict = w[kCGWindowBounds as String] as? [String: Any],
                           let frame = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
@@ -1652,7 +1679,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     guard let self, self.controller?.peekedItemID == item.id else { return }
                     if !self.isPeekedMenuOpen(for: item) {
                         fprint("handlePeekedItemInteraction: 0.06s 复核菜单仍未展开，调用 handlePeekedItemClick 兜底 item=\(item.id)")
-                        self.handlePeekedItemClick(item)
+                        self.handlePeekedItemClick(item, isFallback: true)
                     }
                 }
             }
@@ -1684,7 +1711,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         escUp?.post(tap: .cghidEventTap)
     }
 
-    private func handlePeekedItemClick(_ item: ManagedItem) {
+    private func handlePeekedItemClick(_ item: ManagedItem, isFallback: Bool = false) {
         if isPeekedMenuOpen(for: item) {
             fprint("handlePeekedItemClick: 目标条目菜单已处于展开状态，用户点击以收起，忽略激活以避免二次展开 item=\(item.id)")
             peekCoordinator?.noteInteraction()
@@ -1692,8 +1719,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
 
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastPeekedClickTimestamp >= 0.25 else { return }
-        lastPeekedClickTimestamp = now
+        if !isFallback {
+            guard now - lastPeekedClickTimestamp >= 0.25 else { return }
+            lastPeekedClickTimestamp = now
+        }
 
         fprint("handlePeekedItemClick: 激活菜单栏浮现图标 item=\(item.id) title=\(item.title)")
         peekCoordinator?.noteInteraction()
@@ -1923,6 +1952,18 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 allowedBundles.insert("local.tidybar.app")
                 allowedBundles.insert("com.apple.TextInputMenuAgent")
 
+                func addBundles(from id: String, into set: inout Set<String>) {
+                    set.insert(id)
+                    let low = id.lowercased()
+                    for app in NSWorkspace.shared.runningApplications {
+                        guard let bid = app.bundleIdentifier, !bid.isEmpty else { continue }
+                        let lowBid = bid.lowercased()
+                        if lowBid == low || lowBid.hasPrefix(low) || low.hasPrefix(lowBid) {
+                            set.insert(bid)
+                        }
+                    }
+                }
+
                 if let controller = self.controller {
                     let layout = controller.snapshot.layout
                     for item in controller.assignableItems {
@@ -1931,7 +1972,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                                 ?? controller.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == item.id || $0.aliases.contains(item.id) })?.ownerBundleID
                                 ?? ManagedItem.ownerFromID(item.id)
                             if let bundleID, !bundleID.isEmpty {
-                                allowedBundles.insert(bundleID)
+                                addBundles(from: bundleID, into: &allowedBundles)
                             }
                         }
                     }
@@ -1942,14 +1983,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                             ?? controller.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == peekedID || $0.aliases.contains(peekedID) })?.ownerBundleID
                             ?? ManagedItem.ownerFromID(peekedID)
                         if let peekedBundleID, !peekedBundleID.isEmpty {
-                            allowedBundles.insert(peekedBundleID)
+                            addBundles(from: peekedBundleID, into: &allowedBundles)
                         }
                     }
                 } else if let proxyPresentedItem {
                     let peekedBundleID = proxyPresentedItem.ownerBundleID
                         ?? ManagedItem.ownerFromID(proxyPresentedItem.id)
                     if let peekedBundleID, !peekedBundleID.isEmpty {
-                        allowedBundles.insert(peekedBundleID)
+                        addBundles(from: peekedBundleID, into: &allowedBundles)
                     }
                 }
                 NativeMenuBarHider.shared.hideItems(except: allowedBundles)

@@ -96,11 +96,14 @@ public final class MenuBarClickRelay {
         var failure: ActivationOutcome = .notInteractable
         repeat {
             guard requestIsCurrent() else { return .interrupted }
-            let candidates = request.item.ownerBundleID.map { io.reader.items(ownedBy: $0) } ?? io.reader.discoverItems()
-            if let item = candidates.first(where: { $0.matches(id: request.item.id) }) {
+            var candidates = request.item.ownerBundleID.map { io.reader.items(ownedBy: $0) } ?? []
+            if candidates.isEmpty {
+                candidates = io.reader.discoverItems()
+            }
+            if let item = candidates.first(where: { $0.matches(id: request.item.id) || $0.id.caseInsensitiveCompare(request.item.id) == .orderedSame }) {
                 guard item.ownerBundleID?.caseInsensitiveCompare(request.item.ownerBundleID ?? "") == .orderedSame || item.matches(id: request.item.id),
                       item.identitySource != .ownerOrdinal || (item.ownerItemCount == request.item.ownerItemCount
-                            && item.ordinalInOwner == request.item.ordinalInOwner) else { return .elementNotFound }
+                            && item.ordinalInOwner == request.item.ordinalInOwner) || request.item.id.contains(".#item") else { return .elementNotFound }
                 failure = .notInteractable
                 if let frame = io.reader.currentFrame(of: item),
                    let screen = screens.first(where: { IconCaptureGeometry.isVisibleMenuBarFrame(frame, on: $0) }),

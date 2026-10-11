@@ -259,13 +259,21 @@ public final class PeekCoordinator {
         }
         let owner = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id)
         if let owner, !owner.isEmpty {
-            if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(owner) == .orderedSame }) {
+            let matchingApps = NSWorkspace.shared.runningApplications.filter {
+                guard let bid = $0.bundleIdentifier else { return false }
+                let low = bid.lowercased(), target = owner.lowercased()
+                return low == target || low.hasPrefix(target) || target.hasPrefix(low)
+            }
+            if !matchingApps.isEmpty {
+                let matchingPIDs = Set(matchingApps.map(\.processIdentifier))
                 let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
                 for w in list {
                     let pid = w[kCGWindowOwnerPID as String] as? Int32 ?? 0
                     let ownerName = w[kCGWindowOwnerName as String] as? String ?? ""
-                    let isApp = pid == app.processIdentifier
-                        || (app.localizedName != nil && !app.localizedName!.isEmpty && ownerName.caseInsensitiveCompare(app.localizedName!) == .orderedSame)
+                    let isApp = matchingPIDs.contains(pid)
+                        || matchingApps.contains { app in
+                            app.localizedName != nil && !app.localizedName!.isEmpty && ownerName.caseInsensitiveCompare(app.localizedName!) == .orderedSame
+                        }
                     guard isApp else { continue }
                     guard let boundsDict = w[kCGWindowBounds as String] as? [String: Any],
                           let frame = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
@@ -309,13 +317,22 @@ public final class PeekCoordinator {
         let mouseLoc = NSEvent.mouseLocation
         let delay = controller?.settings.rehideDelay ?? 2.0
 
-        // 交互续期：优先采用 currentPresentedItem 的物理真实坐标，杜绝快照历史坐标污染；扩大悬停容差至 ±36pt
+        // 交互续期：优先采用 currentPresentedItem 的物理真实坐标，杜绝快照历史坐标污染；扩大悬停容差至 ±48pt
         let itemFrame = currentPresentedItem?.frame
             ?? controller?.items.first(where: { $0.matches(id: item.id) })?.frame
             ?? controller?.snapshot.items.first(where: { $0.matches(id: item.id) })?.frame
             ?? item.frame
-        let hoverArea = itemFrame.insetBy(dx: -36, dy: -12)
-        if isPresented != false || isMouseDown || hoverArea.contains(mouseLoc) {
+        let hoverArea = itemFrame.insetBy(dx: -48, dy: -16)
+        var isHovering = hoverArea.contains(mouseLoc)
+        if !isHovering, let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLoc) }) {
+            let menuBarBottom = screen.frame.maxY - (screen.frame.height - screen.visibleFrame.height)
+            if mouseLoc.y >= menuBarBottom - 8 && mouseLoc.y <= screen.frame.maxY + 8 {
+                if abs(mouseLoc.x - itemFrame.midX) <= 60 {
+                    isHovering = true
+                }
+            }
+        }
+        if isPresented != false || isMouseDown || isHovering {
             lastInteractionAt = Date()
         }
 
