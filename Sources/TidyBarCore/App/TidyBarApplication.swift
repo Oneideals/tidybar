@@ -1402,8 +1402,13 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             img.isTemplate = false
             iconImg = img
             proxy.length = width + 6
+        } else if let appIcon = WindowListIconCapturer.appIcon(for: item),
+                  WindowListIconCapturer.hasVisiblePixels(appIcon) {
+            let img = NSImage(cgImage: appIcon, size: NSSize(width: 18, height: 18))
+            iconImg = img
+            proxy.length = 24
         } else if let bundleID = item.ownerBundleID,
-                  let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                  let appURL = WindowListIconCapturer.resolveAppURL(bundleID: bundleID, itemID: item.id) ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             let appIcon = NSWorkspace.shared.icon(forFile: appURL.path)
             appIcon.size = NSSize(width: 18, height: 18)
             iconImg = appIcon
@@ -1804,26 +1809,59 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private func handleProxyItemRightClick(item: ManagedItem, sender: NSStatusBarButton) {
         peekCoordinator?.noteInteraction()
-        let outcome = services.activator?.showMenu(itemID: item.id) ?? (services.reader as? MenuBarActivating)?.showMenu(itemID: item.id) ?? .actionUnsupported
-        if !outcome.countsAsPressed {
-            // 弹出优雅的操作菜单兜底
-            let menu = NSMenu(title: item.title)
-            let appName = !item.title.isEmpty ? item.title : (item.ownerBundleID ?? "应用")
-            let openItem = NSMenuItem(title: "打开 \(appName)", action: #selector(openProxyAppFromMenu(_:)), keyEquivalent: "")
-            openItem.target = self
-            menu.addItem(openItem)
+        let showOutcome = services.activator?.showMenu(itemID: item.id)
+            ?? (services.reader as? MenuBarActivating)?.showMenu(itemID: item.id)
+            ?? .actionUnsupported
+        if showOutcome.countsAsPressed { return }
 
-            let showDrawerItem = NSMenuItem(title: "在收纳抽屉中查看", action: #selector(showInDrawerFromProxy(_:)), keyEquivalent: "")
-            showDrawerItem.target = self
-            menu.addItem(showDrawerItem)
-
-            menu.addItem(NSMenuItem.separator())
-            let dismissItem = NSMenuItem(title: "收起图标", action: #selector(dismissProxyItemManually(_:)), keyEquivalent: "")
-            dismissItem.target = self
-            menu.addItem(dismissItem)
-
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+        // 若 AXShowMenu 不支持，尝试通过物理右键事件代理投递
+        let proxyOutcome = requestProxyClick(item, button: .secondary, unfold: false)
+        if proxyOutcome.countsAsPressed {
+            // 对未实现独立右键事件处理的应用（如仅注册了 AXPress 的 Chromium / Electron 架构应用），
+            // 延时检测若原生菜单未弹出，则通过 activate 兜底呼出其原生状态菜单
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self, self.controller?.peekedItemID == item.id else { return }
+                if !self.isPeekedMenuOpen(for: item) {
+                    fprint("handleProxyItemRightClick: 物理右键后菜单未展开，尝试 activate 兜底 item=\(item.id)")
+                    let actOutcome = (self.services.reader as? MenuBarActivating)?.activate(itemID: item.id)
+                        ?? self.services.activator?.activate(itemID: item.id)
+                        ?? .actionUnsupported
+                    if !actOutcome.countsAsPressed && !self.isPeekedMenuOpen(for: item) {
+                        // 彻底无法唤起原生菜单时才展示占位菜单
+                        self.showProxyFallbackMenu(item: item, sender: sender)
+                    }
+                }
+            }
+            return
         }
+
+        // 若物理右键无法排队投递，直接尝试 activate 激活原生菜单
+        let activateOutcome = (services.reader as? MenuBarActivating)?.activate(itemID: item.id)
+            ?? services.activator?.activate(itemID: item.id)
+            ?? .actionUnsupported
+        if activateOutcome.countsAsPressed { return }
+
+        // 仅在所有原生派发与辅助功能激活均彻底无法生效时，弹出操作菜单兜底
+        showProxyFallbackMenu(item: item, sender: sender)
+    }
+
+    private func showProxyFallbackMenu(item: ManagedItem, sender: NSStatusBarButton) {
+        let menu = NSMenu(title: item.title)
+        let appName = !item.title.isEmpty ? item.title : (item.ownerBundleID ?? "应用")
+        let openItem = NSMenuItem(title: "打开 \(appName)", action: #selector(openProxyAppFromMenu(_:)), keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+
+        let showDrawerItem = NSMenuItem(title: "在收纳抽屉中查看", action: #selector(showInDrawerFromProxy(_:)), keyEquivalent: "")
+        showDrawerItem.target = self
+        menu.addItem(showDrawerItem)
+
+        menu.addItem(NSMenuItem.separator())
+        let dismissItem = NSMenuItem(title: "收起图标", action: #selector(dismissProxyItemManually(_:)), keyEquivalent: "")
+        dismissItem.target = self
+        menu.addItem(dismissItem)
+
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
     @objc private func openProxyAppFromMenu(_ sender: NSMenuItem) {

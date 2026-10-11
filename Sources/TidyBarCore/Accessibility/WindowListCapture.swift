@@ -479,7 +479,7 @@ public enum WindowListIconCapturer {
         // 1. 直接通过 NSWorkspace 查询 URL
         for bid in candidateBIDs {
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) {
-                return unnestEnclosingAppURL(url)
+                return unnestEnclosingAppURL(url, candidateBIDs: candidateBIDs)
             }
         }
 
@@ -488,7 +488,7 @@ public enum WindowListIconCapturer {
             if let app = NSWorkspace.shared.runningApplications.first(where: {
                 $0.bundleIdentifier?.caseInsensitiveCompare(bid) == .orderedSame
             }), let url = app.bundleURL {
-                return unnestEnclosingAppURL(url)
+                return unnestEnclosingAppURL(url, candidateBIDs: candidateBIDs)
             }
         }
 
@@ -499,7 +499,7 @@ public enum WindowListIconCapturer {
                 if appBid.hasPrefix(bid) || bid.hasPrefix(appBid)
                     || appBid.contains(bid) || bid.contains(appBid) {
                     if let url = app.bundleURL {
-                        return unnestEnclosingAppURL(url)
+                        return unnestEnclosingAppURL(url, candidateBIDs: candidateBIDs)
                     }
                 }
             }
@@ -508,8 +508,38 @@ public enum WindowListIconCapturer {
         return nil
     }
 
-    /// 若应用位于宿主 .app 内部（如 Helper、LoginItems、XPCServices），回溯至最外层主应用包
-    public static func unnestEnclosingAppURL(_ url: URL) -> URL {
+    /// 若应用位于宿主 .app 内部的辅助目录（如 LoginItems、XPCServices 等），回溯至最外层主应用包；
+    /// 但若内层应用本身即为目标独立应用（拥有独立 BundleID / 图标定义且非纯 LoginItem），保留其自身。
+    public static func unnestEnclosingAppURL(_ url: URL, candidateBIDs: [String] = []) -> URL {
+        let isLoginItemOrXPC = url.path.contains("/Contents/Library/LoginItems/")
+            || url.path.contains("/Contents/XPCServices/")
+        if !isLoginItemOrXPC {
+            if let bundle = Bundle(url: url) {
+                let innerBID = bundle.bundleIdentifier?.lowercased()
+                // 若明确匹配目标 candidateBIDs，直接保留
+                if let innerBID, !candidateBIDs.isEmpty,
+                   candidateBIDs.contains(where: { $0.caseInsensitiveCompare(innerBID) == .orderedSame }) {
+                    return url
+                }
+                // 若内层具备独立应用图标定义且拥有独立 bundleID，也保留自身
+                let hasIcon = bundle.infoDictionary?["CFBundleIconFile"] != nil || bundle.infoDictionary?["CFBundleIconName"] != nil
+                if hasIcon, let innerBID, !innerBID.isEmpty {
+                    var outer = url.deletingLastPathComponent()
+                    while outer.pathComponents.count > 1 {
+                        if outer.pathExtension == "app" && !outer.path.contains(".app/Contents") {
+                            break
+                        }
+                        outer = outer.deletingLastPathComponent()
+                    }
+                    if let outerBundle = Bundle(url: outer),
+                       let outerBID = outerBundle.bundleIdentifier?.lowercased(),
+                       outerBID != innerBID {
+                        return url
+                    }
+                }
+            }
+        }
+
         var cur = url
         while cur.pathComponents.count > 1 {
             if cur.pathExtension == "app" && !cur.path.contains(".app/Contents") {

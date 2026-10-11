@@ -486,6 +486,38 @@ struct IconBitmapTests {
         expectEqual(mainURL.path, "/Applications/TestApp.app")
     }
 
+    func independentNestedAppPreservesOwnURL() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let hostApp = tempDir.appendingPathComponent("Host.app")
+        let helperApp = hostApp.appendingPathComponent("Contents/Helpers/Browser.app")
+        let loginItemApp = hostApp.appendingPathComponent("Contents/Library/LoginItems/Helper.app")
+
+        let helperContents = helperApp.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: helperContents, withIntermediateDirectories: true)
+        let helperPlist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.custom.browser</string>
+            <key>CFBundleIconFile</key>
+            <string>app.icns</string>
+        </dict>
+        </plist>
+        """
+        try helperPlist.write(to: helperContents.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+
+        let preserved = WindowListIconCapturer.unnestEnclosingAppURL(helperApp, candidateBIDs: ["com.custom.browser"])
+        expectEqual(preserved.path, helperApp.path, "内层独立应用包在 bundleID 匹配时必须保留自身 URL")
+
+        let loginItemResolved = WindowListIconCapturer.unnestEnclosingAppURL(loginItemApp, candidateBIDs: ["com.custom.helper"])
+        expectEqual(loginItemResolved.path, hostApp.path, "LoginItem 必须回溯至外层宿主应用")
+    }
+
     func windowListDiscoveryProducesValidDescriptors() throws {
         let windows = WindowListIconCapturer.getMenuBarWindows()
         // 系统正常运行环境下菜单栏窗口必然存在
@@ -636,6 +668,7 @@ extension IconBitmapTests {
             TestCase("presentationPrioritizesAppIconOverBitmap", suite.presentationPrioritizesAppIconOverBitmap),
             TestCase("presentationFallsBackToBitmapWhenAppIconUnavailable", suite.presentationFallsBackToBitmapWhenAppIconUnavailable),
             TestCase("subAppUnnestingResolvesToEnclosingApp", suite.subAppUnnestingResolvesToEnclosingApp),
+            TestCase("independentNestedAppPreservesOwnURL", suite.independentNestedAppPreservesOwnURL),
             TestCase("windowListDiscoveryProducesValidDescriptors", suite.windowListDiscoveryProducesValidDescriptors),
             TestCase("thirdPartyItemRejectsSystemOwnedCandidateWindowsInWindowListCapture", suite.thirdPartyItemRejectsSystemOwnedCandidateWindowsInWindowListCapture),
             TestCase("requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded", suite.requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded),
