@@ -428,6 +428,64 @@ struct IconBitmapTests {
         }
     }
 
+    func appIconResolvesAndCachesAccurately() throws {
+        let item = ManagedItem(
+            id: "com.apple.finder.#item0",
+            ownerBundleID: "com.apple.finder",
+            title: "Finder",
+            frame: CGRect(x: 100, y: 1188, width: 24, height: 24),
+            isSystemOwned: false
+        )
+        let icon1 = WindowListIconCapturer.appIcon(for: item)
+        expect(icon1 != nil, "有效系统应用应解析到高清 AppIcon")
+        let icon2 = WindowListIconCapturer.appIcon(for: item)
+        expect(icon2 != nil, "第二次访问应直接命中内存缓存")
+    }
+
+    func presentationPrioritizesAppIconOverBitmap() throws {
+        let item = ManagedItem(
+            id: "com.apple.finder.#item0",
+            ownerBundleID: "com.apple.finder",
+            title: "Finder",
+            frame: CGRect(x: 100, y: 1188, width: 24, height: 24),
+            isSystemOwned: false
+        )
+        // 构造一个 20x20 的假截图位图
+        let fakeBitmap = image(width: 20, height: 20, fill: nil, foreground: CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        let presentation = MenuBarIconStyle.presentation(for: item, bitmap: fakeBitmap, captureAuthorized: true)
+        switch presentation {
+        case .bitmap(let img):
+            // 真实 AppIcon 尺寸为 64x64 或 128x128，绝非 20x20 的 fakeBitmap
+            expect(img.width >= 32, "优先呈现 App 原生高清图标而非菜单栏截图")
+        case .placeholder:
+            expect(false, "不应降级为占位符")
+        }
+    }
+
+    func presentationFallsBackToBitmapWhenAppIconUnavailable() throws {
+        let item = ManagedItem(
+            id: "com.mock.nonexistent.#item0",
+            ownerBundleID: "com.mock.nonexistent",
+            title: "MockApp",
+            frame: CGRect(x: 100, y: 1188, width: 24, height: 24),
+            isSystemOwned: false
+        )
+        let fakeBitmap = image(width: 20, height: 20, fill: nil, foreground: CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        let presentation = MenuBarIconStyle.presentation(for: item, bitmap: fakeBitmap, captureAuthorized: true)
+        switch presentation {
+        case .bitmap(let img):
+            expect(img.width == 20, "无 AppIcon 时应回退到真实截图位图")
+        case .placeholder:
+            expect(false, "有有效位图时不应降级为占位符")
+        }
+    }
+
+    func subAppUnnestingResolvesToEnclosingApp() throws {
+        let helperURL = URL(fileURLWithPath: "/Applications/TestApp.app/Contents/Library/LoginItems/Helper.app")
+        let mainURL = WindowListIconCapturer.unnestEnclosingAppURL(helperURL)
+        expectEqual(mainURL.path, "/Applications/TestApp.app")
+    }
+
     func windowListDiscoveryProducesValidDescriptors() throws {
         let windows = WindowListIconCapturer.getMenuBarWindows()
         // 系统正常运行环境下菜单栏窗口必然存在
@@ -530,6 +588,10 @@ extension IconBitmapTests {
             TestCase("hasVisiblePixelsDistinguishesContentFromTransparent", suite.hasVisiblePixelsDistinguishesContentFromTransparent),
             TestCase("windowListCapturerRejectsOversizedAndBlackBlocks", suite.windowListCapturerRejectsOversizedAndBlackBlocks),
             TestCase("appIconFallbackGeneratesCrispImage", suite.appIconFallbackGeneratesCrispImage),
+            TestCase("appIconResolvesAndCachesAccurately", suite.appIconResolvesAndCachesAccurately),
+            TestCase("presentationPrioritizesAppIconOverBitmap", suite.presentationPrioritizesAppIconOverBitmap),
+            TestCase("presentationFallsBackToBitmapWhenAppIconUnavailable", suite.presentationFallsBackToBitmapWhenAppIconUnavailable),
+            TestCase("subAppUnnestingResolvesToEnclosingApp", suite.subAppUnnestingResolvesToEnclosingApp),
             TestCase("windowListDiscoveryProducesValidDescriptors", suite.windowListDiscoveryProducesValidDescriptors),
             TestCase("thirdPartyItemRejectsSystemOwnedCandidateWindowsInWindowListCapture", suite.thirdPartyItemRejectsSystemOwnedCandidateWindowsInWindowListCapture),
             TestCase("requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded", suite.requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded),

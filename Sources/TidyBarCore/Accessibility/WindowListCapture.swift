@@ -277,7 +277,7 @@ public enum WindowListIconCapturer {
             desc.bounds.width > 0 && desc.bounds.width <= 350 && desc.bounds.height > 0 && desc.bounds.height <= 80
         }
         guard !descriptors.isEmpty else {
-            return fallbackToAppIcon ? appIconFallback(for: item.ownerBundleID) : nil
+            return fallbackToAppIcon ? appIconFallback(for: item.ownerBundleID, itemID: item.id) : nil
         }
 
         // 收集所有可能的候选窗口（按相关度排序）
@@ -391,7 +391,7 @@ public enum WindowListIconCapturer {
         }
 
         // 若无有效窗口位图，使用高清 AppIcon 兜底
-        return fallbackToAppIcon ? appIconFallback(for: item.ownerBundleID) : nil
+        return fallbackToAppIcon ? appIconFallback(for: item.ownerBundleID, itemID: item.id) : nil
     }
 
     /// 批量抓取一批条目，返回 [itemID: CGImage] 字典
@@ -410,14 +410,113 @@ public enum WindowListIconCapturer {
         return results
     }
 
-    /// 高清应用图标兜底（保证视觉完整且绝无黑底脏边）
-    public static func appIconFallback(for bundleID: String?) -> CGImage? {
-        guard let bundleID, !bundleID.isEmpty,
-              let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+    // MARK: - App Icon Cache & Resolution
+
+    private static let appIconLock = NSLock()
+    private static var appIconCache: [String: CGImage] = [:]
+
+    /// 统一获取条目的原生高清 App 图标（Dock 应用程序图标）
+    public static func appIcon(for item: ManagedItem) -> CGImage? {
+        appIconFallback(for: item.ownerBundleID, itemID: item.id)
+    }
+
+    /// 高清应用图标获取与缓存（按 bundleID / itemID 解析原生 .app Dock 图标）
+    public static func appIconFallback(for bundleID: String?, itemID: String? = nil) -> CGImage? {
+        let key = (bundleID ?? "") + "|" + (itemID ?? "")
+        if key == "|" { return nil }
+
+        appIconLock.lock()
+        if let cached = appIconCache[key] {
+            appIconLock.unlock()
+            return cached
+        }
+        if let bid = bundleID, !bid.isEmpty, let cached = appIconCache[bid] {
+            appIconLock.unlock()
+            return cached
+        }
+        appIconLock.unlock()
+
+        guard let appURL = resolveAppURL(bundleID: bundleID, itemID: itemID) else {
             return nil
         }
+
         let icon = NSWorkspace.shared.icon(forFile: appURL.path)
-        var proposed = CGRect(x: 0, y: 0, width: 44, height: 44)
-        return icon.cgImage(forProposedRect: &proposed, context: nil, hints: nil)
+        var proposed = CGRect(x: 0, y: 0, width: 64, height: 64)
+        guard let cgImage = icon.cgImage(forProposedRect: &proposed, context: nil, hints: nil) else {
+            return nil
+        }
+
+        appIconLock.lock()
+        appIconCache[key] = cgImage
+        if let bid = bundleID, !bid.isEmpty {
+            appIconCache[bid] = cgImage
+        }
+        appIconLock.unlock()
+
+        return cgImage
+    }
+
+    /// 根据 bundleID / itemID 解析应用程序包 URL（支持子进程回溯到宿主 .app）
+    public static func resolveAppURL(bundleID: String?, itemID: String?) -> URL? {
+        var candidateBIDs: [String] = []
+        if let bundleID, !bundleID.isEmpty {
+            candidateBIDs.append(bundleID)
+            let lower = bundleID.lowercased()
+            if lower != bundleID {
+                candidateBIDs.append(lower)
+            }
+        }
+        if let itemID, !itemID.isEmpty, let owner = ManagedItem.ownerFromID(itemID), !owner.isEmpty {
+            if !candidateBIDs.contains(owner) {
+                candidateBIDs.append(owner)
+            }
+            let lowerOwner = owner.lowercased()
+            if !candidateBIDs.contains(lowerOwner) {
+                candidateBIDs.append(lowerOwner)
+            }
+        }
+
+        // 1. 直接通过 NSWorkspace 查询 URL
+        for bid in candidateBIDs {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) {
+                return unnestEnclosingAppURL(url)
+            }
+        }
+
+        // 2. 从运行中应用精确匹配 BundleID
+        for bid in candidateBIDs {
+            if let app = NSWorkspace.shared.runningApplications.first(where: {
+                $0.bundleIdentifier?.caseInsensitiveCompare(bid) == .orderedSame
+            }), let url = app.bundleURL {
+                return unnestEnclosingAppURL(url)
+            }
+        }
+
+        // 3. 从运行中应用模糊/前缀/包含匹配（兼容 LaunchHelper、LoginItems 等子进程）
+        for bid in candidateBIDs {
+            for app in NSWorkspace.shared.runningApplications {
+                guard let appBid = app.bundleIdentifier?.lowercased() else { continue }
+                if appBid.hasPrefix(bid) || bid.hasPrefix(appBid)
+                    || appBid.contains(bid) || bid.contains(appBid) {
+                    if let url = app.bundleURL {
+                        return unnestEnclosingAppURL(url)
+                    }
+                }
+            }
+        }
+
+        return nil
+    }
+
+    /// 若应用位于宿主 .app 内部（如 Helper、LoginItems、XPCServices），回溯至最外层主应用包
+    public static func unnestEnclosingAppURL(_ url: URL) -> URL {
+        var cur = url
+        while cur.pathComponents.count > 1 {
+            if cur.pathExtension == "app" && !cur.path.contains(".app/Contents") {
+                return cur
+            }
+            cur = cur.deletingLastPathComponent()
+        }
+        return url
     }
 }

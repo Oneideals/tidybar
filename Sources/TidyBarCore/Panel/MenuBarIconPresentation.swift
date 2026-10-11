@@ -21,20 +21,19 @@ public enum MenuBarIconStyle {
     public static let cornerRadius: CGFloat = 5
 
     /// 纯函数：由条目与位图查找结果决定呈现方式。
-    /// 判定顺序固定：
     /// 判定顺序：
-    /// 1. bitmap != nil -> bitmap（只要有真实位图，无论是折叠收纳态还是后台项均优先展示真实截图）
-    /// 2. !captureAuthorized -> captureNotAuthorized
-    /// 3. item.frame == .zero -> itemNotRunning
-    /// 4. 否则 -> notCapturedYet
+    /// 1. TidyBar 抽屉与界面统一优先采用 App 原生 Dock 高清图标（原生全彩且杜绝残影切片）
+    /// 2. 若未能解析到 App 原生图标（如纯命令行工具或 mock 单元测试项），回退到有效真实位图 bitmap
+    /// 3. !captureAuthorized -> captureNotAuthorized
+    /// 4. item.frame == .zero -> itemNotRunning
+    /// 5. 否则 -> notCapturedYet
     public static func presentation(for item: ManagedItem, bitmap: CGImage?, captureAuthorized: Bool) -> IconPresentation {
+        if let appIcon = WindowListIconCapturer.appIcon(for: item),
+           WindowListIconCapturer.hasVisiblePixels(appIcon) {
+            return .bitmap(appIcon)
+        }
         if let bitmap, WindowListIconCapturer.hasVisiblePixels(bitmap) {
             return .bitmap(bitmap)
-        }
-        // 若无有效真实位图或截图为纯底色死块，尝试使用原生高清 App 图标兜底
-        if let fallback = WindowListIconCapturer.appIconFallback(for: item.ownerBundleID),
-           WindowListIconCapturer.hasVisiblePixels(fallback) {
-            return .bitmap(fallback)
         }
         if !captureAuthorized {
             return .placeholder(reason: .captureNotAuthorized)
