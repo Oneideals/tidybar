@@ -388,9 +388,16 @@ struct IconBitmapTests {
         // 4. 纯黑不透明死块（Qt/Electron 全黑背景缓冲窗口）
         let solidBlack = image(width: 40, height: 40, fill: CGColor(red: 0, green: 0, blue: 0, alpha: 1), foreground: nil)
         expect(!WindowListIconCapturer.hasVisiblePixels(solidBlack), "纯黑不透明死块不应判定为有效图标")
+
+        // 5. 纯灰菜单栏底色/壁纸切片（无前景图标，全不透明单色底）
+        let solidGray = image(width: 40, height: 40, fill: CGColor(red: 0.46, green: 0.50, blue: 0.55, alpha: 1), foreground: nil)
+        expect(!WindowListIconCapturer.hasVisiblePixels(solidGray), "纯灰无图标的菜单栏底色切片不应判定为有效图标")
     }
 
     func windowListCapturerRejectsOversizedAndBlackBlocks() throws {
+        expect(!WindowListIconCapturer.isWithinMenuBarBand(bounds: CGRect(x: 1866, y: 887, width: 52, height: 52)), "桌面悬浮窗不应误判定为菜单栏窗口")
+        expect(WindowListIconCapturer.isWithinMenuBarBand(bounds: CGRect(x: 500, y: 5, width: 24, height: 24)), "菜单栏区域窗口应判定有效")
+
         let fakeOversized = MenuBarWindowDescriptor(
             index: 0,
             windowID: 99999,
@@ -430,6 +437,70 @@ struct IconBitmapTests {
             expect(win.bounds.height > 0)
         }
     }
+
+    func thirdPartyItemRejectsSystemOwnedCandidateWindowsInWindowListCapture() throws {
+        // 构造一个第三方应用 item，坐标在 (100, 1188)
+        let item = ManagedItem(
+            id: "com.thirdparty.test.#item0",
+            ownerBundleID: "com.thirdparty.test",
+            title: "TestApp",
+            frame: CGRect(x: 100, y: 1188, width: 24, height: 24),
+            isSystemOwned: false
+        )
+        // 构造一个位于相同坐标但属于 MenuBarAgent 的系统窗口描述符（如系统折叠按钮 <<）
+        let systemDesc = MenuBarWindowDescriptor(
+            index: 0,
+            windowID: 99999,
+            title: "显示隐藏菜单栏项目",
+            bounds: CGRect(x: 100, y: 1188, width: 24, height: 24),
+            ownerPID: 1234,
+            ownerName: "MenuBarAgent"
+        )
+        // capture 绝不可将 MenuBarAgent 窗口作为第三方应用的候选，而应回退为 nil（禁用 appIconFallback 时）
+        let result = WindowListIconCapturer.capture(for: item, in: [systemDesc], fallbackToAppIcon: false)
+        expectNil(result, "第三方应用在坐标重合时绝不能误抓系统 MenuBarAgent 窗口")
+    }
+
+    func requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded() throws {
+        MainActor.assumeIsolated {
+            let capturer = Capturer()
+            let item = TestItems.item("com.thirdparty.hidden", centerX: 100, centerY: 1188)
+            let panel = makePanel(reader: FakeMenuBarReader(items: [item]), capturer: capturer)
+            panel.isMenuBarFoldedQuery = { true }
+            var ready = false
+            panel.requestMissingBitmaps(for: [item]) { ready = true }
+            expect(ready, "折叠态下 requestMissingBitmaps 应立即完成")
+            expectEqual(capturer.frames.count, 0, "折叠态下绝对禁止通过 ScreenCaptureKit 抓取屏幕帧，防止误截折叠箭头")
+        }
+    }
+
+    func requestMissingBitmapsRejectsItemsWithOverlappingFrames() throws {
+        MainActor.assumeIsolated {
+            let capturer = Capturer()
+            // 模拟真实场景：item1 在 600..624，item2 在 606..630，水平重叠 18pt（minX 相差 6pt）
+            let item1 = ManagedItem(id: "app1", ownerBundleID: "app1", title: "App 1", frame: CGRect(x: 600, y: 1188, width: 24, height: 24), isSystemOwned: false)
+            let item2 = ManagedItem(id: "app2", ownerBundleID: "app2", title: "App 2", frame: CGRect(x: 606, y: 1188, width: 24, height: 24), isSystemOwned: false)
+            let panel = makePanel(reader: FakeMenuBarReader(items: [item1, item2]), capturer: capturer)
+            panel.isMenuBarFoldedQuery = { false }
+            var ready = false
+            panel.requestMissingBitmaps(for: [item1, item2]) { ready = true }
+            expect(ready)
+            expectEqual(capturer.frames.count, 0, "重合挤压帧（即使 minX 相差 > 2pt）必须排除，不可提交给截屏队列")
+        }
+    }
+
+    func prewarmBitmapsSkipsScreenCaptureKitWhenFolded() throws {
+        MainActor.assumeIsolated {
+            let capturer = Capturer()
+            let item = TestItems.item("com.thirdparty.hidden", centerX: 100, centerY: 1188)
+            let panel = makePanel(reader: FakeMenuBarReader(items: [item]), capturer: capturer)
+            panel.isMenuBarFoldedQuery = { true }
+            var completed = false
+            panel.prewarmBitmaps(for: [item], isValid: { true }) { completed = true }
+            expect(completed, "折叠态下 prewarmBitmaps 且无排除窗口时应直接完成")
+            expectEqual(capturer.frames.count, 0, "折叠态下 prewarmBitmaps 绝不通过 ScreenCaptureKit 抓取屏幕帧")
+        }
+    }
 }
 
 extension IconBitmapTests {
@@ -460,6 +531,10 @@ extension IconBitmapTests {
             TestCase("windowListCapturerRejectsOversizedAndBlackBlocks", suite.windowListCapturerRejectsOversizedAndBlackBlocks),
             TestCase("appIconFallbackGeneratesCrispImage", suite.appIconFallbackGeneratesCrispImage),
             TestCase("windowListDiscoveryProducesValidDescriptors", suite.windowListDiscoveryProducesValidDescriptors),
+            TestCase("thirdPartyItemRejectsSystemOwnedCandidateWindowsInWindowListCapture", suite.thirdPartyItemRejectsSystemOwnedCandidateWindowsInWindowListCapture),
+            TestCase("requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded", suite.requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded),
+            TestCase("requestMissingBitmapsRejectsItemsWithOverlappingFrames", suite.requestMissingBitmapsRejectsItemsWithOverlappingFrames),
+            TestCase("prewarmBitmapsSkipsScreenCaptureKitWhenFolded", suite.prewarmBitmapsSkipsScreenCaptureKitWhenFolded),
         ]
     }
 }

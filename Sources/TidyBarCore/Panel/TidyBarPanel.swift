@@ -352,6 +352,9 @@ public final class TidyBarPanelController: NSObject {
         didSet { updateContent() }
     }
 
+    /// 供面板查询当前菜单栏是否处于折叠状态；折叠状态下禁止对隐藏项进行屏幕像素抓取，防止误截折叠箭头。
+    public var isMenuBarFoldedQuery: (() -> Bool)?
+
     /// 内存压力时调用：位图全部丢弃，下次呼出面板按需重抓。
     /// 缓存自己实现了 `removeAll`，但**没人调它**就等于没有上限——
     /// "20MB 以内"这件事必须由一条真实的清理路径来保证。
@@ -384,8 +387,27 @@ public final class TidyBarPanelController: NSObject {
         let remaining = bitmaps.needsCapture(items)
         guard !remaining.isEmpty else { completion(); return }
 
+        // 如果菜单栏当前处于折叠状态且未提供排除窗口（非幕布模式），屏幕上隐藏项坐标无效或被折叠按钮占用，绝不走屏幕截图
+        let isFolded = isMenuBarFoldedQuery?() ?? false
+        if isFolded && excludingWindowNumbers.isEmpty {
+            completion()
+            return
+        }
+
+        let nonOverlapping = remaining.filter { item in
+            guard item.frame.width > 0, item.frame.height > 0 else { return false }
+            let isOverlapping = items.contains { other in
+                guard other.id != item.id, other.frame.width > 0, item.frame.width > 0 else { return false }
+                guard abs(other.frame.midY - item.frame.midY) < 15 else { return false }
+                let overlapWidth = min(item.frame.maxX, other.frame.maxX) - max(item.frame.minX, other.frame.minX)
+                return overlapWidth > 4
+            }
+            return !isOverlapping
+        }
+        guard !nonOverlapping.isEmpty else { completion(); return }
+
         let generation = bitmapGeneration
-        enqueueCapture(remaining, excludingWindowNumbers: excludingWindowNumbers, isValid: isValid) { [weak self] rejected in
+        enqueueCapture(nonOverlapping, excludingWindowNumbers: excludingWindowNumbers, isValid: isValid) { [weak self] rejected in
             guard let self, self.bitmapGeneration == generation, !rejected.isEmpty,
                   isValid(), self.capturer.isAuthorized else { completion(); return }
             // 位置在截图期间变化时只补抓一次，并重新获取观测绑定；不能反复截图旧坐标。
@@ -472,8 +494,19 @@ public final class TidyBarPanelController: NSObject {
 
         // 2. 对于剩余仍未获取到的项，若安全可见且已授权屏幕录制，走传统队列补齐
         let screens = screenObserver.screens
+        let isFolded = isMenuBarFoldedQuery?() ?? false
         let missing = bitmaps.needsCapture(items).filter { item in
-            reservedCaptures[item.id] == nil && attemptedFrames[item.id] != item.frame
+            // 如果菜单栏当前处于折叠状态，隐藏/收纳的项在屏幕上物理重合在折叠点上或不可见，绝对不能走屏幕截屏，防止误截折叠箭头！
+            if isFolded { return false }
+            // 排除坐标重叠/挤压或与折叠推杆重合的项（水平重叠超过 4pt）
+            let isOverlapping = items.contains { other in
+                guard other.id != item.id, other.frame.width > 0, item.frame.width > 0 else { return false }
+                guard abs(other.frame.midY - item.frame.midY) < 15 else { return false }
+                let overlapWidth = min(item.frame.maxX, other.frame.maxX) - max(item.frame.minX, other.frame.minX)
+                return overlapWidth > 4
+            }
+            if isOverlapping { return false }
+            return reservedCaptures[item.id] == nil && attemptedFrames[item.id] != item.frame
                 && screens.contains { IconCaptureGeometry.isVisibleMenuBarFrame(item.frame, on: $0) }
         }
         guard !missing.isEmpty, capturer.isAuthorized else { onBitmapsReady(); return }
@@ -547,9 +580,21 @@ public final class TidyBarPanelController: NSObject {
         }
         let screens = screenObserver.screens
         let allowOcclusion = !request.excludingWindowNumbers.isEmpty
+        let isFolded = isMenuBarFoldedQuery?() ?? false
+        if isFolded && !allowOcclusion {
+            finish(ingest: false)
+            return
+        }
         var groups: [CGDirectDisplayID: (screen: ScreenInfo, items: [ManagedItem])] = [:]
         for item in request.items {
             attemptedFrames[item.id] = item.frame
+            let hasOverlap = request.items.contains { other in
+                guard other.id != item.id, other.frame.width > 0, item.frame.width > 0 else { return false }
+                guard abs(other.frame.midY - item.frame.midY) < 15 else { return false }
+                let overlapWidth = min(item.frame.maxX, other.frame.maxX) - max(item.frame.minX, other.frame.minX)
+                return overlapWidth > 4
+            }
+            if hasOverlap { rejected.insert(item.id); continue }
             guard let screen = verifiedScreen(for: item, screens: screens, allowOcclusion: allowOcclusion) else { rejected.insert(item.id); continue }
             if groups[screen.identifier] == nil { groups[screen.identifier] = (screen, []) }
             groups[screen.identifier]?.items.append(item)

@@ -97,8 +97,8 @@ public final class MenuBarClickRelay {
         repeat {
             guard requestIsCurrent() else { return .interrupted }
             let candidates = request.item.ownerBundleID.map { io.reader.items(ownedBy: $0) } ?? io.reader.discoverItems()
-            if let item = candidates.first(where: { $0.id == request.item.id }) {
-                guard item.ownerBundleID == request.item.ownerBundleID,
+            if let item = candidates.first(where: { $0.matches(id: request.item.id) }) {
+                guard item.ownerBundleID?.caseInsensitiveCompare(request.item.ownerBundleID ?? "") == .orderedSame || item.matches(id: request.item.id),
                       item.identitySource != .ownerOrdinal || (item.ownerItemCount == request.item.ownerItemCount
                             && item.ordinalInOwner == request.item.ordinalInOwner) else { return .elementNotFound }
                 failure = .notInteractable

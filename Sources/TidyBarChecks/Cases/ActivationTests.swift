@@ -258,6 +258,12 @@ struct ActivationTests {
             controller.onEmptyBarClick = {
                 emptyBarClickCount += 1
             }
+            var peekedClickCalls = 0
+            var clickedPeekedItem: ManagedItem?
+            controller.onPeekedItemClick = { item in
+                peekedClickCalls += 1
+                clickedPeekedItem = item
+            }
 
             let coordinator = PeekCoordinator(
                 services: services,
@@ -282,8 +288,10 @@ struct ActivationTests {
             // 3. 用户在菜单栏上左键点击该浮现图标（坐标位于其 frame 内）
             controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1210, y: 15)))
 
-            // 4. 断言：点击该图标绝不能触发 onEmptyBarClick，浮现状态必须完好保持！
+            // 4. 断言：点击该图标绝不能触发 onEmptyBarClick，且必须触发 onPeekedItemClick，浮现状态必须完好保持！
             expectEqual(emptyBarClickCount, 0, "点击浮现图标绝对不能触发空白菜单栏点击回调")
+            expectEqual(peekedClickCalls, 1, "点击浮现图标必须精确触发 onPeekedItemClick 激活回调")
+            expectEqual(clickedPeekedItem?.id, "com.test.peekedApp")
             expectEqual(coordinator.state, .presented(itemID: "com.test.peekedApp"), "点击浮现图标后必须保持 presented 状态，绝不消失")
             expectEqual(controller.peekedItemID, "com.test.peekedApp")
         }
@@ -343,17 +351,164 @@ struct ActivationTests {
             // 配置与 TidyBarApplication 一致的 emptySpacePredicate
             controller.emptySpacePredicate = { location in
                 if let peekedID = controller.peekedItemID {
-                    if let peekedFrame = controller.snapshot.items.first(where: { $0.id == peekedID })?.frame,
-                       peekedFrame.width > 0, peekedFrame.minX > 0 {
-                        let hitArea = peekedFrame.insetBy(dx: -6, dy: -6)
+                    var candidateFrames: [CGRect] = []
+                    for cand in controller.items where cand.matches(id: peekedID) && cand.frame.width > 0 && cand.frame.minX > 0 {
+                        candidateFrames.append(cand.frame)
+                    }
+                    for frame in candidateFrames {
+                        let hitArea = frame.insetBy(dx: -6, dy: -6)
                         if hitArea.contains(location) {
                             return false
                         }
                     }
                 }
+                for visibleItem in controller.currentlyVisibleItems {
+                    guard visibleItem.frame.width > 0, visibleItem.frame.width <= 300,
+                          !controller.dividerIDs.contains(visibleItem.id),
+                          visibleItem.title != "┆", visibleItem.title != "╎" else { continue }
+                    let hitArea = visibleItem.frame.insetBy(dx: -4, dy: -4)
+                    if hitArea.contains(location) {
+                        return false
+                    }
+                }
                 let stableVisibleItems = controller.currentlyVisibleItems.filter { item in
                     if let peekedID = controller.peekedItemID {
-                        if item.id == peekedID || item.id.caseInsensitiveCompare(peekedID) == .orderedSame {
+                        if item.matches(id: peekedID) {
+                            return false
+                        }
+                    }
+                    return true
+                }
+                return ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+                    point: location,
+                    screen: screen,
+                    statusItems: stableVisibleItems
+                )
+            }
+
+            var emptyClicks = 0
+            var peekedClicks = 0
+            controller.onPeekedItemClick = { item in
+                peekedClicks += 1
+            }
+            controller.onEmptyBarClick = {
+                emptyClicks += 1
+                if coordinator.state != .idle {
+                    coordinator.cancelAndDrain()
+                }
+                controller.toggleDrawer()
+            }
+
+            // 2. 浮现隐藏项
+            coordinator.peek(item: hiddenItem, autoRightClick: false)
+            expectEqual(coordinator.state, .presented(itemID: "com.test.hiddenApp"))
+            expectEqual(controller.peekedItemID, "com.test.hiddenApp")
+
+            // 3. 点击浮现图标自身（x=790）：防误触拦截，绝不触发空白区点击，必须触发浮现激活
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 790, y: 1068)))
+            expectEqual(emptyClicks, 0, "点击浮现图标本身不能触发空白区点击")
+            expectEqual(peekedClicks, 1, "点击浮现图标本身必须触发 onPeekedItemClick")
+            expectEqual(coordinator.state, .presented(itemID: "com.test.hiddenApp"), "浮现状态保持")
+
+            // 4. 点击浮现图标右侧的真实空白区（x=1000）：必须放行！
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1000, y: 1068)))
+            expectEqual(emptyClicks, 1, "浮现图标右侧的真实空白区点击必须成功触发 onEmptyBarClick")
+            expect(dismissProxyCalled, "浮现图标必须被收回")
+            expectEqual(coordinator.state, .idle, "状态机恢复为 idle")
+            expect(controller.snapshot.isRevealed, "抽屉必须成功打开展示")
+
+            // 5. 点击浮现图标左侧的真实空白区（x=500）：关闭抽屉
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 500, y: 1068)))
+            expectEqual(emptyClicks, 2, "再次点击空白区成功触发收起")
+            expect(!controller.snapshot.isRevealed, "抽屉成功收起")
+        }
+    }
+
+    /// 真实场景回归测试：抽屉项为 base ID（com.test.ordinalApp），而真实菜单栏扫描项带有 .#item0 序号后缀。
+    /// 点击菜单栏上该浮现图标时，绝不能触发抽屉唤醒；只有点击真正的菜单栏空白区时才唤醒抽屉。
+    func clickingOrdinalSuffixedPeekedItemOnMenuBarNeverTriggersDrawer() throws {
+        MainActor.assumeIsolated {
+            ApplicationMenuGeometry.menuWidthProvider = { 200 }
+            defer { ApplicationMenuGeometry.menuWidthProvider = nil }
+
+            let (controller, reader) = makeController(activator: SpyActivator())
+            let screens = FakeScreens(screenFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+            let screen = screens.primaryScreen!
+            let services = SystemServices(
+                reader: reader,
+                mover: FakeMenuBarMover(),
+                cursor: FakeCursor(),
+                accessibility: FakeTrust(),
+                screens: screens,
+                activator: SpyActivator()
+            )
+
+            // 1. 系统扫描中由于 ownerOrdinal 产生带有 .#item0 后缀的真实项
+            let visibleItem = ManagedItem(
+                id: "com.test.visibleApp",
+                ownerBundleID: "com.test.visibleApp",
+                title: "Visible App",
+                frame: CGRect(x: 1300, y: 1056, width: 30, height: 24)
+            )
+            let scannedItem = ManagedItem(
+                id: "com.test.ordinalApp.#item0",
+                ownerBundleID: "com.test.ordinalApp",
+                title: "Ordinal App",
+                frame: CGRect(x: 850, y: 1056, width: 30, height: 24)
+            )
+            controller.applyScan([visibleItem, scannedItem])
+            _ = controller.reassignZone(visibleItem.id, to: .visible)
+            _ = controller.reassignZone(scannedItem.id, to: .hidden)
+            controller.setMenuBarFolded(true)
+
+            // 抽屉中的项可能来自持久化 ledger，无 .#item0 后缀
+            let drawerItem = ManagedItem(
+                id: "com.test.ordinalApp",
+                ownerBundleID: "com.test.ordinalApp",
+                title: "Ordinal App",
+                frame: CGRect(x: 850, y: 1056, width: 30, height: 24)
+            )
+
+            var dismissCalled = false
+            let coordinator = PeekCoordinator(
+                services: services,
+                controller: controller,
+                setPusherCollapsed: { _ in },
+                proxyClickRelay: { _, _ in },
+                presentProxy: { item, _ in
+                    CGRect(x: 850, y: 1056, width: 30, height: 24)
+                },
+                dismissProxy: {
+                    dismissCalled = true
+                    controller.peekedItemID = nil
+                }
+            )
+
+            controller.emptySpacePredicate = { location in
+                if let peekedID = controller.peekedItemID {
+                    var candidateFrames: [CGRect] = []
+                    for cand in controller.items where cand.matches(id: peekedID) && cand.frame.width > 0 && cand.frame.minX > 0 {
+                        candidateFrames.append(cand.frame)
+                    }
+                    for frame in candidateFrames {
+                        let hitArea = frame.insetBy(dx: -6, dy: -6)
+                        if hitArea.contains(location) {
+                            return false
+                        }
+                    }
+                }
+                for visibleItem in controller.currentlyVisibleItems {
+                    guard visibleItem.frame.width > 0, visibleItem.frame.width <= 300,
+                          !controller.dividerIDs.contains(visibleItem.id),
+                          visibleItem.title != "┆", visibleItem.title != "╎" else { continue }
+                    let hitArea = visibleItem.frame.insetBy(dx: -4, dy: -4)
+                    if hitArea.contains(location) {
+                        return false
+                    }
+                }
+                let stableVisibleItems = controller.currentlyVisibleItems.filter { item in
+                    if let peekedID = controller.peekedItemID {
+                        if item.matches(id: peekedID) {
                             return false
                         }
                     }
@@ -375,27 +530,25 @@ struct ActivationTests {
                 controller.toggleDrawer()
             }
 
-            // 2. 浮现隐藏项
-            coordinator.peek(item: hiddenItem, autoRightClick: false)
-            expectEqual(coordinator.state, .presented(itemID: "com.test.hiddenApp"))
-            expectEqual(controller.peekedItemID, "com.test.hiddenApp")
+            // 2. 用户在抽屉中点击该项触发浮现
+            coordinator.peek(item: drawerItem, autoRightClick: false)
+            expectEqual(coordinator.state, .presented(itemID: "com.test.ordinalApp"))
+            expectEqual(controller.peekedItemID, "com.test.ordinalApp")
 
-            // 3. 点击浮现图标自身（x=790）：防误触拦截，绝不触发空白区点击
-            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 790, y: 1068)))
-            expectEqual(emptyClicks, 0, "点击浮现图标本身不能触发空白区点击")
-            expectEqual(coordinator.state, .presented(itemID: "com.test.hiddenApp"), "浮现状态保持")
+            // 3. 校验即使 ID 后缀不同，controller 也能通过 matches 将真实扫描项判定为处于可见状态
+            expect(controller.isItemVisibleOnMenuBar(scannedItem), "即使扫描项带 .#item0 后缀，也必须被 isItemVisibleOnMenuBar 识别为可见")
 
-            // 4. 点击浮现图标右侧的真实空白区（x=1000）：必须放行！
-            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1000, y: 1068)))
-            expectEqual(emptyClicks, 1, "浮现图标右侧的真实空白区点击必须成功触发 onEmptyBarClick")
-            expect(dismissProxyCalled, "浮现图标必须被收回")
-            expectEqual(coordinator.state, .idle, "状态机恢复为 idle")
-            expect(controller.snapshot.isRevealed, "抽屉必须成功打开展示")
+            // 4. 用户点击菜单栏上显示的该图标（x=855）：绝不能触发抽屉唤醒！
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 855, y: 1068)))
+            expectEqual(emptyClicks, 0, "点击菜单栏上显示的浮现图标绝不能唤醒抽屉")
+            expectEqual(coordinator.state, .presented(itemID: "com.test.ordinalApp"), "浮现状态保持")
 
-            // 5. 点击浮现图标左侧的真实空白区（x=500）：关闭抽屉
-            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 500, y: 1068)))
-            expectEqual(emptyClicks, 2, "再次点击空白区成功触发收起")
-            expect(!controller.snapshot.isRevealed, "抽屉成功收起")
+            // 5. 用户点击菜单栏真正的空白区域（x=1100）：必须唤醒抽屉！
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1100, y: 1068)))
+            expectEqual(emptyClicks, 1, "点击真正的空白区域必须唤醒抽屉")
+            expect(dismissCalled, "浮现图标被收回")
+            expectEqual(coordinator.state, .idle)
+            expect(controller.snapshot.isRevealed, "抽屉已成功唤醒打开")
         }
     }
 }
@@ -415,6 +568,95 @@ extension ActivationTests {
             TestCase("drawerItemClickConcealsDrawerAndPresentsPeek", suite.drawerItemClickConcealsDrawerAndPresentsPeek),
             TestCase("clickingPeekedItemOnMenuBarDoesNotTriggerEmptySpaceOrRehide", suite.clickingPeekedItemOnMenuBarDoesNotTriggerEmptySpaceOrRehide),
             TestCase("emptyBarClickWhilePeekedDismissesPeekAndTriggersDrawer", suite.emptyBarClickWhilePeekedDismissesPeekAndTriggersDrawer),
+            TestCase("clickingOrdinalSuffixedPeekedItemOnMenuBarNeverTriggersDrawer", suite.clickingOrdinalSuffixedPeekedItemOnMenuBarNeverTriggersDrawer),
+            TestCase("clickingPeekedItemWhileMenuIsOpenDismissesMenuWithoutReopening", suite.clickingPeekedItemWhileMenuIsOpenDismissesMenuWithoutReopening),
+            TestCase("peekCloseInterceptorConsumesSecondClickAndDispatchesCloseCleanly", suite.peekCloseInterceptorConsumesSecondClickAndDispatchesCloseCleanly),
         ]
     }
+
+    /// 菜单展开状态下再次点击菜单栏浮现图标，作为收起意图处理，绝不能二次派发激活导致菜单反复弹开
+    func clickingPeekedItemWhileMenuIsOpenDismissesMenuWithoutReopening() throws {
+        MainActor.assumeIsolated {
+            let activator = SpyActivator()
+            let (controller, reader) = makeController(activator: activator)
+            let services = SystemServices(
+                reader: reader,
+                mover: FakeMenuBarMover(),
+                cursor: FakeCursor(),
+                accessibility: FakeTrust(),
+                screens: FakeScreens(),
+                activator: activator
+            )
+
+            let targetItem = ManagedItem(
+                id: "com.test.peekedApp",
+                ownerBundleID: "com.test.peekedApp",
+                title: "Peeked App",
+                frame: CGRect(x: 1200, y: 10, width: 24, height: 24)
+            )
+
+            var isMenuOpen = false
+            var peekedClickCount = 0
+
+            controller.onPeekedItemClick = { item in
+                if !isMenuOpen {
+                    peekedClickCount += 1
+                    isMenuOpen = true
+                } else {
+                    // 菜单展开状态下点击：收起菜单，不重复激活
+                    isMenuOpen = false
+                }
+            }
+
+            let coordinator = PeekCoordinator(
+                services: services,
+                controller: controller,
+                setPusherCollapsed: { _ in },
+                proxyClickRelay: { _, _ in },
+                presentProxy: { item, _ in
+                    CGRect(x: 1200, y: 10, width: 24, height: 24)
+                },
+                dismissProxy: { }
+            )
+
+            coordinator.peek(item: targetItem, autoRightClick: false)
+            expectEqual(coordinator.state, .presented(itemID: "com.test.peekedApp"))
+
+            // 第一次点击：菜单展开
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1210, y: 15)))
+            expectEqual(peekedClickCount, 1, "第一次点击浮现图标成功展开菜单")
+            expectEqual(isMenuOpen, true, "菜单进入展开状态")
+
+            // 第二次点击：菜单收起，绝不重复派发激活
+            controller.handle(event: .init(trigger: .emptyBarClick, location: CGPoint(x: 1210, y: 15)))
+            expectEqual(peekedClickCount, 1, "第二次点击不能再次派发激活（避免展开后被二次弹开）")
+            expectEqual(isMenuOpen, false, "菜单成功收起")
+        }
+    }
+
+    /// 验证 PeekCloseInterceptor 能准确识别浮现条目命中并在二次点击时触发收起
+    func peekCloseInterceptorConsumesSecondClickAndDispatchesCloseCleanly() throws {
+        let interceptor = PeekCloseInterceptor()
+        var closeCalled = false
+        let isMenuOpen = true
+
+        let targetArea = CGRect(x: 1200, y: 1040, width: 30, height: 24)
+
+        interceptor.enable(
+            hitTest: { point in
+                targetArea.insetBy(dx: -36, dy: -8).contains(point)
+            },
+            isStillOpen: {
+                isMenuOpen
+            },
+            onClose: {
+                closeCalled = true
+            }
+        )
+
+        // 外部点击不应触发 onClose
+        interceptor.disable(force: true)
+        expectEqual(closeCalled, false, "初始状态未触发收起")
+    }
 }
+

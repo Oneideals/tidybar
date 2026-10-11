@@ -38,12 +38,23 @@ public struct MenuBarWindowDescriptor: Sendable {
     public let windowID: CGWindowID
     public let title: String
     public let bounds: CGRect
+    public let ownerPID: Int32
+    public let ownerName: String
 
-    public init(index: Int, windowID: CGWindowID, title: String, bounds: CGRect) {
+    public init(
+        index: Int,
+        windowID: CGWindowID,
+        title: String,
+        bounds: CGRect,
+        ownerPID: Int32 = 0,
+        ownerName: String = ""
+    ) {
         self.index = index
         self.windowID = windowID
         self.title = title
         self.bounds = bounds
+        self.ownerPID = ownerPID
+        self.ownerName = ownerName
     }
 }
 
@@ -56,47 +67,76 @@ public struct MenuBarWindowDescriptor: Sendable {
 /// 3. **屏外无感直截**：可直接捕获负坐标/隐藏推杆推至屏外的状态项窗口，无需展开推杆或拉起遮罩幕布。
 /// 4. **1:1 原生尺寸**：按系统菜单栏高度（22pt）垂直对称修剪多余窗口上下边距，保证在抽屉内不缩水变形。
 public enum WindowListIconCapturer {
+    /// 判断窗口坐标是否位于某块连接屏幕的菜单栏带内（防范误抓桌面悬浮窗、挂件等非菜单栏窗口）
+    public static func isWithinMenuBarBand(bounds: CGRect) -> Bool {
+        guard bounds.height > 0 && bounds.height <= 80 && bounds.width > 0 && bounds.width <= 400 else {
+            return false
+        }
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else {
+            return bounds.origin.y >= -10 && bounds.origin.y <= 60
+        }
+        let primaryHeight = screens.first?.frame.height ?? 1080
+        for screen in screens {
+            let screenTopInCG = primaryHeight - screen.frame.maxY
+            let menuBarHeight: CGFloat = 40
+            let bandMinY = screenTopInCG - 10
+            let bandMaxY = screenTopInCG + menuBarHeight + 25
+            if bounds.origin.y >= bandMinY && bounds.origin.y <= bandMaxY {
+                return true
+            }
+        }
+        return false
+    }
+
     /// 获取系统菜单栏窗口列表
     public static func getMenuBarWindows() -> [MenuBarWindowDescriptor] {
+        var descriptors = fallbackWindowsFromPublicAPI()
+        var seenIDs = Set(descriptors.map(\.windowID))
+
         let cid = CGSMainConnectionID()
         var count: Int32 = 0
         _ = CGSGetWindowCount(cid, 0, &count)
-        guard count > 0 else {
-            return fallbackWindowsFromPublicAPI()
-        }
+        if count > 0 {
+            var list = [CGWindowID](repeating: 0, count: Int(count))
+            var realCount: Int32 = 0
+            let res = CGSGetProcessMenuBarWindowList(cid, 0, count, &list, &realCount)
+            if res == 0, realCount > 0 {
+                let winIDs = Array(list[0..<Int(realCount)])
+                let ptr = UnsafeMutablePointer<UnsafeRawPointer?>.allocate(capacity: winIDs.count)
+                defer { ptr.deallocate() }
+                for (i, wid) in winIDs.enumerated() {
+                    ptr[i] = UnsafeRawPointer(bitPattern: UInt(wid))
+                }
 
-        var list = [CGWindowID](repeating: 0, count: Int(count))
-        var realCount: Int32 = 0
-        let res = CGSGetProcessMenuBarWindowList(cid, 0, count, &list, &realCount)
-        guard res == 0, realCount > 0 else {
-            return fallbackWindowsFromPublicAPI()
-        }
-
-        let winIDs = Array(list[0..<Int(realCount)])
-        let ptr = UnsafeMutablePointer<UnsafeRawPointer?>.allocate(capacity: winIDs.count)
-        defer { ptr.deallocate() }
-        for (i, wid) in winIDs.enumerated() {
-            ptr[i] = UnsafeRawPointer(bitPattern: UInt(wid))
-        }
-
-        guard let arr = CFArrayCreate(kCFAllocatorDefault, ptr, winIDs.count, nil),
-              let infoList = CGWindowListCreateDescriptionFromArray(arr) as? [[String: Any]] else {
-            return fallbackWindowsFromPublicAPI()
-        }
-
-        var descriptors: [MenuBarWindowDescriptor] = []
-        descriptors.reserveCapacity(infoList.count)
-        for (i, info) in infoList.enumerated() {
-            guard let wid = info[kCGWindowNumber as String] as? CGWindowID,
-                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict) else { continue }
-            let title = info[kCGWindowName as String] as? String ?? ""
-            descriptors.append(MenuBarWindowDescriptor(index: i, windowID: wid, title: title, bounds: bounds))
+                if let arr = CFArrayCreate(kCFAllocatorDefault, ptr, winIDs.count, nil),
+                   let infoList = CGWindowListCreateDescriptionFromArray(arr) as? [[String: Any]] {
+                    for (i, info) in infoList.enumerated() {
+                        guard let wid = info[kCGWindowNumber as String] as? CGWindowID,
+                              !seenIDs.contains(wid),
+                              let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                              let bounds = CGRect(dictionaryRepresentation: boundsDict),
+                              isWithinMenuBarBand(bounds: bounds) else { continue }
+                        let title = info[kCGWindowName as String] as? String ?? ""
+                        let ownerName = info[kCGWindowOwnerName as String] as? String ?? ""
+                        let ownerPID = info[kCGWindowOwnerPID as String] as? Int32 ?? 0
+                        seenIDs.insert(wid)
+                        descriptors.append(MenuBarWindowDescriptor(
+                            index: descriptors.count + i,
+                            windowID: wid,
+                            title: title,
+                            bounds: bounds,
+                            ownerPID: ownerPID,
+                            ownerName: ownerName
+                        ))
+                    }
+                }
+            }
         }
         return descriptors
     }
 
-    /// 公共 API 兜底（以防私有调用受限）
+    /// 公共 API 获取系统菜单栏候选窗口
     private static func fallbackWindowsFromPublicAPI() -> [MenuBarWindowDescriptor] {
         guard let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
             return []
@@ -104,12 +144,23 @@ public enum WindowListIconCapturer {
         var descriptors: [MenuBarWindowDescriptor] = []
         var idx = 0
         for info in list {
-            guard let layer = info[kCGWindowLayer as String] as? Int, layer == 25,
+            guard let layer = info[kCGWindowLayer as String] as? Int,
+                  (layer >= 24 && layer <= 27),
                   let wid = info[kCGWindowNumber as String] as? CGWindowID,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict) else { continue }
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
+                  isWithinMenuBarBand(bounds: bounds) else { continue }
             let title = info[kCGWindowName as String] as? String ?? ""
-            descriptors.append(MenuBarWindowDescriptor(index: idx, windowID: wid, title: title, bounds: bounds))
+            let ownerName = info[kCGWindowOwnerName as String] as? String ?? ""
+            let ownerPID = info[kCGWindowOwnerPID as String] as? Int32 ?? 0
+            descriptors.append(MenuBarWindowDescriptor(
+                index: idx,
+                windowID: wid,
+                title: title,
+                bounds: bounds,
+                ownerPID: ownerPID,
+                ownerName: ownerName
+            ))
             idx += 1
         }
         return descriptors
@@ -132,14 +183,24 @@ public enum WindowListIconCapturer {
 
         guard trimToThickness else { return rawImage }
 
-        // 像 Ice 一样按 22pt 对齐修剪上下多余边距，确保抽屉渲染达到 1:1 原生质感
+        // 若图片高度超出 22pt，且待裁剪的上下边距均为透明（非高大方形图标），才做垂直修剪收边
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         let targetThickness = 22.0 * scale
-        if CGFloat(rawImage.height) > targetThickness + 2 {
-            let cropY = (CGFloat(rawImage.height) - targetThickness) / 2
-            let cropRect = CGRect(x: 0, y: cropY, width: CGFloat(rawImage.width), height: targetThickness)
-            if let cropped = rawImage.cropping(to: cropRect) {
-                return cropped
+        if CGFloat(rawImage.height) > targetThickness + 4 {
+            // 方形图标（如 32x32, 52x52）本身就是等比正方形，按 1:1 完整展示，严防裁成狭长切片导致纵横比畸变
+            let isApproximatelySquare = abs(rawImage.width - rawImage.height) <= 6
+            if !isApproximatelySquare {
+                let cropY = (CGFloat(rawImage.height) - targetThickness) / 2
+                // 检查被裁掉的上下边距是否存在主体像素；若存在，绝对不能裁剪
+                let topBand = rawImage.cropping(to: CGRect(x: 0, y: 0, width: CGFloat(rawImage.width), height: cropY))
+                let bottomBand = rawImage.cropping(to: CGRect(x: 0, y: CGFloat(rawImage.height) - cropY, width: CGFloat(rawImage.width), height: cropY))
+                let hasMarginContent = (topBand.map { hasVisiblePixels($0) } ?? false) || (bottomBand.map { hasVisiblePixels($0) } ?? false)
+                if !hasMarginContent {
+                    let cropRect = CGRect(x: 0, y: cropY, width: CGFloat(rawImage.width), height: targetThickness)
+                    if let cropped = rawImage.cropping(to: cropRect), hasVisiblePixels(cropped) {
+                        return cropped
+                    }
+                }
             }
         }
         return rawImage
@@ -158,6 +219,10 @@ public enum WindowListIconCapturer {
         var visibleCount = 0
         var nonBlackCount = 0
         var totalSampled = 0
+        var opaqueCount = 0
+        var minLum: Int = 255
+        var maxLum: Int = 0
+
         let stepX = max(1, width / 16)
         let stepY = max(1, height / 16)
         for y in stride(from: 0, to: height, by: stepY) {
@@ -167,12 +232,18 @@ public enum WindowListIconCapturer {
                 let alpha = rowPtr[x * bpp + 3]
                 if alpha > 15 {
                     visibleCount += 1
-                    let r = rowPtr[x * bpp]
-                    let g = rowPtr[x * bpp + 1]
-                    let b = rowPtr[x * bpp + 2]
+                    let r = Int(rowPtr[x * bpp])
+                    let g = Int(rowPtr[x * bpp + 1])
+                    let b = Int(rowPtr[x * bpp + 2])
                     // 只要有一个像素具备可辨识亮度（RGB > 18），即非纯黑
                     if r > 18 || g > 18 || b > 18 {
                         nonBlackCount += 1
+                    }
+                    if alpha > 200 {
+                        opaqueCount += 1
+                        let lum = (r * 299 + g * 587 + b * 114) / 1000
+                        if lum < minLum { minLum = lum }
+                        if lum > maxLum { maxLum = lum }
                     }
                 }
             }
@@ -183,50 +254,117 @@ public enum WindowListIconCapturer {
         if visibleCount >= Int(Double(totalSampled) * 0.80) && nonBlackCount == 0 {
             return false
         }
+        // 纯色/无图标菜单栏壁纸死块检测：若采样像素绝大多数为不透明（>=85%），但最大与最小亮度差小于 35，
+        // 说明图像为截获的纯底色/无图标菜单栏壁纸切片，不作为有效图标展示
+        if Double(opaqueCount) >= Double(totalSampled) * 0.85 {
+            let lumDiff = maxLum - minLum
+            if lumDiff < 35 {
+                return false
+            }
+        }
         return true
     }
 
     /// 为指定条目捕获高质量纯净位图
-    public static func capture(for item: ManagedItem, in windows: [MenuBarWindowDescriptor]? = nil) -> CGImage? {
+    public static func capture(
+        for item: ManagedItem,
+        in windows: [MenuBarWindowDescriptor]? = nil,
+        fallbackToAppIcon: Bool = true
+    ) -> CGImage? {
         let allDescriptors = windows ?? getMenuBarWindows()
-        // 过滤掉整个屏幕宽度的系统菜单栏全宽底栏/跨带辅助窗口（单图标绝不可能超过 250pt，高度在 10pt~50pt 之间）
+        // 过滤掉整个屏幕宽度的系统菜单栏全宽底栏/跨带辅助窗口（单图标绝不可能超过 350pt，高度在 10pt~80pt 之间）
         let descriptors = allDescriptors.filter { desc in
-            desc.bounds.width > 0 && desc.bounds.width <= 250 && desc.bounds.height > 0 && desc.bounds.height <= 50
+            desc.bounds.width > 0 && desc.bounds.width <= 350 && desc.bounds.height > 0 && desc.bounds.height <= 80
         }
         guard !descriptors.isEmpty else {
-            return appIconFallback(for: item.ownerBundleID)
+            return fallbackToAppIcon ? appIconFallback(for: item.ownerBundleID) : nil
         }
 
         // 收集所有可能的候选窗口（按相关度排序）
         var candidates: [CGWindowID] = []
 
-        // 1. Bundle ID 匹配（必须排除空标题，严防 b.contains("") 误命中全部无标题窗口）
-        if let bundleID = item.ownerBundleID, !bundleID.isEmpty {
-            let b = bundleID.lowercased()
-            let matches = descriptors.filter { desc in
-                let t = desc.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                guard !t.isEmpty else { return false }
-                return t == b || t.contains(b) || b.contains(t)
+        let isSystemItem = item.isSystemOwned
+            || ManagedItem.isSystemOwned(bundleID: item.ownerBundleID)
+            || ManagedItem.isSystemOwned(itemID: item.id)
+
+        let runningApp = item.ownerBundleID.flatMap { bid in
+            NSWorkspace.shared.runningApplications.first(where: { app in
+                guard let appBid = app.bundleIdentifier else { return false }
+                return appBid.caseInsensitiveCompare(bid) == .orderedSame
+                    || appBid.localizedCaseInsensitiveContains(bid)
+                    || bid.localizedCaseInsensitiveContains(appBid)
+            })
+        }
+        let appPID = runningApp?.processIdentifier
+
+        // 辅助闭包：判断窗口描述符是否符合非系统项的所有权归属
+        func isDescriptorCompatible(_ desc: MenuBarWindowDescriptor) -> Bool {
+            if !isSystemItem {
+                // 非系统项绝不允许匹配系统组件窗口（MenuBarAgent / ControlCenter / 等），防止折叠态误抓系统折叠按钮 <<
+                if ManagedItem.isSystemOwned(bundleID: desc.ownerName)
+                    || desc.ownerName.contains("MenuBarAgent")
+                    || desc.ownerName.contains("Window Server")
+                    || desc.ownerName == "local.tidybar.app"
+                    || desc.ownerName == "TidyBar" {
+                    return false
+                }
+                // 若应用 PID 已确定，绝不允许匹配属于其它已知进程的窗口
+                if let appPID, desc.ownerPID != 0, desc.ownerPID != appPID {
+                    return false
+                }
             }
-            for match in matches {
-                candidates.append(match.windowID)
-                // Control Center 窗口对机制：Item-0 往往是邻居
-                if match.index > 0 { candidates.append(descriptors[match.index - 1].windowID) }
-                if match.index + 1 < descriptors.count { candidates.append(descriptors[match.index + 1].windowID) }
+            return true
+        }
+
+        // 0. PID 精确匹配（最精准：直接定位该应用拥有的状态项窗口）
+        if let appPID {
+            for desc in descriptors where desc.ownerPID == appPID {
+                if !candidates.contains(desc.windowID) {
+                    candidates.append(desc.windowID)
+                }
             }
         }
 
-        // 2. 屏幕坐标与屏外坐标匹配（限定有效状态项宽度 <= 250）
-        let tolerance: CGFloat = 24.0
-        let coordMatches = descriptors.filter { desc in
-            guard desc.bounds.width <= 250 else { return false }
-            // 屏内直接比对，屏外比对负坐标
-            return abs(desc.bounds.origin.x - item.frame.minX) < tolerance
-                || abs(desc.bounds.midX - item.centerX) < tolerance
+        // 1. Bundle ID / 应用名匹配（必须排除空标题，严防 b.contains("") 误命中全部无标题窗口）
+        if let bundleID = item.ownerBundleID, !bundleID.isEmpty {
+            let b = bundleID.lowercased()
+            let matches = descriptors.filter { desc in
+                guard isDescriptorCompatible(desc) else { return false }
+                let t = desc.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let o = desc.ownerName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if !t.isEmpty && (t == b || t.contains(b) || b.contains(t)) { return true }
+                if !o.isEmpty && (o == b || o.contains(b) || b.contains(o)) { return true }
+                return false
+            }
+            for match in matches {
+                if !candidates.contains(match.windowID) {
+                    candidates.append(match.windowID)
+                }
+                // Control Center 窗口对机制：Item-0 往往是邻居（仅对系统项开放）
+                if isSystemItem {
+                    if match.index > 0 && match.index - 1 < descriptors.count && !candidates.contains(descriptors[match.index - 1].windowID) {
+                        candidates.append(descriptors[match.index - 1].windowID)
+                    }
+                    if match.index + 1 < descriptors.count && !candidates.contains(descriptors[match.index + 1].windowID) {
+                        candidates.append(descriptors[match.index + 1].windowID)
+                    }
+                }
+            }
         }
-        for match in coordMatches {
-            if !candidates.contains(match.windowID) {
-                candidates.append(match.windowID)
+
+        // 2. 屏幕坐标与屏外坐标匹配（限定有效状态项宽度 <= 350）
+        let tolerance: CGFloat = 36.0
+        if item.frame.width > 0 {
+            let coordMatches = descriptors.filter { desc in
+                guard desc.bounds.width <= 350, isDescriptorCompatible(desc) else { return false }
+                // 屏内直接比对，屏外比对负坐标
+                return abs(desc.bounds.origin.x - item.frame.minX) < tolerance
+                    || abs(desc.bounds.midX - item.centerX) < tolerance
+            }
+            for match in coordMatches {
+                if !candidates.contains(match.windowID) {
+                    candidates.append(match.windowID)
+                }
             }
         }
 
@@ -234,6 +372,7 @@ public enum WindowListIconCapturer {
         let trimmedTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedTitle.isEmpty {
             let titleMatches = descriptors.filter { desc in
+                guard isDescriptorCompatible(desc) else { return false }
                 let t = desc.title.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !t.isEmpty else { return false }
                 return t.localizedCaseInsensitiveContains(trimmedTitle)
@@ -252,7 +391,7 @@ public enum WindowListIconCapturer {
         }
 
         // 若无有效窗口位图，使用高清 AppIcon 兜底
-        return appIconFallback(for: item.ownerBundleID)
+        return fallbackToAppIcon ? appIconFallback(for: item.ownerBundleID) : nil
     }
 
     /// 批量抓取一批条目，返回 [itemID: CGImage] 字典
@@ -263,7 +402,8 @@ public enum WindowListIconCapturer {
         results.reserveCapacity(items.count)
 
         for item in items {
-            if let img = capture(for: item, in: descriptors) {
+            // captureAll 仅摄取真实截得的菜单栏窗口位图，绝不将彩色 App 图标混入位图缓存，确保 ScreenCaptureKit 可继续抓取真实菜单栏像素
+            if let img = capture(for: item, in: descriptors, fallbackToAppIcon: false) {
                 results[item.id] = img
             }
         }

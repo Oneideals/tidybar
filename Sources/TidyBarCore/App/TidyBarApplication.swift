@@ -44,6 +44,14 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var peekCoordinator: PeekCoordinator?
     private var proxyStatusItem: NSStatusItem?
     private var proxyPresentedItem: ManagedItem?
+    private var lastPeekedClickTimestamp: TimeInterval = 0
+    private enum PeekedMenuState {
+        case notYetOpened
+        case opened(at: TimeInterval)
+        case closed
+    }
+    private var peekedMenuState: PeekedMenuState = .notYetOpened
+    private let peekCloseInterceptor = PeekCloseInterceptor()
     private var captureSweep: CaptureSweep?
     private var isPusherCollapsedOverride = false
     /// 注销/关机/launchd 回收发来的信号不保证会走 applicationWillTerminate，显式挂信号源
@@ -162,6 +170,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         let capturer = ScreenCaptureKitIconCapturer()
         let panel = TidyBarPanelController(services: services, capturer: capturer)
+        panel.isMenuBarFoldedQuery = { [weak self] in self?.isMenuBarFolded ?? false }
         lastCaptureAuthorization = capturer.isAuthorized
         let coordinator = PeekCoordinator(
             services: services,
@@ -239,6 +248,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         barController.emptySpacePredicate = { [weak self, weak barController] location in
             guard let self, let barController else { return true }
+            fprint("emptySpacePredicate called at location=\(location), peekedID=\(String(describing: barController.peekedItemID))")
             // 排除落在自身折叠按钮窗口内的点击（交由 AppKit 按钮自身的 action 响应）
             if let toggleWindow = self.statusItem?.button?.window, toggleWindow.frame.contains(location) {
                 return false
@@ -248,14 +258,49 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             }
             // 排除落在当前临时浮现（Peek）图标区域内的点击，绝不能当作空白区点击触发折叠/抽屉！
             if let peekedID = barController.peekedItemID {
-                let peekedFrame = self.proxyPresentedItem?.frame
-                    ?? barController.snapshot.items.first(where: { $0.id == peekedID || $0.id.caseInsensitiveCompare(peekedID) == .orderedSame })?.frame
-                if let peekedFrame, peekedFrame.width > 0 && peekedFrame.minX > 0 {
-                    let hitArea = peekedFrame.insetBy(dx: -6, dy: -6)
-                    if hitArea.contains(location) {
-                        self.peekCoordinator?.noteInteraction()
+                let targetItem = self.proxyPresentedItem
+                    ?? barController.items.first(where: { $0.matches(id: peekedID) })
+                    ?? self.services.reader.item(withID: peekedID)
+                let effectiveTarget = targetItem
+                    ?? ManagedItem(id: peekedID, ownerBundleID: ManagedItem.ownerFromID(peekedID), title: "", frame: .zero)
+
+                let isMenuOpen = self.isPeekedMenuOpen(for: effectiveTarget)
+                if !isMenuOpen {
+                    if case .opened = self.peekedMenuState {
+                        self.peekedMenuState = .closed
+                        self.peekCloseInterceptor.disable(force: true)
+                    }
+                }
+
+                // 关键防护：如果该浮现条目的菜单/弹出面板正处于展开状态，说明用户当前正在与该应用交互（例如正在浏览菜单项、或准备点击收起菜单）。
+                // 此时整个菜单栏上的任何点击动作均严禁判定为「空白菜单栏点击」，绝不能触发抽屉唤出或原地折叠，更严禁提前销毁浮现条目！
+                if isMenuOpen {
+                    fprint("emptySpacePredicate: 浮现图标菜单正处于展开状态，拦截空白区判定 location=\(location)")
+                    return false
+                }
+
+                if self.isLocationInPeekedItemArea(location, item: effectiveTarget) {
+                    fprint("emptySpacePredicate: 命中菜单栏浮现图标区域！location=\(location)")
+                    self.handlePeekedItemInteraction(item: effectiveTarget)
+                    return false
+                }
+            }
+            // 排除直接落在当前任何可见状态栏图标上的点击
+            for visibleItem in barController.currentlyVisibleItems {
+                guard visibleItem.frame.width > 0, visibleItem.frame.width <= 300,
+                      !barController.dividerIDs.contains(visibleItem.id),
+                      visibleItem.title != "┆", visibleItem.title != "╎" else { continue }
+                // 当处于浮现状态时，最左侧常显图标左侧的边缘不应拦截浮现点击
+                if barController.peekedItemID != nil && location.x < visibleItem.frame.minX {
+                    continue
+                }
+                let hitArea = visibleItem.frame.insetBy(dx: -4, dy: -4)
+                if hitArea.contains(location) {
+                    if let peeked = barController.peekedItemID, visibleItem.matches(id: peeked) {
+                        self.handlePeekedItemInteraction(item: visibleItem)
                         return false
                     }
+                    return false
                 }
             }
             let screens = self.services.screens.screens
@@ -266,12 +311,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             // 始终由稳定常显项决定，绝不受临时展开项污染！
             var stableVisibleItems = barController.currentlyVisibleItems.filter { item in
                 if let peekedID = barController.peekedItemID {
-                    if item.id == peekedID || item.id.caseInsensitiveCompare(peekedID) == .orderedSame {
+                    if item.matches(id: peekedID) {
                         return false
                     }
                 }
                 if let proxyPresented = self.proxyPresentedItem {
-                    if item.id == proxyPresented.id || item.id.caseInsensitiveCompare(proxyPresented.id) == .orderedSame {
+                    if item.matches(id: proxyPresented.id) {
                         return false
                     }
                 }
@@ -296,8 +341,25 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             )
         }
 
+        barController.onPeekedItemClick = { [weak self] item in
+            guard let self else { return }
+            self.handlePeekedItemInteraction(item: item)
+        }
+
         barController.onEmptyBarClick = { [weak self] in
             guard let self, let barController = self.controller else { return }
+            if let peek = self.peekCoordinator, peek.state != .idle {
+                if let peekedID = barController.peekedItemID {
+                    let target = self.proxyPresentedItem
+                        ?? barController.items.first(where: { $0.matches(id: peekedID) })
+                        ?? ManagedItem(id: peekedID, ownerBundleID: ManagedItem.ownerFromID(peekedID), title: "", frame: .zero)
+                    if self.isPeekedMenuOpen(for: target) {
+                        fprint("onEmptyBarClick: 浮现图标菜单正处于展开状态，忽略空白区点击动作以防止菜单误关")
+                        return
+                    }
+                }
+                peek.cancelAndDrain()
+            }
             switch barController.settings.emptyBarClickAction {
             case .toggleFold:
                 self.toggleMenuBarFold()
@@ -379,6 +441,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                             self.arrangement?.cancel()
                             self.clickRelay?.cancel()
                         }
+                    }
+                    // 当处于临时浮现（Peek）交互期间，前台应用切换（例如浮现的应用自身弹出了菜单或浮窗而成为前台）
+                    // 绝不能立即触发全量重扫与布局刷新，否则会导致重设断言并关闭刚刚弹出的菜单！
+                    if let peek = self?.peekCoordinator, peek.state != .idle {
+                        return
                     }
                     self?.scheduleRefresh(reason: .frontmostAppChanged)
                 }
@@ -1078,6 +1145,8 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         searchUI?.dismiss()
         endHeldMenuAccess()
         controller.conceal()
+        peekedMenuState = .notYetOpened
+        lastPeekedClickTimestamp = 0
         // 方案 A（虚拟代理图标模式）：点击抽屉里的图标，直接在长显（常显）区域瞬间呈现代理图标，零推杆折叠、零全展开
         if let peek = peekCoordinator {
             if case .presented = peek.state {
@@ -1090,13 +1159,16 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             }
         }
         // 降级兜底：若暂不具备浮现能力，走代理展开点击
-        requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: true)
+        requestProxyClick(item, button: autoRightClick ? .secondary : .primary, unfold: false)
     }
 
     // MARK: - 常显区虚拟代理状态项（方案 A）
 
     private func presentProxyItem(item: ManagedItem, autoRightClick: Bool) -> CGRect? {
-        fprint("presentProxyItem item=\(item.id) title=\(item.title)")
+        let bundleID = item.ownerBundleID
+            ?? controller?.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == item.id || $0.aliases.contains(item.id) })?.ownerBundleID
+            ?? ManagedItem.ownerFromID(item.id)
+
         if NativeMenuBarHider.shared.isAvailable {
             // macOS 27 原生浮现：直接通过 MenuBarClientCore 白名单将该图标的真实原生 NSStatusItem 呈现于菜单栏！
             // 彻底杜绝虚拟占位按钮与真实菜单弹窗坐标割裂（相距甚远）的问题。
@@ -1106,37 +1178,88 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             proxyStatusItem?.length = 0
             applyMenuBarFoldState()
 
-            let bundleID = item.ownerBundleID
-                ?? controller?.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == item.id || $0.aliases.contains(item.id) })?.ownerBundleID
-                ?? ManagedItem.ownerFromID(item.id)
+            let isValidMenuBarRect: (CGRect) -> Bool = { [weak self] rect in
+                guard let self, rect.width > 5, rect.height > 5, rect.minX > 0 else { return false }
+                return self.services.screens.screens.contains { screen in
+                    ScreenCoordinateSpace.isWithinMenuBar(rect, screen: screen, tolerance: 16)
+                }
+            }
+
+            let mouseLoc = NSEvent.mouseLocation
+            guard let activeScreen = self.services.screens.screens.first(where: { $0.frame.contains(mouseLoc) })
+                ?? self.services.screens.primaryScreen
+                ?? self.services.screens.screens.first else {
+                return nil
+            }
+
+            let screenVisibleItems = controller?.currentlyVisibleItems.filter { cand in
+                !controller!.dividerIDs.contains(cand.id) &&
+                cand.frame.width > 0 &&
+                !cand.matches(id: item.id) &&
+                activeScreen.frame.contains(CGPoint(x: cand.frame.midX, y: cand.frame.midY))
+            } ?? []
+            let leftmostX = screenVisibleItems.map(\.frame.minX).min()
+                ?? (statusItem?.button?.window?.frame.minX ?? (activeScreen.frame.maxX - 100))
+            let itemWidth = max(22, min(80, item.frame.width > 5 ? item.frame.width : 28))
+            let expectedSlot = CGRect(
+                x: max(activeScreen.frame.minX + 20, leftmostX - itemWidth),
+                y: activeScreen.frame.maxY - activeScreen.menuBarHeight,
+                width: itemWidth,
+                height: activeScreen.menuBarHeight
+            )
+
             var realFrame: CGRect?
+            let oldFrame = item.frame
             if let bundleID {
-                for _ in 1...12 {
+                for attempt in 1...12 {
                     let items = services.reader.items(ownedBy: bundleID)
-                    for cand in items where cand.frame.width > 0 && cand.frame.minX > 0 {
-                        let idMatches = cand.id.caseInsensitiveCompare(item.id) == .orderedSame
+                    for cand in items where isValidMenuBarRect(cand.frame) {
+                        let idMatches = cand.matches(id: item.id)
                         let bundleMatches = cand.ownerBundleID?.caseInsensitiveCompare(bundleID) == .orderedSame
                         if idMatches || bundleMatches {
                             realFrame = cand.frame
                             break
                         }
                     }
-                    if realFrame != nil {
-                        break
+                    if let rf = realFrame {
+                        if isValidMenuBarRect(oldFrame), rf == oldFrame, attempt < 6 {
+                            realFrame = nil
+                        } else {
+                            break
+                        }
                     }
-                    Thread.sleep(forTimeInterval: 0.025)
+                    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
                 }
             }
-            if realFrame == nil || (realFrame?.minX ?? 0) <= 0 {
-                if let found = services.reader.currentFrame(of: item), found.width > 0, found.minX > 0 {
+            if realFrame == nil || !isValidMenuBarRect(realFrame ?? .zero) {
+                if let found = services.reader.currentFrame(of: item), isValidMenuBarRect(found) {
                     realFrame = found
-                } else if item.frame.width > 0 && item.frame.minX > 0 {
-                    realFrame = item.frame
-                } else if let btnFrame = statusItem?.button?.window?.frame {
-                    realFrame = btnFrame
+                } else if let cached = controller?.items.first(where: { $0.matches(id: item.id) && isValidMenuBarRect($0.frame) })?.frame {
+                    realFrame = cached
+                } else {
+                    realFrame = expectedSlot
                 }
             }
-            if let frame = realFrame {
+            // 判定原生白名单是否成功将该条目呈现于活跃屏幕的菜单栏可见区域中
+            let isNativelyPresented: Bool
+            if let frame = realFrame, isValidMenuBarRect(frame) {
+                let onActiveScreen = activeScreen.frame.contains(CGPoint(x: frame.midX, y: frame.midY))
+                if onActiveScreen {
+                    let nearSlot = abs(frame.minX - expectedSlot.minX) <= 120 || frame.minX >= leftmostX - itemWidth - 60
+                    let notStrandedInHiddenZone = frame.minX >= activeScreen.frame.minX + 80
+                    isNativelyPresented = nearSlot || notStrandedInHiddenZone
+                } else {
+                    // 跨屏显示（如外接显示器）：目标条目物理驻留在另一块屏幕上。
+                    // 由于 macOS WindowServer 无法跨屏搬运第三方 NSStatusItem，在当前活跃屏幕上原生呈现不可能，
+                    // 必须降级使用 proxyStatusItem 在活跃屏幕上呈现！
+                    isNativelyPresented = false
+                }
+            } else {
+                isNativelyPresented = false
+            }
+
+            if isNativelyPresented, let frame = realFrame {
+                fprint("presentProxyItem: 原生模式成功呈现 frame=\(frame) item=\(item.id)")
                 proxyPresentedItem = ManagedItem(
                     id: item.id,
                     ownerBundleID: item.ownerBundleID,
@@ -1149,13 +1272,69 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     ownerItemCount: item.ownerItemCount
                 )
                 controller?.updateItemFrame(id: item.id, frame: frame)
-            }
-            if autoRightClick, realFrame != nil {
-                DispatchQueue.main.async { [weak self] in
-                    _ = self?.requestProxyClick(item, button: .secondary, unfold: false)
+                if let proxyPresentedItem {
+                    peekCoordinator?.updatePresentedItem(proxyPresentedItem)
                 }
+                // 异步复核：在 WindowServer 完全落定（0.15s / 0.35s）后再次采样物理位置并更新
+                if let bundleID {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                        guard let self, self.controller?.peekedItemID == item.id else { return }
+                        let items = self.services.reader.items(ownedBy: bundleID)
+                        if let found = items.first(where: { cand in
+                            (cand.matches(id: item.id) || cand.ownerBundleID?.caseInsensitiveCompare(bundleID) == .orderedSame)
+                            && isValidMenuBarRect(cand.frame)
+                        }) {
+                            self.controller?.updateItemFrame(id: item.id, frame: found.frame)
+                            self.proxyPresentedItem = ManagedItem(
+                                id: item.id,
+                                ownerBundleID: item.ownerBundleID,
+                                title: item.title,
+                                frame: found.frame,
+                                isSystemOwned: item.isSystemOwned,
+                                lastActivatedAt: item.lastActivatedAt,
+                                identitySource: item.identitySource,
+                                ordinalInOwner: item.ordinalInOwner,
+                                ownerItemCount: item.ownerItemCount
+                            )
+                            if let updated = self.proxyPresentedItem {
+                                self.peekCoordinator?.updatePresentedItem(updated)
+                            }
+                        }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                        guard let self, self.controller?.peekedItemID == item.id else { return }
+                        let items = self.services.reader.items(ownedBy: bundleID)
+                        if let found = items.first(where: { cand in
+                            (cand.matches(id: item.id) || cand.ownerBundleID?.caseInsensitiveCompare(bundleID) == .orderedSame)
+                            && isValidMenuBarRect(cand.frame)
+                        }) {
+                            self.controller?.updateItemFrame(id: item.id, frame: found.frame)
+                            self.proxyPresentedItem = ManagedItem(
+                                id: item.id,
+                                ownerBundleID: item.ownerBundleID,
+                                title: item.title,
+                                frame: found.frame,
+                                isSystemOwned: item.isSystemOwned,
+                                lastActivatedAt: item.lastActivatedAt,
+                                identitySource: item.identitySource,
+                                ordinalInOwner: item.ordinalInOwner,
+                                ownerItemCount: item.ownerItemCount
+                            )
+                            if let updated = self.proxyPresentedItem {
+                                self.peekCoordinator?.updatePresentedItem(updated)
+                            }
+                        }
+                    }
+                }
+                if autoRightClick {
+                    DispatchQueue.main.async { [weak self] in
+                        _ = self?.requestProxyClick(item, button: .secondary, unfold: false)
+                    }
+                }
+                return frame
             }
-            return realFrame ?? CGRect(x: 100, y: 10, width: 30, height: 24)
+
+            fprint("presentProxyItem: 原生模式无法移动条目（可能由于处于外置卷或未受 MenuBarClientCore 管控），降级使用 proxyStatusItem item=\(item.id)")
         }
 
         if let togglePos = UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position tidybar_toggle") as? Double {
@@ -1185,7 +1364,11 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         self.proxyPresentedItem = item
 
         var iconImg: NSImage?
-        if let bitmap = panelController?.cachedImage(for: item) {
+        var cgImage = panelController?.cachedImage(for: item)
+        if cgImage == nil || !WindowListIconCapturer.hasVisiblePixels(cgImage!) {
+            cgImage = WindowListIconCapturer.capture(for: item, fallbackToAppIcon: false)
+        }
+        if let bitmap = cgImage, WindowListIconCapturer.hasVisiblePixels(bitmap) {
             let glyphHeight: CGFloat = 18
             let aspect = CGFloat(bitmap.width) / max(1, CGFloat(bitmap.height))
             let width = max(18, min(40, glyphHeight * aspect))
@@ -1218,23 +1401,43 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         proxy.button?.window?.ignoresMouseEvents = false
         proxy.isVisible = true
 
+        let proxyFrame = proxy.button?.window?.frame ?? CGRect(x: 100, y: 1050, width: 26, height: 24)
+        controller?.peekedItemID = item.id
+        self.proxyPresentedItem = ManagedItem(
+            id: item.id,
+            ownerBundleID: item.ownerBundleID,
+            title: item.title,
+            frame: proxyFrame,
+            isSystemOwned: item.isSystemOwned,
+            lastActivatedAt: item.lastActivatedAt,
+            identitySource: item.identitySource,
+            ordinalInOwner: item.ordinalInOwner,
+            ownerItemCount: item.ownerItemCount
+        )
+        if let proxyPresentedItem {
+            peekCoordinator?.updatePresentedItem(proxyPresentedItem)
+        }
+        controller?.updateItemFrame(id: item.id, frame: proxyFrame)
+
         if autoRightClick, let btn = proxy.button {
             DispatchQueue.main.async { [weak self] in
                 self?.handleProxyItemRightClick(item: item, sender: btn)
             }
         }
 
-        return proxy.button?.window?.frame
+        return proxyFrame
     }
 
     private func dismissProxyItem() {
-        fprint("dismissProxyItem")
+        fprint("dismissProxyItem called, stack:\n\(Thread.callStackSymbols.prefix(6).joined(separator: "\n"))")
+        peekCloseInterceptor.disable(force: true)
         proxyStatusItem?.isVisible = false
         proxyStatusItem?.length = 0
         proxyStatusItem?.button?.image = nil
         proxyStatusItem?.button?.title = ""
         proxyPresentedItem = nil
         controller?.peekedItemID = nil
+        peekedMenuState = .notYetOpened
         if NativeMenuBarHider.shared.isAvailable {
             applyMenuBarFoldState()
         }
@@ -1252,11 +1455,318 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 检测指定浮现条目的菜单/弹出面板当前是否正处于展开状态
+    private func isPeekedMenuOpen(for item: ManagedItem) -> Bool {
+        let owner = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id)
+        if let owner, !owner.isEmpty {
+            if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(owner) == .orderedSame }) {
+                // 1. 毫秒级极速检测：直接通过 WindowServer 查询该应用是否有在屏弹窗/面板（layer >= 3 且高度 > 28）
+                let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+                for w in list {
+                    let pid = w[kCGWindowOwnerPID as String] as? Int32 ?? 0
+                    let ownerName = w[kCGWindowOwnerName as String] as? String ?? ""
+                    let isApp = pid == app.processIdentifier
+                        || (app.localizedName != nil && !app.localizedName!.isEmpty && ownerName.caseInsensitiveCompare(app.localizedName!) == .orderedSame)
+                    guard isApp else { continue }
+                    guard let boundsDict = w[kCGWindowBounds as String] as? [String: Any],
+                          let frame = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                          frame.width > 20 && frame.height > 20 else { continue }
+                    let layer = w[kCGWindowLayer as String] as? Int ?? 0
+
+                    // 严防将状态项自身图标窗口（如 Doubao 的 52x52 layer 27 窗口）误判为已展开的菜单弹窗
+                    if (layer == 25 || layer == 27) && frame.width <= 70 && frame.height <= 70 {
+                        continue
+                    }
+
+                    if layer >= 3 {
+                        return true
+                    }
+                    if layer == 0 {
+                        // 支持在 layer 0 呈现的瞬态弹出面板（如 OPPO 互联等无边框浮动面板）
+                        let primaryHeight = NSScreen.screens.first?.frame.height ?? 1080
+                        let appKitTop = primaryHeight - frame.minY
+                        for screen in NSScreen.screens {
+                            let menuBarBottom = screen.frame.maxY - (screen.frame.height - screen.visibleFrame.height)
+                            if abs(appKitTop - menuBarBottom) <= 45 && frame.height < 800 && frame.width < 900 {
+                                return true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return services.reader.isMenuPresented(for: item) == true
+    }
+
+    /// 判断指定屏幕坐标点（AppKit 坐标系，原点在左下角）是否落在指定浮现图标的有效点击/交互区域内
+    private func isLocationInPeekedItemArea(_ location: CGPoint, item: ManagedItem) -> Bool {
+        guard let barController = self.controller else { return false }
+        let peekedID = item.id
+
+        let isValidMenuBarRect: (CGRect) -> Bool = { [weak self] rect in
+            guard let self, rect.width > 5, rect.height > 5, rect.minX > 0 else { return false }
+            return self.services.screens.screens.contains { screen in
+                ScreenCoordinateSpace.isWithinMenuBar(rect, screen: screen, tolerance: 16)
+            }
+        }
+
+        var candidateFrames: [CGRect] = []
+        if let proxyFrame = self.proxyPresentedItem?.frame, isValidMenuBarRect(proxyFrame) {
+            candidateFrames.append(proxyFrame)
+        }
+        if let proxyBtnFrame = self.proxyStatusItem?.button?.window?.frame, isValidMenuBarRect(proxyBtnFrame) {
+            candidateFrames.append(proxyBtnFrame)
+        }
+        for cand in barController.items where cand.matches(id: peekedID) && isValidMenuBarRect(cand.frame) {
+            candidateFrames.append(cand.frame)
+        }
+        if let readerItem = self.services.reader.item(withID: peekedID), isValidMenuBarRect(readerItem.frame) {
+            candidateFrames.append(readerItem.frame)
+        }
+
+        // 1. 精确帧命中检测（外扩 36pt，防手抖与微小偏移）
+        for frame in candidateFrames {
+            let hitArea = frame.insetBy(dx: -36, dy: -8)
+            if hitArea.contains(location) {
+                return true
+            }
+        }
+
+        // 2. 意图推断命中检测：若在浮现期间，点击落在该屏幕菜单栏高度带内，且落在最左侧常显图标左侧的浮现插槽区域内
+        let screens = self.services.screens.screens
+        if let screen = screens.first(where: { $0.frame.contains(location) }) {
+            let menuBarTop = screen.frame.maxY
+            let menuBarBottom = menuBarTop - screen.menuBarHeight - 12
+            let inMenuBarY = location.y >= menuBarBottom && location.y <= menuBarTop
+            if inMenuBarY {
+                let isToggle = self.statusItem?.button?.window?.frame.insetBy(dx: -4, dy: -4).contains(location) == true
+                if !isToggle {
+                    let screenPermanentItems = barController.currentlyVisibleItems.filter { cand in
+                        !barController.dividerIDs.contains(cand.id) &&
+                        cand.frame.width > 0 &&
+                        !cand.matches(id: peekedID) &&
+                        screen.frame.contains(CGPoint(x: cand.frame.midX, y: cand.frame.midY))
+                    }
+                    let leftmostVisibleX = screenPermanentItems.map(\.frame.minX).min()
+                        ?? (self.statusItem?.button?.window?.frame.minX ?? (screen.frame.maxX - 100))
+                    let itemWidth = max(24, min(80, item.frame.width > 5 ? item.frame.width : 30))
+
+                    let peekSlotMinX = leftmostVisibleX - itemWidth - 30
+                    let peekSlotMaxX = leftmostVisibleX + 20
+
+                    let isExplicitPermanentHit = screenPermanentItems.contains { cand in
+                        guard cand.frame.minX >= leftmostVisibleX else { return false }
+                        let safeArea = CGRect(x: cand.frame.minX + 6, y: cand.frame.minY - 4, width: max(1, cand.frame.width - 6), height: cand.frame.height + 8)
+                        return safeArea.contains(location)
+                    }
+
+                    if location.x >= peekSlotMinX && location.x <= peekSlotMaxX && !isExplicitPermanentHit {
+                        return true
+                    }
+                }
+            }
+        }
+
+        return false
+    }
+
+    /// 装配零闪烁二次点击拦截器：直接在 HID 层面拦截物理点击并收起，彻底避免 transient 瞬态重弹闪烁
+    private func armPeekCloseInterceptor(for item: ManagedItem) {
+        peekCloseInterceptor.enable(
+            hitTest: { [weak self] loc in
+                guard let self else { return false }
+                return self.isLocationInPeekedItemArea(loc, item: item)
+            },
+            isStillOpen: { [weak self] in
+                guard let self else { return false }
+                return self.isPeekedMenuOpen(for: item)
+            },
+            onClose: { [weak self] in
+                self?.dismissPeekedAppMenu(for: item)
+            }
+        )
+    }
+
+    /// 统一收起浮现条目的菜单/弹出面板
+    private func dismissPeekedAppMenu(for item: ManagedItem) {
+        fprint("dismissPeekedAppMenu: 消费物理点击并直接收起菜单 item=\(item.id)")
+        peekedMenuState = .closed
+        peekCloseInterceptor.disable(force: true)
+
+        let outcome = (self.services.reader as? MenuBarActivating)?.activate(itemID: item.id)
+            ?? self.services.activator?.activate(itemID: item.id)
+        fprint("dismissPeekedAppMenu: AXPress 结果 \(String(describing: outcome))")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            guard let self, self.controller?.peekedItemID == item.id else { return }
+            if self.isPeekedMenuOpen(for: item) {
+                fprint("dismissPeekedAppMenu: AXPress 未能收起，派发 ESC 键兜底收起 item=\(item.id)")
+                self.dismissPeekedAppViaEscape(for: item)
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) { [weak self] in
+            guard let self, self.controller?.peekedItemID == item.id else { return }
+            if self.isPeekedMenuOpen(for: item) {
+                fprint("dismissPeekedAppMenu: ESC 未能收起，切换瞬态焦点迫使 popover 关闭 item=\(item.id)")
+                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                    if let front = NSWorkspace.shared.runningApplications.first(where: { $0.activationPolicy == .regular && !$0.isTerminated }) {
+                        front.activate()
+                    }
+                }
+            }
+        }
+    }
+
+    /// 浮现条目的统一交互入口（无论是精准命中、偏左意图推断还是展开状态下的二次点击均走此处）
+    private func handlePeekedItemInteraction(item: ManagedItem) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastPeekedClickTimestamp >= 0.15 else { return }
+        lastPeekedClickTimestamp = now
+
+        peekCoordinator?.noteInteraction()
+
+        // 判定本次点击是否属于「收起意图」：
+        // 只有当菜单此前已经处于展开状态，且距展开已过去至少 0.25 秒（非手抖双击），才判定为二次点击收起；
+        // 如果此前未展开（首次点击），则绝对属于展开意图，绝不触发收起逻辑！
+        let isSecondClickToClose: Bool
+        if case .opened(let openedAt) = peekedMenuState, now - openedAt >= 0.25 {
+            isSecondClickToClose = true
+        } else {
+            isSecondClickToClose = false
+        }
+
+        if isSecondClickToClose {
+            fprint("handlePeekedItemInteraction: 菜单展开时收到二次点击，执行收起逻辑 item=\(item.id)")
+            dismissPeekedAppMenu(for: item)
+        } else {
+            fprint("handlePeekedItemInteraction: 首次点击浮现图标，执行展开逻辑 item=\(item.id)")
+            peekedMenuState = .opened(at: now)
+
+            if !NativeMenuBarHider.shared.isAvailable || proxyStatusItem?.isVisible == true {
+                handlePeekedItemClick(item)
+            } else {
+                // 原生模式下：若用户点击了偏左位置，或原生点击未在 0.06s 内触发展开，主动触发激活兜底
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+                    guard let self, self.controller?.peekedItemID == item.id else { return }
+                    if !self.isPeekedMenuOpen(for: item) {
+                        fprint("handlePeekedItemInteraction: 0.06s 复核菜单仍未展开，调用 handlePeekedItemClick 兜底 item=\(item.id)")
+                        self.handlePeekedItemClick(item)
+                    }
+                }
+            }
+
+            // 快速多级复核：当菜单展开后，立即装配零闪烁二次点击拦截器
+            let checkDelays: [TimeInterval] = [0.05, 0.10, 0.15, 0.25, 0.40]
+            for delay in checkDelays {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, self.controller?.peekedItemID == item.id else { return }
+                    if self.isPeekedMenuOpen(for: item) {
+                        self.peekedMenuState = .opened(at: ProcessInfo.processInfo.systemUptime)
+                        self.armPeekCloseInterceptor(for: item)
+                    }
+                }
+            }
+        }
+    }
+
+    private func dismissPeekedAppViaEscape(for item: ManagedItem) {
+        let owner = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id)
+        if let owner, !owner.isEmpty,
+           let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(owner) == .orderedSame }) {
+            app.activate()
+        }
+        let src = CGEventSource(stateID: .hidSystemState)
+        let escDown = CGEvent(keyboardEventSource: src, virtualKey: 53, keyDown: true)
+        let escUp = CGEvent(keyboardEventSource: src, virtualKey: 53, keyDown: false)
+        escDown?.post(tap: .cghidEventTap)
+        escUp?.post(tap: .cghidEventTap)
+    }
+
+    private func handlePeekedItemClick(_ item: ManagedItem) {
+        if isPeekedMenuOpen(for: item) {
+            fprint("handlePeekedItemClick: 目标条目菜单已处于展开状态，用户点击以收起，忽略激活以避免二次展开 item=\(item.id)")
+            peekCoordinator?.noteInteraction()
+            return
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastPeekedClickTimestamp >= 0.25 else { return }
+        lastPeekedClickTimestamp = now
+
+        fprint("handlePeekedItemClick: 激活菜单栏浮现图标 item=\(item.id) title=\(item.title)")
+        peekCoordinator?.noteInteraction()
+
+        if proxyStatusItem?.isVisible == true {
+            handleProxyItemLeftClick(item: item)
+            return
+        }
+
+        let bundleID = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id)
+
+        var outcome = services.activator?.activate(itemID: item.id)
+            ?? (services.reader as? MenuBarActivating)?.activate(itemID: item.id)
+            ?? .actionUnsupported
+
+        if !outcome.countsAsPressed, let bundleID {
+            let altID = bundleID.contains(".#item") ? bundleID : (bundleID + ".#item0")
+            let fallbackOutcome = (services.reader as? MenuBarActivating)?.activate(itemID: altID)
+                ?? (services.reader as? MenuBarActivating)?.activate(itemID: bundleID)
+                ?? .actionUnsupported
+            if fallbackOutcome.countsAsPressed {
+                outcome = fallbackOutcome
+            }
+        }
+
+        fprint("handlePeekedItemClick: activator 结果 \(outcome)")
+        if !outcome.countsAsPressed {
+            _ = requestProxyClick(item, button: .primary, unfold: false)
+        } else {
+            // 对 Chromium/Electron 类应用（AXPress 返回 0 但实际不展开）进行二次复核兜底
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self, self.controller?.peekedItemID == item.id else { return }
+                if !self.isPeekedMenuOpen(for: item) {
+                    fprint("handlePeekedItemClick: AXPress 后菜单仍未展开（常见于 Chromium 应用），派发合成物理点击兜底 item=\(item.id)")
+                    _ = self.requestProxyClick(item, button: .primary, unfold: false)
+                }
+            }
+        }
+    }
+
     private func handleProxyItemLeftClick(item: ManagedItem) {
         peekCoordinator?.noteInteraction()
-        // 若在非原生降级模式下使用了 proxyStatusItem，点击时应通过 requestProxyClick 原位展开点击真实图标，
-        // 确保弹出菜单与图标视觉完全吻合
-        requestProxyClick(item, button: .primary, unfold: true)
+        // 保持菜单栏折叠，严禁全展开导致图标跳乱与重排
+        let outcome = (services.reader as? MenuBarActivating)?.activate(itemID: item.id)
+            ?? services.activator?.activate(itemID: item.id)
+            ?? .actionUnsupported
+
+        fprint("handleProxyItemLeftClick: activate 结果 \(outcome) item=\(item.id)")
+
+        if !outcome.countsAsPressed {
+            let proxyOutcome = requestProxyClick(item, button: .primary, unfold: false)
+            if !proxyOutcome.countsAsPressed {
+                if let bundleID = item.ownerBundleID,
+                   let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(bundleID) == .orderedSame }) {
+                    app.activate()
+                }
+            }
+        } else {
+            // 对 Chromium/Electron 类应用（AXPress 返回成功但未实际触发菜单展开）进行二次复核兜底
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self, self.controller?.peekedItemID == item.id else { return }
+                if !self.isPeekedMenuOpen(for: item) {
+                    fprint("handleProxyItemLeftClick: AXPress 后菜单未展开（常见于 Chromium 应用），派发合成物理点击兜底 item=\(item.id)")
+                    let proxyOutcome = self.requestProxyClick(item, button: .primary, unfold: false)
+                    if !proxyOutcome.countsAsPressed {
+                        if let bundleID = item.ownerBundleID,
+                           let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(bundleID) == .orderedSame }) {
+                            app.activate()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func handleProxyItemRightClick(item: ManagedItem, sender: NSStatusBarButton) {
@@ -1426,7 +1936,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                         }
                     }
 
-                    if let peekedID = controller.peekedItemID ?? proxyPresentedItem?.id {
+                    if let peekedID = controller.peekedItemID {
                         let peekedBundleID = proxyPresentedItem?.ownerBundleID
                             ?? controller.assignableItems.first(where: { $0.id == peekedID })?.ownerBundleID
                             ?? controller.layoutEngine.ledgerRecordsSnapshot.first(where: { $0.currentID == peekedID || $0.aliases.contains(peekedID) })?.ownerBundleID

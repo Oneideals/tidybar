@@ -131,6 +131,60 @@ public struct ManagedItem: Identifiable, Codable, Equatable, Sendable {
         return id
     }
 
+    /// 判断两个条目标识是否指向同一应用/图标（支持 #item 序号后缀容差、大小写容差、Bundle ID 匹配）
+    public static func areEquivalent(id1: String, id2: String) -> Bool {
+        if id1 == id2 { return true }
+        if id1.caseInsensitiveCompare(id2) == .orderedSame { return true }
+        let low1 = id1.lowercased()
+        let low2 = id2.lowercased()
+        if low1.hasPrefix(low2 + ".#item") || low2.hasPrefix(low1 + ".#item") {
+            return true
+        }
+        let owner1 = ownerFromID(id1) ?? id1
+        let owner2 = ownerFromID(id2) ?? id2
+        if !owner1.isEmpty && owner1.caseInsensitiveCompare(id2) == .orderedSame {
+            return true
+        }
+        if !owner2.isEmpty && owner2.caseInsensitiveCompare(id1) == .orderedSame {
+            return true
+        }
+        if !owner1.isEmpty && !owner2.isEmpty && owner1.caseInsensitiveCompare(owner2) == .orderedSame {
+            return true
+        }
+        return false
+    }
+
+    /// 判断本条目是否匹配指定的标识（支持 #item 序号后缀容差、大小写容差、Bundle ID 匹配）
+    public func matches(id: String) -> Bool {
+        if self.id == id || self.id.caseInsensitiveCompare(id) == .orderedSame {
+            return true
+        }
+        let lowSelf = self.id.lowercased()
+        let lowQuery = id.lowercased()
+        if lowSelf.hasPrefix(lowQuery + ".#item") || lowQuery.hasPrefix(lowSelf + ".#item") {
+            return true
+        }
+        if let owner = ownerBundleID, !owner.isEmpty {
+            if owner.caseInsensitiveCompare(id) == .orderedSame {
+                return true
+            }
+            if let queryOwner = ManagedItem.ownerFromID(id), !queryOwner.isEmpty,
+               owner.caseInsensitiveCompare(queryOwner) == .orderedSame {
+                return true
+            }
+        }
+        if let myOwner = ManagedItem.ownerFromID(self.id), !myOwner.isEmpty {
+            if myOwner.caseInsensitiveCompare(id) == .orderedSame {
+                return true
+            }
+            if let queryOwner = ManagedItem.ownerFromID(id), !queryOwner.isEmpty,
+               myOwner.caseInsensitiveCompare(queryOwner) == .orderedSame {
+                return true
+            }
+        }
+        return false
+    }
+
     /// 判定指定的 Bundle ID 是否属于系统项（ControlCenter、系统UI等，不参与收纳与代点）
     public static func isSystemOwned(bundleID: String?) -> Bool {
         guard let bundleID, !bundleID.isEmpty else { return false }

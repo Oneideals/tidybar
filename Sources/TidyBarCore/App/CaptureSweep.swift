@@ -124,6 +124,16 @@ public final class CaptureSweep {
                         guard !item.isSystemOwned,
                               !ManagedItem.isSystemOwned(bundleID: item.ownerBundleID),
                               !ManagedItem.isSystemOwned(itemID: item.id) else { continue }
+                        // 排除挤压在折叠点/推杆或系统折叠箭头附近的项
+                        if item.frame.maxX > toggleX - 10 { continue }
+                        // 排除在 live 集合中与其它任意图标物理重叠（重叠 > 4pt）的项
+                        let hasOverlap = live.contains { other in
+                            guard other.id != item.id, other.frame.width > 0, item.frame.width > 0 else { return false }
+                            guard abs(other.frame.midY - item.frame.midY) < 15 else { return false }
+                            let overlapWidth = min(item.frame.maxX, other.frame.maxX) - max(item.frame.minX, other.frame.minX)
+                            return overlapWidth > 4
+                        }
+                        if hasOverlap { continue }
                         if let matched = needed.first(where: { n in
                             if n.id == item.id { return true }
                             guard n.ownerBundleID == item.ownerBundleID else { return false }

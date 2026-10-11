@@ -28,15 +28,13 @@ public enum MenuBarIconStyle {
     /// 3. item.frame == .zero -> itemNotRunning
     /// 4. 否则 -> notCapturedYet
     public static func presentation(for item: ManagedItem, bitmap: CGImage?, captureAuthorized: Bool) -> IconPresentation {
-        if let bitmap {
-            // 防御纯黑/空白死块位图，优先回退至原生高清 App 图标
-            if !WindowListIconCapturer.hasVisiblePixels(bitmap) {
-                if let fallback = WindowListIconCapturer.appIconFallback(for: item.ownerBundleID) {
-                    return .bitmap(fallback)
-                }
-            } else {
-                return .bitmap(bitmap)
-            }
+        if let bitmap, WindowListIconCapturer.hasVisiblePixels(bitmap) {
+            return .bitmap(bitmap)
+        }
+        // 若无有效真实位图或截图为纯底色死块，尝试使用原生高清 App 图标兜底
+        if let fallback = WindowListIconCapturer.appIconFallback(for: item.ownerBundleID),
+           WindowListIconCapturer.hasVisiblePixels(fallback) {
+            return .bitmap(fallback)
         }
         if !captureAuthorized {
             return .placeholder(reason: .captureNotAuthorized)
@@ -84,6 +82,10 @@ public enum MenuBarIconStyle {
             let naturalWidth = (imgWidth / imgHeight) * rect.height
             if naturalWidth > rect.width + 1 {
                 // 超宽异形图居中裁剪绘制，防止横向被压缩挤扁
+                let drawRect = CGRect(x: rect.midX - naturalWidth / 2, y: rect.minY, width: naturalWidth, height: rect.height)
+                nsImage.draw(in: drawRect)
+            } else if naturalWidth < rect.width - 1 {
+                // 窄图等比居中绘制
                 let drawRect = CGRect(x: rect.midX - naturalWidth / 2, y: rect.minY, width: naturalWidth, height: rect.height)
                 nsImage.draw(in: drawRect)
             } else {

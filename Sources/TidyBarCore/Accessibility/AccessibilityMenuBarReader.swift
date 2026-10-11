@@ -121,11 +121,12 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     public func item(withID id: String) -> ManagedItem? {
         bindingsLock.lock()
         let owner = bindings[id]?.item.ownerBundleID
-            ?? bindings.first(where: { $0.key.caseInsensitiveCompare(id) == .orderedSame })?.value.item.ownerBundleID
+            ?? bindings.first(where: { $0.key.caseInsensitiveCompare(id) == .orderedSame || $0.value.item.matches(id: id) })?.value.item.ownerBundleID
+            ?? ManagedItem.ownerFromID(id)
         bindingsLock.unlock()
         // 缓存只提供归属提示；帧与元素仍从该进程重新读取，避免每一步再全机扫描。
-        return owner.map { discoverItems(owning: $0).first { $0.id.caseInsensitiveCompare(id) == .orderedSame } }
-            ?? discoverItems().first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
+        return owner.map { discoverItems(owning: $0).first { $0.matches(id: id) } }
+            ?? discoverItems().first { $0.matches(id: id) }
     }
 
     /// 只读某一个进程的图标。
@@ -308,34 +309,41 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     /// 不靠标题找回——88% 的图标根本没有可读标题。
     @discardableResult
     public func activate(itemID: String) -> ActivationOutcome {
-        guard let item = discoverItems().first(where: { $0.id == itemID }) else {
+        guard let item = (item(withID: itemID) ?? discoverItems().first(where: { $0.matches(id: itemID) })) else {
             return .itemNotFound
         }
         guard let bundleID = item.ownerBundleID,
-              let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == bundleID }),
+              let application = workspace.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(bundleID) == .orderedSame }),
               let extras = extrasMenuBar(of: application.processIdentifier, messagingTimeout: config.processMessagingTimeout)
         else {
             // 图标刚被扫到、进程却已经没了：属于"顺序/存在性刚变"，不是我们的查找逻辑错
             return .elementNotFound
         }
         let children = self.children(of: extras)
-        guard item.ordinalInOwner < children.count, item.ordinalInOwner >= 0 else { return .elementNotFound }
-        let element = children[item.ordinalInOwner]
+        guard !children.isEmpty else { return .elementNotFound }
+        let targetOrdinal = (item.ordinalInOwner >= 0 && item.ordinalInOwner < children.count) ? item.ordinalInOwner : 0
+        let element = children[targetOrdinal]
 
         var actions: CFArray?
         let listed = AXUIElementCopyActionNames(element, &actions)
-        guard listed == .success, let raw = actions as? [AnyObject] else { return .actionUnsupported }
-        // CFArray 里的元素是 CFStringRef，不能直接 as? [String] 指望桥接成功
-        let names = raw.compactMap { $0 as? String }
-        guard names.contains("AXPress") else { return .actionUnsupported }
+        var supportsPress = false
+        if listed == .success, let raw = actions as? [AnyObject] {
+            let names = raw.compactMap { $0 as? String }
+            supportsPress = names.contains("AXPress")
+        }
         let result = AXUIElementPerformAction(element, "AXPress" as CFString)
         guard result == .success else {
-        // kAXErrorCannotComplete：目标已经去吃这个事件了（弹菜单进入模态循环），没来得及回执。
-        // 真机对照 fixture 的菜单日志确认过：返回 -25204 的那一次，菜单确实打开了。
-        return result == .cannotComplete ? .pressedUnconfirmed(code: Int(result.rawValue))
-                                        : .failed(code: Int(result.rawValue))
-    }
-    return .pressed
+            // kAXErrorCannotComplete：目标已经去吃这个事件了（弹菜单进入模态循环），没来得及回执。
+            // 真机对照 fixture 的菜单日志确认过：返回 -25204 的那一次，菜单确实打开了。
+            if result == .cannotComplete {
+                return .pressedUnconfirmed(code: Int(result.rawValue))
+            }
+            if !supportsPress && result == .actionUnsupported {
+                return .actionUnsupported
+            }
+            return .failed(code: Int(result.rawValue))
+        }
+        return .pressed
     }
 
     /// 右键菜单转发：在面板里右键 = 在真实图标上弹出上下文菜单。
@@ -343,18 +351,19 @@ public final class AccessibilityMenuBarReader: MenuBarReading, MenuBarActivating
     /// 简易装配只允许 AXShowMenu；应用抽屉走真实鼠标右键转发。
     @discardableResult
     public func showMenu(itemID: String) -> ActivationOutcome {
-        guard let item = discoverItems().first(where: { $0.id == itemID }) else {
+        guard let item = (item(withID: itemID) ?? discoverItems().first(where: { $0.matches(id: itemID) })) else {
             return .itemNotFound
         }
         guard let bundleID = item.ownerBundleID,
-              let application = workspace.runningApplications.first(where: { $0.bundleIdentifier == bundleID }),
+              let application = workspace.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(bundleID) == .orderedSame }),
               let extras = extrasMenuBar(of: application.processIdentifier, messagingTimeout: config.processMessagingTimeout)
         else {
             return .elementNotFound
         }
         let children = self.children(of: extras)
-        guard item.ordinalInOwner < children.count, item.ordinalInOwner >= 0 else { return .elementNotFound }
-        let element = children[item.ordinalInOwner]
+        guard !children.isEmpty else { return .elementNotFound }
+        let targetOrdinal = (item.ordinalInOwner >= 0 && item.ordinalInOwner < children.count) ? item.ordinalInOwner : 0
+        let element = children[targetOrdinal]
 
         var actions: CFArray?
         let listed = AXUIElementCopyActionNames(element, &actions)

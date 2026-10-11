@@ -261,3 +261,40 @@ if let expectBundle {
     }
     print("✓ 通路可用：归属→图标→坐标 全链路读通")
 }
+
+print("\n===== TidyBarController drawerItems =====")
+let journal = LayoutJournal(directory: AppPaths.journalDirectory)
+let services = SystemServices(
+    reader: reader,
+    mover: UnverifiedMenuBarMover(),
+    cursor: AppKitCursorReader(),
+    accessibility: AppKitAccessibilityTrust(),
+    screens: AppKitScreenObserver(),
+    activator: reader
+)
+let engine = LayoutEngine(
+    layout: journal.readCommittedLayout() ?? MenuBarLayout(),
+    services: services,
+    journal: journal,
+    ledger: IdentityLedgerStore(url: AppPaths.identityLedgerFile)
+)
+let store = UserDefaultsSettingsStore()
+let settings = store.load()
+let controller = TidyBarController(
+    engine: engine,
+    reveal: RevealStateMachine(rehideDelay: settings.rehideDelay),
+    settings: settings,
+    store: store
+)
+controller.start(scansSynchronously: true)
+let dItems = controller.drawerItems
+print("Total drawer items count: \(dItems.count)")
+let ws = NSWorkspace.shared
+for (idx, item) in dItems.enumerated() {
+    var appName = ""
+    if let bid = item.ownerBundleID, let url = ws.urlForApplication(withBundleIdentifier: bid) {
+        appName = url.lastPathComponent
+    }
+    print("[\(idx)] id=\(item.id) | title='\(item.title)' | owner=\(item.ownerBundleID ?? "") | app='\(appName)' | frame=\(item.frame)")
+}
+

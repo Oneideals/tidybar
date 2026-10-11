@@ -45,7 +45,7 @@ public final class TidyBarController {
     private let ruleEngine: RuleEngine
     private let store: SettingsStoring
     private let contextProvider: SystemContextProviding
-    private var items: [ManagedItem] = []
+    public private(set) var items: [ManagedItem] = []
     private var pendingReplayID: String?
     private var demoReturnSurface: RevealStateMachine.Surface?
     private var isPreparingMovement = false
@@ -129,8 +129,11 @@ public final class TidyBarController {
         let available = assignableItems
         return presentationLayout.items(in: .hidden).compactMap { id in
             if ManagedItem.isSystemOwned(itemID: id) { return nil }
-            if let found = available.first(where: { $0.id == id }) {
+            if let found = available.first(where: { $0.matches(id: id) }) {
                 return found
+            }
+            if let inAllItems = items.first(where: { $0.matches(id: id) }) {
+                return inAllItems
             }
             let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
                 ?? ManagedItem.ownerFromID(id)
@@ -152,8 +155,11 @@ public final class TidyBarController {
         let available = assignableItems
         return presentationLayout.items(in: .visible).compactMap { id in
             if ManagedItem.isSystemOwned(itemID: id) { return nil }
-            if let found = available.first(where: { $0.id == id }) {
+            if let found = available.first(where: { $0.matches(id: id) }) {
                 return found
+            }
+            if let inAllItems = items.first(where: { $0.matches(id: id) }) {
+                return inAllItems
             }
             let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
                 ?? ManagedItem.ownerFromID(id)
@@ -180,7 +186,7 @@ public final class TidyBarController {
         if item.isSystemOwned {
             return true
         }
-        if let peeked = peekedItemID, (item.id == peeked || item.id.caseInsensitiveCompare(peeked) == .orderedSame) {
+        if let peeked = peekedItemID, item.matches(id: peeked) {
             return true
         }
         let zone = presentationLayout.zone(of: item.id) ?? settings.newItemZone
@@ -402,7 +408,7 @@ public final class TidyBarController {
 
     /// 更新条目的实时物理位置（供浮现状态下点击命中与坐标校验使用）。
     public func updateItemFrame(id: String, frame: CGRect) {
-        if let idx = items.firstIndex(where: { $0.id == id || $0.id.caseInsensitiveCompare(id) == .orderedSame }) {
+        if let idx = items.firstIndex(where: { $0.matches(id: id) }) {
             let old = items[idx]
             items[idx] = ManagedItem(
                 id: old.id,
@@ -423,6 +429,7 @@ public final class TidyBarController {
                 frame: frame
             ))
         }
+        publish()
     }
 
     /// 把上次没做完的变更真的再做一次。
@@ -557,6 +564,8 @@ public final class TidyBarController {
 
     /// 空白处点击触发的外部动作（如原地折叠/展开或呼出抽屉）
     public var onEmptyBarClick: (() -> Void)?
+    /// 菜单栏上浮现（Peek）条目被点击时触发的外部动作
+    public var onPeekedItemClick: ((ManagedItem) -> Void)?
     /// 空白处点击校验谓词（返回 false 则拦截该事件，不予响应）
     public var emptySpacePredicate: ((CGPoint) -> Bool)?
     /// 菜单栏滚轮/轻扫触发的外部动作
@@ -571,6 +580,22 @@ public final class TidyBarController {
         }
         guard !isPhysicalLayoutBusy else { return }
         if event.trigger == .emptyBarClick {
+            // 优先检查是否点击了临时浮现的条目：若命中，立即通知交互并触发浮现点击回调，绝不能当作空白区点击
+            if let peeked = peekedItemID {
+                let hitPeeked = items.first { cand in
+                    let hitArea = cand.frame.insetBy(dx: -36, dy: -8)
+                    return hitArea.contains(event.location) && cand.matches(id: peeked)
+                } ?? assignableItems.first { cand in
+                    let hitArea = cand.frame.insetBy(dx: -36, dy: -8)
+                    return hitArea.contains(event.location) && cand.matches(id: peeked)
+                }
+                if let hitPeeked {
+                    noteInteraction(at: date)
+                    onPeekedItemClick?(hitPeeked)
+                    return
+                }
+            }
+
             if let emptySpacePredicate, !emptySpacePredicate(event.location) {
                 return
             }
@@ -582,14 +607,18 @@ public final class TidyBarController {
             }
 
             let hitItem = items.first {
-                $0.frame.contains(event.location)
+                let hitArea = $0.frame.insetBy(dx: -4, dy: -4)
+                return hitArea.contains(event.location)
                 && !dividerIDs.contains($0.id)
                 && !owns($0)
                 && isItemVisibleOnMenuBar($0)
             }
             if hitItem != nil {
-                if let peeked = peekedItemID, (hitItem?.id == peeked || hitItem?.id.caseInsensitiveCompare(peeked) == .orderedSame) {
+                if let peeked = peekedItemID, hitItem?.matches(id: peeked) == true {
                     noteInteraction(at: date)
+                    if let hit = hitItem {
+                        onPeekedItemClick?(hit)
+                    }
                 }
                 if snapshot.isRevealed {
                     reveal.conceal()
@@ -948,7 +977,16 @@ public final class TidyBarController {
     }
 }
 
-/// 日志出口。骨架阶段仅打印；接入 os.log 时替换实现即可。
 @inline(__always) internal func fprint(_ message: String) {
-    FileHandle.standardError.write(("TidyBar: " + message + "\n").data(using: .utf8) ?? Data())
+    let line = "TidyBar: " + message + "\n"
+    FileHandle.standardError.write(line.data(using: .utf8) ?? Data())
+    if let data = line.data(using: .utf8) {
+        if let fileHandle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/tidybar.log")) {
+            try? fileHandle.seekToEnd()
+            try? fileHandle.write(contentsOf: data)
+            try? fileHandle.close()
+        } else {
+            FileManager.default.createFile(atPath: "/tmp/tidybar.log", contents: data)
+        }
+    }
 }

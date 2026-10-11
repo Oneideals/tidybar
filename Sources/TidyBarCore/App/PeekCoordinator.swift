@@ -40,6 +40,7 @@ public final class PeekCoordinator {
     private var watchdogTimer: Timer?
     private var rehideTimer: Timer?
     private var lastInteractionAt: Date = Date()
+    private var presentedAt: Date = Date()
     private var currentPresentedItem: ManagedItem?
 
     private let queue = DispatchQueue(label: "local.tidybar.peek-coordinator", qos: .userInitiated)
@@ -73,6 +74,9 @@ public final class PeekCoordinator {
         guard state == .idle else { return }
         guard services.cursor.isSessionInteractive else { return }
 
+        presentedAt = Date()
+        lastInteractionAt = Date()
+
         // 方案 A（虚拟代理图标模式）：0ms 瞬间浮现于常显区，推杆完全不缩短，零全部展开过程
         if let presentProxy {
             state = .presented(itemID: item.id)
@@ -99,7 +103,6 @@ public final class PeekCoordinator {
 
         state = .movingOut(itemID: item.id)
         controller?.peekedItemID = item.id
-        lastInteractionAt = Date()
 
         // 挂 3 秒看门狗：防止任何异常导致状态机悬挂
         watchdogTimer?.invalidate()
@@ -134,7 +137,7 @@ public final class PeekCoordinator {
                 live = reader.discoverItems()
                 target = live.first { cand in
                     guard cand.frame.width > 0, cand.centerX > 0 else { return false }
-                    if cand.id.caseInsensitiveCompare(item.id) == .orderedSame { return true }
+                    if cand.matches(id: item.id) { return true }
                     if let ob = item.ownerBundleID, let cb = cand.ownerBundleID,
                        ob.caseInsensitiveCompare(cb) == .orderedSame {
                         if !item.title.isEmpty && (cand.title == item.title || cand.title.contains(item.title) || item.title.contains(cand.title)) { return true }
@@ -198,7 +201,7 @@ public final class PeekCoordinator {
             // 验证落点：X 必须位于按钮右侧
             let afterMove = reader.discoverItems()
             guard let verified = afterMove.first(where: {
-                ($0.id.caseInsensitiveCompare(target.id) == .orderedSame || ($0.ownerBundleID?.caseInsensitiveCompare(target.ownerBundleID ?? "") == .orderedSame && $0.ordinalInOwner == target.ordinalInOwner))
+                ($0.matches(id: target.id) || ($0.ownerBundleID?.caseInsensitiveCompare(target.ownerBundleID ?? "") == .orderedSame && $0.ordinalInOwner == target.ordinalInOwner))
                 && $0.centerX > toggle.centerX
             }) else {
                 fprint("PeekCoordinator: 落点校验未通过")
@@ -244,29 +247,86 @@ public final class PeekCoordinator {
         }
     }
 
+    public func updatePresentedItem(_ item: ManagedItem) {
+        if case .presented = state {
+            currentPresentedItem = item
+        }
+    }
+
+    private func isItemMenuPresented(_ item: ManagedItem) -> Bool? {
+        if services.reader.isMenuPresented(for: item) == true {
+            return true
+        }
+        let owner = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id)
+        if let owner, !owner.isEmpty {
+            if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier?.caseInsensitiveCompare(owner) == .orderedSame }) {
+                let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+                for w in list {
+                    let pid = w[kCGWindowOwnerPID as String] as? Int32 ?? 0
+                    let ownerName = w[kCGWindowOwnerName as String] as? String ?? ""
+                    let isApp = pid == app.processIdentifier
+                        || (app.localizedName != nil && !app.localizedName!.isEmpty && ownerName.caseInsensitiveCompare(app.localizedName!) == .orderedSame)
+                    guard isApp else { continue }
+                    guard let boundsDict = w[kCGWindowBounds as String] as? [String: Any],
+                          let frame = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                          frame.width > 20 && frame.height > 20 else { continue }
+                    let layer = w[kCGWindowLayer as String] as? Int ?? 0
+
+                    // 严防将状态项自身图标窗口（如 Doubao 的 52x52 layer 27 窗口）误判为已展开的菜单弹窗
+                    if (layer == 25 || layer == 27) && frame.width <= 70 && frame.height <= 70 {
+                        continue
+                    }
+
+                    if layer >= 3 {
+                        return true
+                    }
+                    if layer == 0 {
+                        // 支持在 layer 0 呈现的瞬态弹出面板（如 OPPO 互联等无边框浮动面板）
+                        let primaryHeight = NSScreen.screens.first?.frame.height ?? 1080
+                        let appKitTop = primaryHeight - frame.minY
+                        for screen in NSScreen.screens {
+                            let menuBarBottom = screen.frame.maxY - (screen.frame.height - screen.visibleFrame.height)
+                            if abs(appKitTop - menuBarBottom) <= 45 && frame.height < 800 && frame.width < 900 {
+                                return true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return services.reader.isMenuPresented(for: item)
+    }
+
     private func checkRehideCondition(item: ManagedItem) {
-        guard case .presented(let itemID) = state, itemID == item.id else {
+        guard case .presented(let itemID) = state, item.matches(id: itemID) else {
             rehideTimer?.invalidate()
             rehideTimer = nil
             return
         }
 
-        let isPresented = services.reader.isMenuPresented(for: item)
+        let isPresented = isItemMenuPresented(item)
         let isMouseDown = NSEvent.pressedMouseButtons != 0
         let mouseLoc = NSEvent.mouseLocation
         let delay = controller?.settings.rehideDelay ?? 2.0
 
-        // 交互续期：如果菜单处于呈现状态、用户按着鼠标或光标正位于该图标附近（±4pt 容差），重置最后交互时间
-        let itemFrame = controller?.snapshot.items.first(where: { $0.id == item.id || $0.id.caseInsensitiveCompare(item.id) == .orderedSame })?.frame
-            ?? currentPresentedItem?.frame
+        // 交互续期：优先采用 currentPresentedItem 的物理真实坐标，杜绝快照历史坐标污染；扩大悬停容差至 ±36pt
+        let itemFrame = currentPresentedItem?.frame
+            ?? controller?.items.first(where: { $0.matches(id: item.id) })?.frame
+            ?? controller?.snapshot.items.first(where: { $0.matches(id: item.id) })?.frame
             ?? item.frame
-        let hoverArea = itemFrame.insetBy(dx: -4, dy: -4)
+        let hoverArea = itemFrame.insetBy(dx: -36, dy: -12)
         if isPresented != false || isMouseDown || hoverArea.contains(mouseLoc) {
             lastInteractionAt = Date()
         }
 
+        // 初始宽限保护：刚浮现的前 4.0 秒内给予充分时间供用户移动光标至菜单栏，避免手速慢导致被提前收回
+        let now = Date()
+        if now.timeIntervalSince(presentedAt) < 4.0 {
+            lastInteractionAt = now
+        }
+
         let shouldRehide = RehidePolicy.shouldRehide(
-            now: Date(),
+            now: now,
             lastInteractionAt: lastInteractionAt,
             rehideDelay: delay,
             isMenuPresented: isPresented,
@@ -276,6 +336,7 @@ public final class PeekCoordinator {
         )
 
         if shouldRehide {
+            fprint("PeekCoordinator: shouldRehide=true item=\(item.id) isPresented=\(String(describing: isPresented)) isMouseDown=\(isMouseDown) mouseLoc=\(mouseLoc) itemFrame=\(itemFrame)")
             rehideTimer?.invalidate()
             rehideTimer = nil
             rehide(item: item)
@@ -419,6 +480,7 @@ public final class PeekCoordinator {
     // MARK: - 销毁与锁屏取消
 
     public func cancelAndDrain() {
+        fprint("PeekCoordinator: cancelAndDrain called, stack:\n\(Thread.callStackSymbols.prefix(6).joined(separator: "\n"))")
         rehideTimer?.invalidate()
         rehideTimer = nil
         if let dismissProxy {
