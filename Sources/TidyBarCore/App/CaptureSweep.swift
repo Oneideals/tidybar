@@ -57,13 +57,37 @@ public final class CaptureSweep {
             return
         }
 
+        // 原生接管模式（macOS 27+ / NativeMenuBarHider）：
+        // 隐藏区由系统 AssessmentMode 断言直接管理，无实体推杆。严禁收起推杆或升起幕布，
+        // 彻底杜绝全局 unhideAll 与白条遮挡闪烁。直接利用 WindowListIconCapturer 补齐缺失位图。
+        if NativeMenuBarHider.shared.isAvailable {
+            let uncaptured = items.filter { item in
+                panelController.cachedImages(for: [item])[item.id] == nil &&
+                WindowListIconCapturer.appIcon(for: item) == nil
+            }
+            if !uncaptured.isEmpty {
+                panelController.requestMissingBitmaps(for: uncaptured) { [weak self] in
+                    self?.drainCompletions()
+                }
+            } else {
+                drainCompletions()
+            }
+            return
+        }
+
         // 优先利用 WindowListIconCapturer 尝试直截（无需升幕布、无需折叠推杆，完全零视觉打扰）
-        let initialNeeded = items.filter { panelController.cachedImages(for: [$0])[$0.id] == nil }
+        let initialNeeded = items.filter { item in
+            panelController.cachedImages(for: [item])[item.id] == nil &&
+            WindowListIconCapturer.appIcon(for: item) == nil
+        }
         if !initialNeeded.isEmpty {
             panelController.requestMissingBitmaps(for: initialNeeded) {}
         }
 
-        let needed = items.filter { panelController.cachedImages(for: [$0])[$0.id] == nil }
+        let needed = items.filter { item in
+            panelController.cachedImages(for: [item])[item.id] == nil &&
+            WindowListIconCapturer.appIcon(for: item) == nil
+        }
         guard !needed.isEmpty else {
             drainCompletions()
             return

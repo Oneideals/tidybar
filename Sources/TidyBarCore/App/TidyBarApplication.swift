@@ -207,7 +207,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 self?.isRelayingClick == true ||
                 self?.isReconcilingLayout == true ||
                 barController?.isPhysicalLayoutBusy == true ||
-                coordinator?.state != .idle
+                coordinator?.state != .idle ||
+                self?.panelController?.isVisible == true ||
+                barController?.snapshot.isRevealed == true
             }
         )
         self.captureSweep = sweep
@@ -495,8 +497,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             sessions.addObserver(forName: .init("AppleInterfaceThemeChangedNotification"), object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let controller = self.controller else { return }
-                    self.captureSweep?.run(items: controller.drawerItems + controller.visibleItems) { [weak self] in
-                        self?.settingsWindow?.refresh()
+                    if self.isMenuBarFolded && !controller.snapshot.isRevealed && self.panelController?.isVisible != true {
+                        self.captureSweep?.run(items: controller.drawerItems + controller.visibleItems) { [weak self] in
+                            self?.settingsWindow?.refresh()
+                        }
                     }
                 }
             },
@@ -854,7 +858,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                 }
                 self.evaluateAutomaticRules()
                 self.settingsWindow?.refresh()
-                if self.isMenuBarFolded {
+                if self.isMenuBarFolded && !controller.snapshot.isRevealed && self.panelController?.isVisible != true {
                     self.captureSweep?.run(items: controller.drawerItems + controller.visibleItems) { [weak self] in
                         self?.settingsWindow?.refresh()
                     }
@@ -2419,7 +2423,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
             self.panelController?.requestMissingBitmaps(for: controller.visibleItems) { [weak self] in
                 self?.settingsWindow?.refresh()
             }
-            if self.isMenuBarFolded {
+            if self.isMenuBarFolded && !controller.snapshot.isRevealed && self.panelController?.isVisible != true {
                 self.captureSweep?.run(items: allItems) { [weak self] in
                     self?.settingsWindow?.refresh()
                 }

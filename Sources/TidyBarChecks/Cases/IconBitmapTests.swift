@@ -559,6 +559,50 @@ struct IconBitmapTests {
             expectEqual(capturer.frames.count, 0, "折叠态下 prewarmBitmaps 绝不通过 ScreenCaptureKit 抓取屏幕帧")
         }
     }
+
+    func captureSweepSkipsCurtainAndPusherWhenItemsHaveAppIcons() throws {
+        MainActor.assumeIsolated {
+            let item = ManagedItem(id: "com.apple.finder", ownerBundleID: "com.apple.finder", title: "Finder", frame: CGRect(x: 100, y: 1100, width: 22, height: 22))
+            let capturer = Capturer()
+            let services = makeServices(reader: FakeMenuBarReader(items: [item]), mover: nil, screens: FakeScreens())
+            let panel = makePanel(reader: services.reader, capturer: capturer)
+            var pusherCollapsedCallCount = 0
+            let sweep = CaptureSweep(
+                services: services,
+                panelController: panel,
+                setPusherCollapsed: { _ in pusherCollapsedCallCount += 1 },
+                toggleMinXProvider: { 1000 },
+                isBusyProvider: { false }
+            )
+            var completed = false
+            sweep.run(items: [item]) { completed = true }
+            expect(completed, "具备 App 原生图标的项应立即完成扫描")
+            expectEqual(pusherCollapsedCallCount, 0, "具备 App 原生图标时绝不能收起推杆或升起幕布")
+            expectEqual(sweep.state, .idle, "幕布扫描器状态应保持 idle")
+        }
+    }
+
+    func captureSweepSkipsWhenBusyProviderReturnsTrue() throws {
+        MainActor.assumeIsolated {
+            let item = ManagedItem(id: "custom.nonexistent.item", ownerBundleID: "custom.nonexistent", title: "Custom", frame: CGRect(x: 100, y: 1100, width: 22, height: 22))
+            let capturer = Capturer()
+            let services = makeServices(reader: FakeMenuBarReader(items: [item]), mover: nil, screens: FakeScreens())
+            let panel = makePanel(reader: services.reader, capturer: capturer)
+            var pusherCollapsedCallCount = 0
+            let sweep = CaptureSweep(
+                services: services,
+                panelController: panel,
+                setPusherCollapsed: { _ in pusherCollapsedCallCount += 1 },
+                toggleMinXProvider: { 1000 },
+                isBusyProvider: { true }
+            )
+            var completed = false
+            sweep.run(items: [item]) { completed = true }
+            expect(completed, "繁忙状态下应立即结束并回调完成")
+            expectEqual(pusherCollapsedCallCount, 0, "繁忙或抽屉可见交互态下绝不能触发推杆或幕布")
+            expectEqual(sweep.state, .idle)
+        }
+    }
 }
 
 extension IconBitmapTests {
@@ -597,6 +641,8 @@ extension IconBitmapTests {
             TestCase("requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded", suite.requestMissingBitmapsSkipsScreenCaptureKitWhenMenuBarIsFolded),
             TestCase("requestMissingBitmapsRejectsItemsWithOverlappingFrames", suite.requestMissingBitmapsRejectsItemsWithOverlappingFrames),
             TestCase("prewarmBitmapsSkipsScreenCaptureKitWhenFolded", suite.prewarmBitmapsSkipsScreenCaptureKitWhenFolded),
+            TestCase("captureSweepSkipsCurtainAndPusherWhenItemsHaveAppIcons", suite.captureSweepSkipsCurtainAndPusherWhenItemsHaveAppIcons),
+            TestCase("captureSweepSkipsWhenBusyProviderReturnsTrue", suite.captureSweepSkipsWhenBusyProviderReturnsTrue),
         ]
     }
 }

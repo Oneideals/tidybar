@@ -12,25 +12,14 @@ import CoreGraphics
 /// 4. 在 ScreenCaptureKit 中作为 excludingWindows 被剔除，故能截到底层真实菜单栏。
 public final class CurtainWindow: NSWindow {
     private final class CurtainView: NSView {
-        var fillColor: NSColor
-
-        init(frame: NSRect, fillColor: NSColor) {
-            self.fillColor = fillColor
+        override init(frame: NSRect) {
             super.init(frame: frame)
         }
 
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
         override func draw(_ dirtyRect: NSRect) {
-            fillColor.setFill()
-            bounds.fill()
-
-            let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            let separatorColor = isDark
-                ? NSColor.white.withAlphaComponent(0.12)
-                : NSColor.black.withAlphaComponent(0.12)
-            separatorColor.setFill()
-            NSRect(x: 0, y: 0, width: bounds.width, height: 1.0).fill()
+            // 透明无感幕布，严禁绘制不透明白色横条，消除任何屏幕顶栏遮挡闪烁
         }
     }
 
@@ -44,18 +33,16 @@ public final class CurtainWindow: NSWindow {
         let width = max(0, toggleMinX - leftX)
         let frame = CGRect(x: leftX, y: menuBarY, width: width, height: menuBarHeight)
 
-        let color = Self.resolveColor(cachedBitmaps: cachedBitmaps)
-
         super.init(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
 
         self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
-        self.isOpaque = true
-        self.backgroundColor = color
+        self.isOpaque = false
+        self.backgroundColor = .clear
         self.hasShadow = false
         self.ignoresMouseEvents = true
         self.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
 
-        let view = CurtainView(frame: NSRect(origin: .zero, size: frame.size), fillColor: color)
+        let view = CurtainView(frame: NSRect(origin: .zero, size: frame.size))
         self.contentView = view
     }
 
