@@ -349,6 +349,56 @@ struct TidyBarControllerTests {
 
         expect(updates >= 2)
     }
+
+    func removeTerminatedAppImmediatelyPurgesAndPublishes() throws {
+        let (controller, _) = makeController(ids: ["alpha", "beta"])
+        controller.applyScan([TestItems.item("alpha"), TestItems.item("beta")])
+        _ = controller.reassignZone("alpha", to: .hidden)
+        _ = controller.reassignZone("beta", to: .hidden)
+
+        var published = false
+        controller.onSnapshot = { _ in published = true }
+
+        controller.removeTerminatedApp(bundleID: "com.test.alpha")
+
+        expect(published, "退出应用后应立即发布快照")
+        expect(!controller.items.contains(where: { $0.id == "alpha" }), "退出应用条目应从 items 剔除")
+        expect(controller.items.contains(where: { $0.id == "beta" }))
+        expect(!controller.drawerItems.contains(where: { $0.id == "alpha" }), "抽屉内不应再包含已退出的应用")
+        expect(controller.drawerItems.contains(where: { $0.id == "beta" }))
+    }
+
+    func drawerItemsFiltersOutTerminatedAppViaIsProcessAlive() throws {
+        let (controller, _) = makeController(ids: ["com.sample.alive", "com.sample.dead"])
+        let aliveItem = ManagedItem(id: "com.sample.alive", ownerBundleID: "com.sample.alive", title: "Alive", frame: CGRect(x: 10, y: 1000, width: 24, height: 24))
+        let deadItem = ManagedItem(id: "com.sample.dead", ownerBundleID: "com.sample.dead", title: "Dead", frame: CGRect(x: 40, y: 1000, width: 24, height: 24))
+        controller.applyScan([aliveItem, deadItem])
+        _ = controller.reassignZone(aliveItem.id, to: .hidden)
+        _ = controller.reassignZone(deadItem.id, to: .hidden)
+
+        controller.isProcessAlive = { $0 == "com.sample.alive" }
+
+        expect(controller.drawerItems.contains(where: { $0.id == "com.sample.alive" }))
+        expect(!controller.drawerItems.contains(where: { $0.id == "com.sample.dead" }), "进程终止的应用在抽屉中应被自动过滤不予渲染")
+    }
+
+    func adoptScanDropsMissingItemsIfProcessTerminatedWhenFolded() throws {
+        let (controller, _) = makeController(ids: ["com.sample.foldingDead"])
+        let item = ManagedItem(id: "com.sample.foldingDead", ownerBundleID: "com.sample.foldingDead", title: "DeadFold", frame: CGRect(x: 10, y: 1000, width: 24, height: 24))
+        controller.applyScan([item])
+        _ = controller.reassignZone(item.id, to: .hidden)
+        controller.setMenuBarFolded(true)
+
+        // 1. 当进程仍然存活时，折叠态下即使 AX 未扫到该项，依然保留
+        controller.isProcessAlive = { _ in true }
+        controller.applyScan([])
+        expect(controller.items.contains(where: { $0.id == item.id }), "进程存活时折叠态应保留隐藏项")
+
+        // 2. 当进程已经终止时，折叠态下未扫到的项应果断剔除，不留幽灵图标
+        controller.isProcessAlive = { _ in false }
+        controller.applyScan([])
+        expect(!controller.items.contains(where: { $0.id == item.id }), "进程终止后折叠态绝不盲目保留幽灵项")
+    }
 }
 
 extension LayoutEngineTests {
@@ -383,6 +433,9 @@ extension TidyBarControllerTests {
             TestCase("rulesCanBeDisabledGlobally", suite.rulesCanBeDisabledGlobally),
             TestCase("settingsUpdatesArePersistedAndSanitized", suite.settingsUpdatesArePersistedAndSanitized),
             TestCase("snapshotCallbackFires", suite.snapshotCallbackFires),
+            TestCase("removeTerminatedAppImmediatelyPurgesAndPublishes", suite.removeTerminatedAppImmediatelyPurgesAndPublishes),
+            TestCase("drawerItemsFiltersOutTerminatedAppViaIsProcessAlive", suite.drawerItemsFiltersOutTerminatedAppViaIsProcessAlive),
+            TestCase("adoptScanDropsMissingItemsIfProcessTerminatedWhenFolded", suite.adoptScanDropsMissingItemsIfProcessTerminatedWhenFolded),
         ]
     }
 }

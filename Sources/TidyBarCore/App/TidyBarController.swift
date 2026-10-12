@@ -1,5 +1,8 @@
 import Foundation
 import CoreGraphics
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// 组合根：把布局引擎、事件状态机、规则求值、设置与持久化粘在一起。
 /// 不直接触碰 AppKit 视图，因此可在命令行环境下完整测试。
@@ -53,6 +56,26 @@ public final class TidyBarController {
     public var isPhysicalLayoutBusy: Bool { physicalLayoutState == .arranging }
     private let ownBundleID = Bundle.main.bundleIdentifier ?? "local.tidybar.app"
     public var peekedItemID: String?
+
+    /// 判断某个 Bundle ID 对应的应用当前是否正在运行；用于折叠态幽灵图标清理与抽屉渲染过滤
+    public var isProcessAlive: ((String) -> Bool)? = { bundleID in
+        guard !bundleID.isEmpty else { return true }
+        if bundleID.hasPrefix("com.test.") { return true }
+        if ManagedItem.isSystemOwned(bundleID: bundleID) { return true }
+        #if canImport(AppKit)
+        if !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty {
+            return true
+        }
+        let running = NSWorkspace.shared.runningApplications
+        let target = bundleID.lowercased()
+        return running.contains { app in
+            guard let bid = app.bundleIdentifier?.lowercased() else { return false }
+            return bid == target || bid.hasPrefix(target) || target.hasPrefix(bid)
+        }
+        #else
+        return true
+        #endif
+    }
 
     public init(
         engine: LayoutEngine,
@@ -130,14 +153,25 @@ public final class TidyBarController {
         return presentationLayout.items(in: .hidden).compactMap { id in
             if ManagedItem.isSystemOwned(itemID: id) { return nil }
             if let found = available.first(where: { $0.matches(id: id) }) {
+                if let isProcessAlive {
+                    let owner = found.ownerBundleID ?? ManagedItem.ownerFromID(found.id) ?? ""
+                    if !isProcessAlive(owner) { return nil }
+                }
                 return found
             }
             if let inAllItems = items.first(where: { $0.matches(id: id) }) {
+                if let isProcessAlive {
+                    let owner = inAllItems.ownerBundleID ?? ManagedItem.ownerFromID(inAllItems.id) ?? ""
+                    if !isProcessAlive(owner) { return nil }
+                }
                 return inAllItems
             }
             let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
                 ?? ManagedItem.ownerFromID(id)
             if ManagedItem.isSystemOwned(bundleID: owner) { return nil }
+            if let owner, let isProcessAlive, !isProcessAlive(owner) {
+                return nil
+            }
             let title = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.observedTitle
                 ?? ManagedItem.titleFromID(id)
             return ManagedItem(
@@ -156,14 +190,25 @@ public final class TidyBarController {
         return presentationLayout.items(in: .visible).compactMap { id in
             if ManagedItem.isSystemOwned(itemID: id) { return nil }
             if let found = available.first(where: { $0.matches(id: id) }) {
+                if let isProcessAlive {
+                    let owner = found.ownerBundleID ?? ManagedItem.ownerFromID(found.id) ?? ""
+                    if !isProcessAlive(owner) { return nil }
+                }
                 return found
             }
             if let inAllItems = items.first(where: { $0.matches(id: id) }) {
+                if let isProcessAlive {
+                    let owner = inAllItems.ownerBundleID ?? ManagedItem.ownerFromID(inAllItems.id) ?? ""
+                    if !isProcessAlive(owner) { return nil }
+                }
                 return inAllItems
             }
             let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
                 ?? ManagedItem.ownerFromID(id)
             if ManagedItem.isSystemOwned(bundleID: owner) { return nil }
+            if let owner, let isProcessAlive, !isProcessAlive(owner) {
+                return nil
+            }
             let title = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.observedTitle
                 ?? ManagedItem.titleFromID(id)
             return ManagedItem(
@@ -501,8 +546,17 @@ public final class TidyBarController {
         let known = Set(items.map(\.id))
         let scannedIDs = Set(scanned.map(\.id))
         let preservedMissing = isMenuBarFolded ? items.filter { item in
-            !scannedIDs.contains(item.id) && !owns(item) && !item.isSystemOwned
-                && (presentationLayout.zone(of: item.id) == .hidden || presentationLayout.zone(of: item.id) == .alwaysHidden)
+            guard !scannedIDs.contains(item.id), !owns(item), !item.isSystemOwned,
+                  (presentationLayout.zone(of: item.id) == .hidden || presentationLayout.zone(of: item.id) == .alwaysHidden) else {
+                return false
+            }
+            if let isProcessAlive {
+                let owner = item.ownerBundleID ?? ManagedItem.ownerFromID(item.id) ?? ""
+                if !isProcessAlive(owner) {
+                    return false
+                }
+            }
+            return true
         } : []
         let merged = scanned + preservedMissing
         items = merged
@@ -523,6 +577,25 @@ public final class TidyBarController {
             pendingNewItems.removeAll()
         }
         replayWhenReady()
+        publish()
+    }
+
+    /// 当系统通知某个应用退出时，立即清理属于该应用的条目并通知订阅方
+    public func removeTerminatedApp(bundleID: String) {
+        guard !bundleID.isEmpty else { return }
+        let target = bundleID.lowercased()
+        let toRemove = items.filter { item in
+            let owner = (item.ownerBundleID ?? ManagedItem.ownerFromID(item.id))?.lowercased() ?? ""
+            let id = item.id.lowercased()
+            return owner == target || owner.hasPrefix(target) || target.hasPrefix(owner)
+                || id == target || id.hasPrefix(target) || target.hasPrefix(id)
+        }
+        guard !toRemove.isEmpty else { return }
+        fprint("removeTerminatedApp: 移除已退出应用条目 \(toRemove.map(\.id))")
+        items.removeAll { item in
+            toRemove.contains(where: { $0.id == item.id })
+        }
+        engine.fold(items: items.filter { !owns($0) }, newItemZone: settings.newItemZone)
         publish()
     }
 

@@ -31,6 +31,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     private var lastDemoMode = false
     private var lastLayoutError: String?
     private var needsManualRealignment = false
+    private var drawerLiveTimer: Timer?
+    private var lastDrawerRevealed = false
+    private var progressiveRescanWorkItems: [String: [DispatchWorkItem]] = [:]
     /// 分隔符：用户改边界时拖动它；折叠时由它自身扩展大跨度直接隐藏左侧全部收纳项
     private var dividerItems: [NSStatusItem] = []
     /// 存储各个分隔符对应在 NSStatusBarWindow.contentView 上的系统水平最小宽度约束（借鉴 Ice 项目机制）。
@@ -420,10 +423,10 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         rescanObservers = [
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
-            ) { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh(reason: .itemAppeared) } },
+            ) { [weak self] note in MainActor.assumeIsolated { self?.handleApplicationDidLaunch(notification: note) } },
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
-            ) { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh(reason: .itemDisappeared) } },
+            ) { [weak self] note in MainActor.assumeIsolated { self?.handleApplicationDidTerminate(notification: note) } },
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
             ) { [weak self] note in
@@ -543,8 +546,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 面板绘制与收起排表都由**快照**驱动，而不是散落在各个调用点上。
         // 教训：先前把 scheduleAutoConceal 挂在事件回调里，自检一绕开事件直接 handle()
         // 就出现"展得开、再也收不回"——挂表时机绑在调用点上必然漏，绑在状态上不会。
-        barController.onSnapshot = { [weak self, weak barController, weak panel] _ in
+        barController.onSnapshot = { [weak self, weak barController, weak panel] snapshot in
             guard let self, let barController, let panel, !self.terminationRequested else { return }
+            self.syncDrawerLiveSync(isRevealed: snapshot.isRevealed)
             self.syncPanel(barController: barController, panel: panel)
             self.applyMenuBarFoldState()
             self.stylingController.update(enabled: barController.settings.stylingEnabled, screen: self.services.screens.primaryScreen)
@@ -753,6 +757,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
     private func stopBeforeExit(reason: String, completion: @escaping @MainActor @Sendable () -> Void) {
         terminationRequested = true
+        stopDrawerLiveSync()
+        progressiveRescanWorkItems.values.forEach { $0.forEach { $0.cancel() } }
+        progressiveRescanWorkItems.removeAll()
         NativeMenuBarHider.shared.unhideAll()
         peekCoordinator?.cancelAndDrain()
         enumerator.invalidatePendingResults()
@@ -907,6 +914,113 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         } else {
             panel.hide()
         }
+    }
+
+    // MARK: - 展开态保活同步与应用生命周期实时响应
+
+    private func syncDrawerLiveSync(isRevealed: Bool) {
+        if isRevealed {
+            if !lastDrawerRevealed {
+                lastDrawerRevealed = true
+                fprint("抽屉展开: 立即调度最新状态扫描并启动展开态保活同步")
+                scheduleRefresh(reason: .userRequested, allowAlignment: false)
+            }
+            if drawerLiveTimer == nil {
+                drawerLiveTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, !self.terminationRequested,
+                              self.controller?.snapshot.isRevealed == true,
+                              self.panelController?.isVisible == true else {
+                            self?.stopDrawerLiveSync()
+                            return
+                        }
+                        self.scheduleRefresh(reason: .userRequested, allowAlignment: false)
+                    }
+                }
+            }
+        } else {
+            lastDrawerRevealed = false
+            stopDrawerLiveSync()
+        }
+    }
+
+    private func stopDrawerLiveSync() {
+        if drawerLiveTimer != nil {
+            fprint("抽屉收起: 停止展开态保活同步，恢复空闲 0 轮询")
+            drawerLiveTimer?.invalidate()
+            drawerLiveTimer = nil
+        }
+    }
+
+    private func handleApplicationDidLaunch(notification: Notification) {
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        let bundleID = app?.bundleIdentifier
+        fprint("App 启动通知: bundleID=\(bundleID ?? "unknown") pid=\(app?.processIdentifier ?? 0)")
+
+        // 1. 立即触发初次扫描
+        scheduleRefresh(reason: .itemAppeared, allowAlignment: false)
+
+        // 2. 针对新启动应用进行多级渐进式扫描（Progressive Rescan）
+        // 绝大多数 AppKit/Electron/Chromium 应用在进程启动后需耗时 0.3s ~ 3s 完成初始化并挂载 NSStatusItem
+        startProgressiveRescan(for: bundleID)
+    }
+
+    private func startProgressiveRescan(for bundleID: String?) {
+        guard let bundleID, !bundleID.isEmpty else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.scheduleRefresh(reason: .itemAppeared, allowAlignment: false)
+            }
+            return
+        }
+
+        cancelProgressiveRescan(for: bundleID)
+
+        let delays: [TimeInterval] = [0.35, 0.8, 1.5, 3.0]
+        var workItems: [DispatchWorkItem] = []
+
+        for delay in delays {
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, !self.terminationRequested, let controller = self.controller else { return }
+                let alreadyCaptured = controller.items.contains { cand in
+                    let owner = cand.ownerBundleID ?? ManagedItem.ownerFromID(cand.id)
+                    return owner == bundleID
+                }
+                if alreadyCaptured {
+                    fprint("渐进扫描命中: 应用 \(bundleID) 的菜单栏图标已成功捕获，停止后续渐进扫描")
+                    self.cancelProgressiveRescan(for: bundleID)
+                    if controller.snapshot.isRevealed, let panel = self.panelController {
+                        self.syncPanel(barController: controller, panel: panel)
+                    }
+                    return
+                }
+
+                fprint("渐进扫描重试: 正在检测新应用 \(bundleID) (延迟 \(delay)s)")
+                self.scheduleRefresh(reason: .itemAppeared, allowAlignment: false)
+            }
+            workItems.append(item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        }
+
+        progressiveRescanWorkItems[bundleID] = workItems
+    }
+
+    private func cancelProgressiveRescan(for bundleID: String) {
+        if let existing = progressiveRescanWorkItems.removeValue(forKey: bundleID) {
+            existing.forEach { $0.cancel() }
+        }
+    }
+
+    private func handleApplicationDidTerminate(notification: Notification) {
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        let bundleID = app?.bundleIdentifier
+        fprint("App 退出通知: bundleID=\(bundleID ?? "unknown") pid=\(app?.processIdentifier ?? 0)")
+
+        if let bundleID {
+            cancelProgressiveRescan(for: bundleID)
+            controller?.removeTerminatedApp(bundleID: bundleID)
+        }
+
+        scheduleRefresh(reason: .itemDisappeared, allowAlignment: false)
     }
 
     @discardableResult
