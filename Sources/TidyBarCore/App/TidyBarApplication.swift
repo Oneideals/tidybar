@@ -1130,25 +1130,30 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        let summary = NSMenuItem(
-            title: barController.isPhysicalLayoutBusy ? "正在整理菜单栏…" : "模式：\(barController.capability.displayName)",
-            action: nil,
-            keyEquivalent: ""
-        )
-        summary.isEnabled = false
-        menu.addItem(summary)
+        // 1. 状态与异常提醒（仅在异常或正在整理时展示；正常时不展示底层技术行话）
+        var hasStatusHeader = false
+        if barController.isPhysicalLayoutBusy {
+            let busyItem = NSMenuItem(title: "正在整理菜单栏…", action: nil, keyEquivalent: "")
+            busyItem.isEnabled = false
+            menu.addItem(busyItem)
+            hasStatusHeader = true
+        } else if !services.accessibility.isTrusted {
+            let authItem = NSMenuItem(title: "⚠️ 辅助功能权限未就绪（点击授权）", action: #selector(openAccessibilitySettings), keyEquivalent: "")
+            authItem.target = self
+            menu.addItem(authItem)
+            hasStatusHeader = true
+        }
         if let lastLayoutError {
-            let note = NSMenuItem(title: lastLayoutError, action: nil, keyEquivalent: "")
-            note.isEnabled = false
-            menu.addItem(note)
+            let errorItem = NSMenuItem(title: "⚠️ \(lastLayoutError)", action: nil, keyEquivalent: "")
+            errorItem.isEnabled = false
+            menu.addItem(errorItem)
+            hasStatusHeader = true
         }
-        if let reason = barController.capabilityReason {
-            let note = NSMenuItem(title: "↳ \(reason)", action: nil, keyEquivalent: "")
-            note.isEnabled = false
-            menu.addItem(note)
+        if hasStatusHeader {
+            menu.addItem(.separator())
         }
-        menu.addItem(.separator())
 
+        // 2. 核心状态与日常控制
         let foldItem = NSMenuItem(
             title: isMenuBarFolded ? "展开菜单栏图标" : "折叠菜单栏图标",
             action: #selector(toggleMenuBarFold),
@@ -1158,70 +1163,73 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         foldItem.isEnabled = true
         menu.addItem(foldItem)
 
-        menu.addItem(withTitle: "呼出收纳抽屉", action: #selector(toggleDrawer), keyEquivalent: "")
-        menu.addItem(withTitle: panelController?.hasCaptureAuthorization == true ? "刷新菜单栏缩略图" : "允许显示真实菜单栏图标…",
-                     action: #selector(requestMenuBarIconCapture), keyEquivalent: "")
-        // 分区分配先走菜单：跨区拖拽要等接管闸门开放，而"把某个图标收进隐藏区"
-        // 这个意图本身不依赖拖拽，不必让它陪着闸门一起等着。
-        menu.addItem(withTitle: "搜索图标…", action: #selector(presentSearch), keyEquivalent: "f")
-        menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        let drawerItem = NSMenuItem(
+            title: panelController?.isVisible == true ? "收起收纳抽屉" : "显示收纳抽屉",
+            action: #selector(toggleDrawer),
+            keyEquivalent: ""
+        )
+        menu.addItem(drawerItem)
+
+        let searchItem = NSMenuItem(title: "搜索图标…", action: #selector(presentSearch), keyEquivalent: "f")
+        menu.addItem(searchItem)
+
+        menu.addItem(.separator())
+
+        // 3. 维护与工具
+        let refreshItem = NSMenuItem(title: "重新扫描菜单栏", action: #selector(unifiedRefresh), keyEquivalent: "r")
+        menu.addItem(refreshItem)
+
         if NativeMenuBarHider.shared.isAvailable {
-            menu.addItem(withTitle: "✨ 规整菜单栏分区", action: #selector(reconcilePhysicalPartitioningAction), keyEquivalent: "")
+            let reconcileItem = NSMenuItem(title: "规整菜单栏位置", action: #selector(reconcilePhysicalPartitioningAction), keyEquivalent: "")
+            menu.addItem(reconcileItem)
         } else {
-            menu.addItem(withTitle: dividerItems.isEmpty ? "摆放分隔符（划定三个区）" : "收起分隔符",
-                         action: #selector(toggleDividers), keyEquivalent: "")
+            let dividerItem = NSMenuItem(
+                title: dividerItems.isEmpty ? "摆放菜单栏分隔符" : "收起分隔符",
+                action: #selector(toggleDividers),
+                keyEquivalent: ""
+            )
+            menu.addItem(dividerItem)
         }
+
+        let demo = NSMenuItem(title: "演示模式（全部收起）", action: #selector(toggleDemoMode), keyEquivalent: "d")
+        demo.keyEquivalentModifierMask = [.command, .shift]
+        demo.state = barController.isDemoMode ? .on : .off
+        demo.isEnabled = barController.isDemoMode || (barController.capability == .fullDrag && hasPerformedInitialFold)
+        menu.addItem(demo)
+
+        // 4. 动态上下文（按需呈现）
         if !barController.pendingNewItems.isEmpty {
+            menu.addItem(.separator())
             menu.addItem(TidyBarMenuBuilder.newItemQuestions(
                 controller: barController,
                 target: self,
                 answerSelector: #selector(answerNewItem(_:))
             ))
         }
-        menu.addItem(
-            TidyBarMenuBuilder.zoneAssignment(
-                controller: barController,
-                target: self,
-                assignSelector: #selector(assignZone(_:))
+
+        let profiles = barController.listProfiles()
+        if !profiles.isEmpty {
+            menu.addItem(.separator())
+            menu.addItem(
+                TidyBarMenuBuilder.profilesMenu(
+                    controller: barController,
+                    target: self,
+                    applySelector: #selector(applyProfileFromMenu(_:)),
+                    saveSelector: #selector(saveProfilePrompt)
+                )
             )
-        )
-        menu.addItem(
-            TidyBarMenuBuilder.profilesMenu(
-                controller: barController,
-                target: self,
-                applySelector: #selector(applyProfileFromMenu(_:)),
-                saveSelector: #selector(saveProfilePrompt)
-            )
-        )
-        menu.addItem(withTitle: "规则编辑器…", action: #selector(openRuleEditor), keyEquivalent: "")
-        if !barController.settings.rules.isEmpty {
-            let root = NSMenuItem(title: "编辑已有规则", action: nil, keyEquivalent: "")
-            let rules = NSMenu()
-            for rule in barController.settings.rules {
-                let item = rules.addItem(withTitle: rule.name + (rule.isEvaluable ? "" : "（需选择目标）"),
-                                         action: #selector(editRule(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = rule.id.uuidString
-            }
-            root.submenu = rules
-            menu.addItem(root)
         }
-        menu.addItem(
-            TidyBarMenuBuilder.firstRunGuide(
-                accessibilityGranted: services.accessibility.isTrusted,
-                target: self,
-                openSettingsSelector: #selector(openAccessibilitySettings),
-                doneSelector: #selector(dismissGuide),
-                skipSelector: #selector(dismissGuide)
-            )
-        )
-        menu.addItem(withTitle: "刷新图标快照", action: #selector(refreshItems), keyEquivalent: "r")
-        let demo = menu.addItem(withTitle: "演示模式（一键收起）", action: #selector(toggleDemoMode), keyEquivalent: "d")
-        demo.state = barController.isDemoMode ? .on : .off
-        demo.isEnabled = barController.isDemoMode || (barController.capability == .fullDrag && hasPerformedInitialFold)
-        demo.keyEquivalentModifierMask = [.command, .shift]
+
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出 TidyBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        // 5. 偏好设置与退出
+        let settingsItem = NSMenuItem(title: "偏好设置…", action: #selector(openSettings), keyEquivalent: ",")
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "退出 TidyBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(quitItem)
 
         menu.items.forEach { $0.target = $0.action == #selector(NSApplication.terminate(_:)) ? NSApp : self }
         return menu
@@ -2735,6 +2743,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         }
         if settingsWindow == nil {
             settingsWindow = TidyBarSettingsWindowController(controller: barControllerProxy, hotKeyDescription: hotKeyNote)
+            settingsWindow?.onOpenRuleEditor = { [weak self] in
+                self?.openRuleEditor()
+            }
         }
         // 将截图缓存接入设置面板，确保图标风格与菜单栏/抽屉一致
         settingsWindow?.imageProvider = { [weak self] item in
@@ -2821,9 +2832,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         controller?.handle(event: .init(trigger: .dividerClick, location: NSEvent.mouseLocation))
     }
 
-    @objc private func refreshItems() {
-        // 走调度器而不是同步扫：连点两下不应排两个 2.6s 的全量扫描
+    @objc private func unifiedRefresh() {
+        endHeldMenuAccess()
+        // 统一刷新：同时排程 AX 元素树刷新与截图缓存对齐更新
         scheduleRefresh(reason: .userRequested)
+        if panelController?.hasCaptureAuthorization == true {
+            scheduleAlignment()
+        }
+    }
+
+    @objc private func refreshItems() {
+        unifiedRefresh()
     }
 
     @objc private func toggleDemoMode() {
@@ -2833,17 +2852,17 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
     @objc private func applyProfileFromMenu(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String, let controller else { return }
         guard controller.applyProfile(named: name) else {
-            fprint("未完成布局档案「\(name)」，请在设置中查看原因")
+            fprint("未完成布局预设「\(name)」，请在设置中查看原因")
             return
         }
-        fprint("已切换到布局档案「\(name)」")
+        fprint("已切换到布局预设「\(name)」")
     }
 
     @objc private func saveProfilePrompt() {
         guard let controller else { return }
         let alert = NSAlert()
-        alert.messageText = "另存为布局档案"
-        alert.informativeText = "请输入新布局档案的名称："
+        alert.messageText = "另存为布局预设"
+        alert.informativeText = "请输入新布局预设的名称："
         alert.alertStyle = .informational
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")
@@ -2852,9 +2871,9 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         alert.accessoryView = input
         if alert.runModal() == .alertFirstButtonReturn {
             let raw = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let name = raw.isEmpty ? "未命名档案" : raw
+            let name = raw.isEmpty ? "未命名预设" : raw
             controller.saveProfile(named: name)
-            fprint("已保存布局档案「\(name)」")
+            fprint("已保存布局预设「\(name)」")
         }
     }
 

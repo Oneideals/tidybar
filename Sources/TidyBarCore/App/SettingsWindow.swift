@@ -61,6 +61,9 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     /// 外部提供的截图缓存查找器，确保设置面板图标与菜单栏/抽屉风格一致。
     public var imageProvider: ((ManagedItem) -> CGImage?)?
 
+    /// 点击打开规则编辑器的回调
+    public var onOpenRuleEditor: (() -> Void)?
+
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
         let window = NSWindow(
@@ -489,6 +492,13 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         stack2.addArrangedSubview(statusLine)
         view.addSubview(card2)
 
+        let (card3, stack3) = createCardView(title: "自动化与高级规则", subtitle: "配置基于电量、Wi-Fi、聚焦模式或前台 App 的自动显示/隐藏规则。")
+        let ruleButton = NSButton(title: "打开规则编辑器…", target: self, action: #selector(openRuleEditorAction))
+        ruleButton.bezelStyle = .rounded
+        ruleButton.font = NSFont.systemFont(ofSize: 12)
+        stack3.addArrangedSubview(ruleButton)
+        view.addSubview(card3)
+
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: view.topAnchor),
             titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
@@ -501,10 +511,18 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             card2.topAnchor.constraint(equalTo: card1.bottomAnchor, constant: 14),
             card2.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             card2.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            card2.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            card3.topAnchor.constraint(equalTo: card2.bottomAnchor, constant: 14),
+            card3.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            card3.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            card3.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
         return view
+    }
+
+    @objc private func openRuleEditorAction() {
+        onOpenRuleEditor?()
     }
 
     private func createCardView(title: String, subtitle: String) -> (card: NSView, bodyStack: NSStackView) {

@@ -150,13 +150,13 @@ enum TidyBarMenuBuilder {
         applySelector: Selector,
         saveSelector: Selector
     ) -> NSMenuItem {
-        let root = NSMenuItem(title: "布局档案（C2）", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "布局档案")
+        let root = NSMenuItem(title: "布局预设", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "布局预设")
         submenu.autoenablesItems = false
 
         let profiles = controller.listProfiles()
         if profiles.isEmpty {
-            let empty = NSMenuItem(title: "暂无保存的档案", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: "暂无保存的预设", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
         } else {
@@ -171,7 +171,7 @@ enum TidyBarMenuBuilder {
             }
         }
         submenu.addItem(.separator())
-        let saveItem = NSMenuItem(title: "将当前布局另存为档案…", action: saveSelector, keyEquivalent: "")
+        let saveItem = NSMenuItem(title: "将当前布局另存为预设…", action: saveSelector, keyEquivalent: "")
         saveItem.target = target
         submenu.addItem(saveItem)
         root.submenu = submenu
