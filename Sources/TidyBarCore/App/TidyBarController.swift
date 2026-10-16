@@ -234,12 +234,31 @@ public final class TidyBarController {
         if let peeked = peekedItemID, item.matches(id: peeked) {
             return true
         }
-        let zone = presentationLayout.zone(of: item.id) ?? settings.newItemZone
+        let zone = effectiveZone(for: item)
         if isMenuBarFolded {
             return zone == .visible
         } else {
             return zone != .alwaysHidden
         }
+    }
+
+    /// 解析条目的有效分区，结合当前布局、台账别名记录与身份模糊匹配
+    public func effectiveZone(for item: ManagedItem) -> MenuBarZone {
+        if let direct = presentationLayout.zone(of: item.id) {
+            return direct
+        }
+        let records = engine.ledgerRecordsSnapshot
+        if let record = records.first(where: { $0.currentID == item.id || $0.aliases.contains(item.id) }) {
+            for alias in record.aliases {
+                if let z = presentationLayout.zone(of: alias) { return z }
+            }
+        }
+        for zone in MenuBarZone.allCases {
+            if presentationLayout.items(in: zone).contains(where: { item.matches(id: $0) }) {
+                return zone
+            }
+        }
+        return settings.newItemZone
     }
 
     /// 当前物理显示在菜单栏上的图标（折叠时排除隐藏区/始终隐藏区，展开时排除始终隐藏区）

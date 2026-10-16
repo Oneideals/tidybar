@@ -573,6 +573,8 @@ extension ActivationTests {
             TestCase("peekCloseInterceptorConsumesSecondClickAndDispatchesCloseCleanly", suite.peekCloseInterceptorConsumesSecondClickAndDispatchesCloseCleanly),
             TestCase("externalDiskAppCaseInsensitiveMatchingAndCandidateResolution", suite.externalDiskAppCaseInsensitiveMatchingAndCandidateResolution),
             TestCase("isStatusPopupVerificationWithTrueAnchor", suite.isStatusPopupVerificationWithTrueAnchor),
+            TestCase("multiScreenVisibleItemProjectionPreventsDrawerTriggerOnSecondaryDisplay", suite.multiScreenVisibleItemProjectionPreventsDrawerTriggerOnSecondaryDisplay),
+            TestCase("effectiveZoneRecognizesAliasAndMatchesInCommittedVisibleZone", suite.effectiveZoneRecognizesAliasAndMatchesInCommittedVisibleZone),
         ]
     }
 
@@ -724,6 +726,77 @@ extension ActivationTests {
             let isWindowOpener = title.contains("打开") || title.contains("显示") || low.contains("open") || low.contains("show")
             expect(!isWindowOpener, "普通功能菜单项 [\(title)] 不应误判为主窗口唤出项")
         }
+    }
+
+    /// 验证在副屏（如 MacBook 内置刘海屏）上点击常显区图标时，通过相对右边缘动态几何投影，绝不被误判为空白区误唤起抽屉
+    func multiScreenVisibleItemProjectionPreventsDrawerTriggerOnSecondaryDisplay() throws {
+        MainActor.assumeIsolated {
+            let primaryScreen = ScreenInfo(
+                identifier: 1,
+                frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+                menuBarHeight: 30,
+                notchWidth: nil,
+                isBuiltin: false
+            )
+            let secondaryScreen = ScreenInfo(
+                identifier: 2,
+                frame: CGRect(x: 1920, y: 0, width: 1470, height: 956),
+                menuBarHeight: 33,
+                notchWidth: 179,
+                isBuiltin: true
+            )
+
+            // 主屏上 BetterDisplay 图标坐标：x=1356, 宽 34（距右边界 1920 - 1390 = 530pt）
+            let mainDisplayItem = ManagedItem(
+                id: "pro.betterdisplay.betterdisplay.#item0",
+                ownerBundleID: "pro.betterdisplay.betterdisplay",
+                title: "BetterDisplay",
+                frame: CGRect(x: 1356, y: 1050, width: 34, height: 30)
+            )
+
+            // 投影到副屏（宽 1470，X 范围 1920~3390）：
+            // 距副屏右边缘 530pt -> 副屏投影 X 应为 3390 - 530 - 34 = 2826
+            let distFromRight = primaryScreen.frame.maxX - mainDisplayItem.frame.maxX
+            let projectedX = secondaryScreen.frame.maxX - distFromRight - mainDisplayItem.frame.width
+            expectEqual(projectedX, 2826, "副屏投影水平 X 计算需精准匹配相对右边缘距离")
+
+            // 验证投影后的 item 能够阻断副屏对应点击被误判为空白区
+            var projectedItem = mainDisplayItem
+            projectedItem.frame = CGRect(x: projectedX, y: secondaryScreen.frame.maxY - secondaryScreen.menuBarHeight, width: mainDisplayItem.frame.width, height: secondaryScreen.menuBarHeight)
+
+            let isClickInEmptySpace = ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+                point: CGPoint(x: 2840, y: 940),
+                screen: secondaryScreen,
+                statusItems: [projectedItem]
+            )
+            expect(!isClickInEmptySpace, "命中副屏投影常显图标区域时，绝不能判定为空白菜单栏！")
+        }
+    }
+
+    /// 验证 effectiveZone(for:) 能穿透别名和 matches 语义正确识别已提交的常显分区，折叠时不被剔除
+    func effectiveZoneRecognizesAliasAndMatchesInCommittedVisibleZone() throws {
+        let (controller, reader) = makeController(activator: SpyActivator(), ids: ["peer"])
+        // 模拟已提交的分区中包含全小写序号型 ID
+        var seeded = controller.layoutEngine.layout
+        seeded.append("com.macpaw.cleanmymac5.menu.#item0", to: .visible)
+        controller.layoutEngine.adoptLayoutForChecks(seeded)
+
+        // 实时探测到的扫描项（带真实大写标题与 bundle ID）
+        let scannedItem = ManagedItem(
+            id: "com.macpaw.CleanMyMac5.Menu",
+            ownerBundleID: "com.macpaw.CleanMyMac5.Menu",
+            title: "CleanMyMac Menu",
+            frame: CGRect(x: 1396, y: 1050, width: 24, height: 24)
+        )
+
+        let zone = controller.effectiveZone(for: scannedItem)
+        expectEqual(zone, MenuBarZone.visible, "即使 ID 大小写与序号后缀不同，通过 matches 语义也必须正确识别为 visible 分区")
+
+        // 验证在折叠态下也能被纳入 currentlyVisibleItems
+        controller.setMenuBarFolded(true)
+        reader.items = [scannedItem]
+        controller.refreshItems()
+        expect(controller.isItemVisibleOnMenuBar(scannedItem), "折叠态下常显图标必须被 isItemVisibleOnMenuBar 识别为可见")
     }
 }
 

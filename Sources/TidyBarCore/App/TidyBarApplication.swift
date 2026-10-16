@@ -254,14 +254,41 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         barController.emptySpacePredicate = { [weak self, weak barController] location in
             guard let self, let barController else { return true }
             fprint("emptySpacePredicate called at location=\(location), peekedID=\(String(describing: barController.peekedItemID))")
-            // 排除落在自身折叠按钮窗口内的点击（交由 AppKit 按钮自身的 action 响应）
-            if let toggleWindow = self.statusItem?.button?.window, toggleWindow.frame.contains(location) {
+
+            // 1. 冷启动瞬态保护：首扫尚未完成前，状态项数据不完整，严禁误判为空白区而弹出抽屉/菜单
+            guard !barController.items.isEmpty else {
+                fprint("emptySpacePredicate: 首扫未就绪，放行事件，严禁误判为空白区")
                 return false
+            }
+
+            let screens = self.services.screens.screens
+            guard let screen = screens.first(where: { $0.frame.contains(location) }) ?? self.services.screens.primaryScreen else {
+                return false
+            }
+            let primaryScreen = self.services.screens.primaryScreen ?? screens.first
+
+            // 多屏幕菜单栏投影辅助：将其它屏幕采集到的图标几何按相对右边缘间距投影到当前点击屏幕
+            func projectFrame(_ originalFrame: CGRect, from srcScreen: ScreenInfo?, to dstScreen: ScreenInfo) -> CGRect {
+                guard let srcScreen, srcScreen.frame != dstScreen.frame else { return originalFrame }
+                let distFromRight = srcScreen.frame.maxX - originalFrame.maxX
+                let projX = dstScreen.frame.maxX - distFromRight - originalFrame.width
+                let projY = dstScreen.frame.maxY - dstScreen.menuBarHeight
+                return CGRect(x: projX, y: projY, width: originalFrame.width, height: dstScreen.menuBarHeight)
+            }
+
+            // 2. 排除落在自身折叠按钮窗口内的点击（支持跨屏幕投影，交由 AppKit 按钮自身的 action 响应）
+            if let toggleWindow = self.statusItem?.button?.window {
+                let toggleScreen = screens.first(where: { $0.frame.contains(CGPoint(x: toggleWindow.frame.midX, y: toggleWindow.frame.midY)) }) ?? primaryScreen
+                let projToggle = projectFrame(toggleWindow.frame, from: toggleScreen, to: screen)
+                if projToggle.insetBy(dx: -2, dy: -2).contains(location) || toggleWindow.frame.contains(location) {
+                    return false
+                }
             }
             if let proxyWindow = self.proxyStatusItem?.button?.window, proxyWindow.frame.contains(location) {
                 return false
             }
-            // 排除落在当前临时浮现（Peek）图标区域内的点击，绝不能当作空白区点击触发折叠/抽屉！
+
+            // 3. 排除落在当前临时浮现（Peek）图标区域内的点击，绝不能当作空白区点击触发折叠/抽屉！
             if let peekedID = barController.peekedItemID {
                 let targetItem = self.proxyPresentedItem
                     ?? barController.items.first(where: { $0.matches(id: peekedID) })
@@ -277,8 +304,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     }
                 }
 
-                // 关键防护：如果该浮现条目的菜单/弹出面板正处于展开状态，说明用户当前正在与该应用交互（例如正在浏览菜单项、或准备点击收起菜单）。
-                // 此时整个菜单栏上的任何点击动作均严禁判定为「空白菜单栏点击」，绝不能触发抽屉唤出或原地折叠，更严禁提前销毁浮现条目！
+                // 关键防护：如果该浮现条目的菜单/弹出面板正处于展开状态，严禁当作空白菜单栏点击！
                 if isMenuOpen {
                     fprint("emptySpacePredicate: 浮现图标菜单正处于展开状态，拦截空白区判定 location=\(location)")
                     return false
@@ -290,16 +316,20 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     return false
                 }
             }
-            // 排除直接落在当前任何可见状态栏图标上的点击
+
+            // 4. 排除直接落在当前任何可见状态栏图标上的点击（引入跨显示器动态投影对齐）
             for visibleItem in barController.currentlyVisibleItems {
                 guard visibleItem.frame.width > 0, visibleItem.frame.width <= 300,
                       !barController.dividerIDs.contains(visibleItem.id),
                       visibleItem.title != "┆", visibleItem.title != "╎" else { continue }
+                let itemScreen = screens.first(where: { $0.frame.contains(CGPoint(x: visibleItem.frame.midX, y: visibleItem.frame.midY)) }) ?? primaryScreen
+                let effectiveFrame = projectFrame(visibleItem.frame, from: itemScreen, to: screen)
+
                 // 当处于浮现状态时，最左侧常显图标左侧的边缘不应拦截浮现点击
-                if barController.peekedItemID != nil && location.x < visibleItem.frame.minX {
+                if barController.peekedItemID != nil && location.x < effectiveFrame.minX {
                     continue
                 }
-                let hitArea = visibleItem.frame.insetBy(dx: -4, dy: -4)
+                let hitArea = effectiveFrame.insetBy(dx: -4, dy: -4)
                 if hitArea.contains(location) {
                     if let peeked = barController.peekedItemID, visibleItem.matches(id: peeked) {
                         self.handlePeekedItemInteraction(item: visibleItem)
@@ -308,42 +338,60 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
                     return false
                 }
             }
-            let screens = self.services.screens.screens
-            guard let screen = screens.first(where: { $0.frame.contains(location) }) ?? self.services.screens.primaryScreen else {
-                return false
+
+            // 5. 投影各常显项至当前屏幕，精确比对中央空白区间
+            var stableVisibleItems = barController.currentlyVisibleItems.compactMap { item -> ManagedItem? in
+                if let peekedID = barController.peekedItemID, item.matches(id: peekedID) { return nil }
+                if let proxyPresented = self.proxyPresentedItem, item.matches(id: proxyPresented.id) { return nil }
+                let itemScreen = screens.first(where: { $0.frame.contains(CGPoint(x: item.frame.midX, y: item.frame.midY)) }) ?? primaryScreen
+                var projected = item
+                projected.frame = projectFrame(item.frame, from: itemScreen, to: screen)
+                return projected
             }
-            // 排除临时浮现项（Peek Item），确保中央空白区的最左侧状态图标基准（leftmostStatusItemX）
-            // 始终由稳定常显项决定，绝不受临时展开项污染！
-            var stableVisibleItems = barController.currentlyVisibleItems.filter { item in
-                if let peekedID = barController.peekedItemID {
-                    if item.matches(id: peekedID) {
-                        return false
-                    }
-                }
-                if let proxyPresented = self.proxyPresentedItem {
-                    if item.matches(id: proxyPresented.id) {
-                        return false
-                    }
-                }
-                return true
-            }
-            // 若自身折叠按钮窗口已知且未被纳入 stableVisibleItems，动态补充其几何信息以防止误判
             if let toggleFrame = self.statusItem?.button?.window?.frame,
                toggleFrame.width > 0,
                !stableVisibleItems.contains(where: { $0.ownerBundleID == "local.tidybar.app" || $0.ownerBundleID == Bundle.main.bundleIdentifier }) {
+                let toggleScreen = screens.first(where: { $0.frame.contains(CGPoint(x: toggleFrame.midX, y: toggleFrame.midY)) }) ?? primaryScreen
+                let projToggle = projectFrame(toggleFrame, from: toggleScreen, to: screen)
                 stableVisibleItems.append(ManagedItem(
                     id: "local.tidybar.app.toggle",
                     ownerBundleID: "local.tidybar.app",
                     title: "◀",
-                    frame: toggleFrame
+                    frame: projToggle
                 ))
             }
-            return ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
+
+            let isGeometryEmpty = ApplicationMenuGeometry.isPointInsideEmptyMenuBarSpace(
                 point: location,
                 screen: screen,
                 statusItems: stableVisibleItems,
                 ignoredItemIDs: barController.dividerIDs
             )
+            guard isGeometryEmpty else { return false }
+
+            // 6. 终极防线：系统级 AX 物理命中核验
+            // 只要坐标落入非 TidyBar 的任意 AXMenuBarItem / AXMenuExtra 状态控件，绝不能误判为空白区
+            let cgLocation = CGPoint(x: location.x, y: screen.frame.maxY - location.y)
+            var element: AXUIElement?
+            let sysWide = AXUIElementCreateSystemWide()
+            if AXUIElementCopyElementAtPosition(sysWide, Float(cgLocation.x), Float(cgLocation.y), &element) == .success,
+               let el = element {
+                var roleVal: AnyObject?
+                var subroleVal: AnyObject?
+                var pid: pid_t = 0
+                AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &roleVal)
+                AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &subroleVal)
+                AXUIElementGetPid(el, &pid)
+                let role = roleVal as? String ?? ""
+                let subrole = subroleVal as? String ?? ""
+                if (role == "AXMenuBarItem" || subrole == "AXMenuExtra" || role == "AXMenuExtra"),
+                   pid != ProcessInfo.processInfo.processIdentifier {
+                    fprint("emptySpacePredicate: 终极防线拦截！点击落入第三方 AX 状态项 (pid=\(pid), role=\(role), subrole=\(subrole))，非空白区")
+                    return false
+                }
+            }
+
+            return true
         }
 
         barController.onPeekedItemClick = { [weak self] item in
