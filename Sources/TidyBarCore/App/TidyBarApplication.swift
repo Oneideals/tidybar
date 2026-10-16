@@ -1133,12 +1133,12 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         // 1. 状态与异常提醒（仅在异常或正在整理时展示；正常时不展示底层技术行话）
         var hasStatusHeader = false
         if barController.isPhysicalLayoutBusy {
-            let busyItem = NSMenuItem(title: "正在整理菜单栏…", action: nil, keyEquivalent: "")
+            let busyItem = NSMenuItem(title: L10n.arrangingMenuBar, action: nil, keyEquivalent: "")
             busyItem.isEnabled = false
             menu.addItem(busyItem)
             hasStatusHeader = true
         } else if !services.accessibility.isTrusted {
-            let authItem = NSMenuItem(title: "⚠️ 辅助功能权限未就绪（点击授权）", action: #selector(openAccessibilitySettings), keyEquivalent: "")
+            let authItem = NSMenuItem(title: L10n.accessibilityWarning, action: #selector(openAccessibilitySettings), keyEquivalent: "")
             authItem.target = self
             menu.addItem(authItem)
             hasStatusHeader = true
@@ -1155,7 +1155,7 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         // 2. 核心状态与日常控制
         let foldItem = NSMenuItem(
-            title: isMenuBarFolded ? "展开菜单栏图标" : "折叠菜单栏图标",
+            title: isMenuBarFolded ? L10n.unfoldIcons : L10n.foldIcons,
             action: #selector(toggleMenuBarFold),
             keyEquivalent: ""
         )
@@ -1164,34 +1164,34 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
         menu.addItem(foldItem)
 
         let drawerItem = NSMenuItem(
-            title: panelController?.isVisible == true ? "收起收纳抽屉" : "显示收纳抽屉",
+            title: panelController?.isVisible == true ? L10n.hideDrawer : L10n.showDrawer,
             action: #selector(toggleDrawer),
             keyEquivalent: ""
         )
         menu.addItem(drawerItem)
 
-        let searchItem = NSMenuItem(title: "搜索图标…", action: #selector(presentSearch), keyEquivalent: "f")
+        let searchItem = NSMenuItem(title: L10n.searchIcons, action: #selector(presentSearch), keyEquivalent: "f")
         menu.addItem(searchItem)
 
         menu.addItem(.separator())
 
         // 3. 维护与工具
-        let refreshItem = NSMenuItem(title: "重新扫描菜单栏", action: #selector(unifiedRefresh), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: L10n.rescanMenuBar, action: #selector(unifiedRefresh), keyEquivalent: "r")
         menu.addItem(refreshItem)
 
         if NativeMenuBarHider.shared.isAvailable {
-            let reconcileItem = NSMenuItem(title: "规整菜单栏位置", action: #selector(reconcilePhysicalPartitioningAction), keyEquivalent: "")
+            let reconcileItem = NSMenuItem(title: L10n.reconcilePositions, action: #selector(reconcilePhysicalPartitioningAction), keyEquivalent: "")
             menu.addItem(reconcileItem)
         } else {
             let dividerItem = NSMenuItem(
-                title: dividerItems.isEmpty ? "摆放菜单栏分隔符" : "收起分隔符",
+                title: dividerItems.isEmpty ? L10n.placeDividers : L10n.retractDividers,
                 action: #selector(toggleDividers),
                 keyEquivalent: ""
             )
             menu.addItem(dividerItem)
         }
 
-        let demo = NSMenuItem(title: "演示模式（全部收起）", action: #selector(toggleDemoMode), keyEquivalent: "d")
+        let demo = NSMenuItem(title: L10n.demoMode, action: #selector(toggleDemoMode), keyEquivalent: "d")
         demo.keyEquivalentModifierMask = [.command, .shift]
         demo.state = barController.isDemoMode ? .on : .off
         demo.isEnabled = barController.isDemoMode || (barController.capability == .fullDrag && hasPerformedInitialFold)
@@ -1222,17 +1222,24 @@ public final class TidyBarApplication: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        // 5. 偏好设置与退出
-        let settingsItem = NSMenuItem(title: "偏好设置…", action: #selector(openSettings), keyEquivalent: ",")
+        // 5. 偏好设置、关于与退出
+        let settingsItem = NSMenuItem(title: L10n.settings, action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(settingsItem)
+
+        let aboutItem = NSMenuItem(title: L10n.aboutTidyBar, action: #selector(openAbout), keyEquivalent: "")
+        menu.addItem(aboutItem)
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "退出 TidyBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: L10n.quitTidyBar, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
 
         menu.items.forEach { $0.target = $0.action == #selector(NSApplication.terminate(_:)) ? NSApp : self }
         return menu
+    }
+
+    @objc public func openAbout() {
+        TidyBarAboutWindowController.shared.show()
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {

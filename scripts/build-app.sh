@@ -22,6 +22,9 @@ echo "▸ 组装 $BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$BIN" "$BUNDLE/Contents/MacOS/tidybar"
 cp Resources/Info.plist "$BUNDLE/Contents/Info.plist"
+if [[ -f Resources/AppIcon.icns ]]; then
+  cp Resources/AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
+fi
 printf 'APPL????' > "$BUNDLE/Contents/PkgInfo"
 
 # 优先查找本地有效的代码签名证书（如 TidyBar Development 或 Apple Development），避免重新编译后 TCC 权限重置

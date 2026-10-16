@@ -6,12 +6,12 @@ import AppKit
 /// 而"把某个图标收进隐藏区"这个动作本身只是布局意图——菜单能立刻把它交付出去，
 /// 等闸门开放时同一套意图直接换成拖拽落点，不必重做。
 extension TidyBarController {
-    /// 分区中文名，供 UI 与诊断共用一份，不在两处各写一遍
+    /// 分区名，供 UI 与诊断共用一份，不在两处各写一遍
     public static func zoneLabel(_ zone: MenuBarZone) -> String {
         switch zone {
-        case .visible: return "显示"
-        case .hidden: return "收纳（点 ☰ 呼出）"
-        case .alwaysHidden: return "始终隐藏"
+        case .visible: return L10n.zoneVisible
+        case .hidden: return L10n.zoneHidden
+        case .alwaysHidden: return L10n.zoneAlwaysHidden
         }
     }
 }
@@ -24,13 +24,13 @@ enum TidyBarMenuBuilder {
         assignSelector: Selector,
         perGroupLimit: Int = 12
     ) -> NSMenuItem {
-        let root = NSMenuItem(title: "整理图标", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "整理图标")
+        let root = NSMenuItem(title: L10n.organizeIcons, action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: L10n.organizeIcons)
         submenu.autoenablesItems = false
 
         let items = controller.assignableItems
         guard !items.isEmpty else {
-            let empty = NSMenuItem(title: "暂未读到任何图标", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: L10n.noIconsFound, action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
             root.submenu = submenu
@@ -81,8 +81,8 @@ enum TidyBarMenuBuilder {
         answerSelector: Selector,
         limit: Int = 6
     ) -> NSMenuItem {
-        let root = NSMenuItem(title: "新图标待确认 (\(controller.pendingNewItems.count))", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "新图标待确认")
+        let root = NSMenuItem(title: "\(L10n.pendingNewIcons) (\(controller.pendingNewItems.count))", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: L10n.pendingNewIcons)
         submenu.autoenablesItems = false
         for item in controller.pendingNewItems.prefix(limit) {
             for zone in [MenuBarZone.visible, .hidden, .alwaysHidden] {
@@ -113,31 +113,31 @@ enum TidyBarMenuBuilder {
         doneSelector: Selector,
         skipSelector: Selector
     ) -> NSMenuItem {
-        let root = NSMenuItem(title: "首次设置", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "首次设置")
+        let root = NSMenuItem(title: L10n.tr("首次设置", "Getting Started"), action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: L10n.tr("首次设置", "Getting Started"))
         submenu.autoenablesItems = false
 
         let step1 = NSMenuItem(
-            title: "1. " + (accessibilityGranted ? "辅助功能权限：已授予 ✓" : "辅助功能权限：未授予"),
+            title: "1. " + (accessibilityGranted ? L10n.tr("辅助功能权限：已授予 ✓", "Accessibility: Granted ✓") : L10n.tr("辅助功能权限：未授予", "Accessibility: Not Granted")),
             action: accessibilityGranted ? nil : openSettingsSelector,
             keyEquivalent: ""
         )
         step1.target = accessibilityGranted ? nil : target
         submenu.addItem(step1)
 
-        let step2 = NSMenuItem(title: "2. 在「整理图标」里把不常用的收进隐藏区", action: nil, keyEquivalent: "")
+        let step2 = NSMenuItem(title: "2. " + L10n.tr("在「整理图标」里把不常用的收进隐藏区", "Move rarely used items to Hidden in Organize Icons"), action: nil, keyEquivalent: "")
         step2.isEnabled = false
         submenu.addItem(step2)
 
-        let step3 = NSMenuItem(title: "3. 试一下呼出：点 ☰ 或菜单栏分隔符", action: nil, keyEquivalent: "")
+        let step3 = NSMenuItem(title: "3. " + L10n.tr("试一下呼出：点 ☰ 或菜单栏分隔符", "Try revealing: Click ☰ or the divider"), action: nil, keyEquivalent: "")
         step3.isEnabled = false
         submenu.addItem(step3)
 
         submenu.addItem(.separator())
-        let finish = NSMenuItem(title: "完成引导", action: doneSelector, keyEquivalent: "")
+        let finish = NSMenuItem(title: L10n.buttonFinish, action: doneSelector, keyEquivalent: "")
         finish.target = target
         submenu.addItem(finish)
-        let skip = NSMenuItem(title: "跳过引导", action: skipSelector, keyEquivalent: "")
+        let skip = NSMenuItem(title: L10n.buttonSkip, action: skipSelector, keyEquivalent: "")
         skip.target = target
         submenu.addItem(skip)
         root.submenu = submenu
@@ -150,13 +150,13 @@ enum TidyBarMenuBuilder {
         applySelector: Selector,
         saveSelector: Selector
     ) -> NSMenuItem {
-        let root = NSMenuItem(title: "布局预设", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "布局预设")
+        let root = NSMenuItem(title: L10n.layoutProfiles, action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: L10n.layoutProfiles)
         submenu.autoenablesItems = false
 
         let profiles = controller.listProfiles()
         if profiles.isEmpty {
-            let empty = NSMenuItem(title: "暂无保存的预设", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: L10n.noSavedProfiles, action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
         } else {
@@ -171,7 +171,7 @@ enum TidyBarMenuBuilder {
             }
         }
         submenu.addItem(.separator())
-        let saveItem = NSMenuItem(title: "将当前布局另存为预设…", action: saveSelector, keyEquivalent: "")
+        let saveItem = NSMenuItem(title: L10n.saveCurrentLayoutPrompt, action: saveSelector, keyEquivalent: "")
         saveItem.target = target
         submenu.addItem(saveItem)
         root.submenu = submenu

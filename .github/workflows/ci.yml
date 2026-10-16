@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    name: Test & Build (macOS)
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Swift / Xcode version
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Run Tests (tidybar-checks)
+        run: swift run tidybar-checks
+
+      - name: Build Application Bundle
+        run: ./scripts/build-app.sh release

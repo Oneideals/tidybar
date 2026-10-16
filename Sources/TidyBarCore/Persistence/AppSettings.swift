@@ -50,6 +50,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var askAboutNewItems: Bool
     /// 首启向导是否已完成/被跳过（B1）。以前不敢存，就是因为合成 Codable 会让老文件解码失败。
     public var hasCompletedFirstRunGuide: Bool
+    /// 界面语言偏好（跟随系统、简体中文、英文）
+    public var appLanguage: AppLanguage
 
     public init(
         revealTriggers: Set<RevealTrigger> = RevealTrigger.beginnerDefaults,
@@ -66,7 +68,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         activeProfileName: String? = nil,
         rules: [DisplayRule] = [],
         askAboutNewItems: Bool = false,
-        hasCompletedFirstRunGuide: Bool = false
+        hasCompletedFirstRunGuide: Bool = false,
+        appLanguage: AppLanguage = .system
     ) {
         self.revealTriggers = revealTriggers
         self.emptyBarClickAction = emptyBarClickAction
@@ -83,6 +86,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.rules = rules
         self.askAboutNewItems = askAboutNewItems
         self.hasCompletedFirstRunGuide = hasCompletedFirstRunGuide
+        self.appLanguage = appLanguage
     }
 
     /// 逐字段 `decodeIfPresent`。
@@ -94,7 +98,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case revealTriggers, emptyBarClickAction, scrollOrSwipeAction, rehideDelay, newItemZone, itemSpacing, stylingEnabled
         case rulesEnabled, followMenuBarColorEnabled, autoRecoverPendingIntent
-        case profiles, activeProfileName, rules, askAboutNewItems, hasCompletedFirstRunGuide
+        case profiles, activeProfileName, rules, askAboutNewItems, hasCompletedFirstRunGuide, appLanguage
     }
 
     public init(from decoder: Decoder) throws {
@@ -122,6 +126,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         rules = try c.decodeIfPresent([DisplayRule].self, forKey: .rules) ?? defaults.rules
         askAboutNewItems = try c.decodeIfPresent(Bool.self, forKey: .askAboutNewItems) ?? false
         hasCompletedFirstRunGuide = try c.decodeIfPresent(Bool.self, forKey: .hasCompletedFirstRunGuide) ?? false
+        appLanguage = try c.decodeIfPresent(AppLanguage.self, forKey: .appLanguage) ?? defaults.appLanguage
     }
 
     /// 校验并夹紧非法值，避免旧版本或手工改 plist 造成的坏数据把工具搞崩

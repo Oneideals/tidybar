@@ -13,10 +13,10 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
         var title: String {
             switch self {
-            case .layout: return "菜单栏布局"
-            case .triggers: return "触发手势"
-            case .general: return "常规设置"
-            case .advanced: return "高级与诊断"
+            case .layout: return L10n.tabLayout
+            case .triggers: return L10n.tabTriggers
+            case .general: return L10n.tabGeneral
+            case .advanced: return L10n.tabAdvanced
             }
         }
 
@@ -34,9 +34,9 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private var currentTab: Tab = .layout
 
     // 控件
-    private let launchToggle = NSButton(checkboxWithTitle: "开机自动启动 TidyBar", target: nil, action: nil)
-    private let askToggle = NSButton(checkboxWithTitle: "出现新图标时先问我（A7）", target: nil, action: nil)
-    private let stylingToggle = NSButton(checkboxWithTitle: "启用菜单栏美化（圆角胶囊背景，E1）", target: nil, action: nil)
+    private let launchToggle = NSButton(checkboxWithTitle: L10n.launchAtLogin, target: nil, action: nil)
+    private let askToggle = NSButton(checkboxWithTitle: L10n.askAboutNewItems, target: nil, action: nil)
+    private let stylingToggle = NSButton(checkboxWithTitle: L10n.enableStyling, target: nil, action: nil)
     private let rehideStepper = NSStepper()
     private let rehideValue = NSTextField(labelWithString: "")
     private let hotKeyLine = NSTextField(labelWithString: "")
@@ -44,13 +44,14 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let privacyLine = NSTextField(wrappingLabelWithString: "")
     private let statusLine = NSTextField(labelWithString: "")
     private let overview = IconOverviewView(onReassign: { _, _ in false })
-    private let dividerButton = NSButton(title: "│ 摆放菜单栏分隔符", target: nil, action: nil)
-    private let foldButton = NSButton(title: "▶ 原地折叠菜单栏", target: nil, action: nil)
-    private let emptyBarToggle = NSButton(checkboxWithTitle: "点击菜单栏空白处触发", target: nil, action: nil)
-    private let scrollToggle = NSButton(checkboxWithTitle: "在菜单栏上双指滚轮/横滑触发", target: nil, action: nil)
-    private let hoverToggle = NSButton(checkboxWithTitle: "光标在菜单栏空白处悬停触发", target: nil, action: nil)
+    private let dividerButton = NSButton(title: "│ " + L10n.placeDividers, target: nil, action: nil)
+    private let foldButton = NSButton(title: "▶ " + L10n.foldIcons, target: nil, action: nil)
+    private let emptyBarToggle = NSButton(checkboxWithTitle: L10n.toggleEmptyBarClick, target: nil, action: nil)
+    private let scrollToggle = NSButton(checkboxWithTitle: L10n.toggleScroll, target: nil, action: nil)
+    private let hoverToggle = NSButton(checkboxWithTitle: L10n.toggleHover, target: nil, action: nil)
     private let emptyBarActionPopup = NSPopUpButton()
     private let scrollActionPopup = NSPopUpButton()
+    private let languagePopup = NSPopUpButton()
 
     // 侧边栏与内容容器
     private let sidebarContainer = NSVisualEffectView()
@@ -66,6 +67,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
 
     public init(controller: TidyBarController, hotKeyDescription: String) {
         self.controller = controller
+        L10n.currentLanguage = controller.settings.appLanguage
         let window = NSWindow(
             contentRect: CGRect(x: 0, y: 0, width: 880, height: 600),
             styleMask: [.titled, .closable, .miniaturizable],
@@ -406,12 +408,12 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private func buildGeneralPane() -> NSView {
         let view = NSView()
 
-        let titleLabel = NSTextField(labelWithString: "常规与行为偏好")
+        let titleLabel = NSTextField(labelWithString: L10n.generalTitle)
         titleLabel.font = NSFont.systemFont(ofSize: 16, weight: .bold)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(titleLabel)
 
-        let (card1, stack1) = createCardView(title: "系统启动与图标策略", subtitle: "管理开机行为以及新出现的未收纳图标。")
+        let (card1, stack1) = createCardView(title: L10n.cardStartupTitle, subtitle: L10n.cardStartupSubtitle)
         launchToggle.target = self
         launchToggle.action = #selector(toggleLaunchAtLogin)
         stack1.addArrangedSubview(launchToggle)
@@ -421,7 +423,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         stack1.addArrangedSubview(askToggle)
         view.addSubview(card1)
 
-        let (card2, stack2) = createCardView(title: "长显区域显示时间（临时浮现）", subtitle: "从收纳抽屉点击图标临时显示在长显区域后的停留时间，支持右键唤出菜单，超时无操作自动收回。")
+        let (card2, stack2) = createCardView(title: L10n.cardRehideTitle, subtitle: L10n.cardRehideSubtitle)
         let rehideRow = NSStackView()
         rehideRow.orientation = .horizontal
         rehideRow.spacing = 10
@@ -437,11 +439,21 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         stack2.addArrangedSubview(rehideRow)
         view.addSubview(card2)
 
-        let (card3, stack3) = createCardView(title: "外观美化（可选）", subtitle: "在菜单栏下方绘制微妙的半透明胶囊背景（鼠标点击穿透）。")
+        let (card3, stack3) = createCardView(title: L10n.cardStylingTitle, subtitle: L10n.cardStylingSubtitle)
         stylingToggle.target = self
         stylingToggle.action = #selector(toggleStyling)
         stack3.addArrangedSubview(stylingToggle)
         view.addSubview(card3)
+
+        let (card4, stack4) = createCardView(title: L10n.cardLanguageTitle, subtitle: L10n.cardLanguageSubtitle)
+        languagePopup.removeAllItems()
+        for lang in AppLanguage.allCases {
+            languagePopup.addItem(withTitle: lang.displayName)
+        }
+        languagePopup.target = self
+        languagePopup.action = #selector(changeLanguage)
+        stack4.addArrangedSubview(languagePopup)
+        view.addSubview(card4)
 
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: view.topAnchor),
@@ -459,7 +471,11 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             card3.topAnchor.constraint(equalTo: card2.bottomAnchor, constant: 14),
             card3.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             card3.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            card3.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            card4.topAnchor.constraint(equalTo: card3.bottomAnchor, constant: 14),
+            card4.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            card4.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            card4.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
         return view
@@ -469,18 +485,18 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private func buildAdvancedPane() -> NSView {
         let view = NSView()
 
-        let titleLabel = NSTextField(labelWithString: "系统高级与安全诊断")
+        let titleLabel = NSTextField(labelWithString: L10n.advancedTitle)
         titleLabel.font = NSFont.systemFont(ofSize: 16, weight: .bold)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(titleLabel)
 
-        let (card1, stack1) = createCardView(title: "常驻性能指标（守门测试）", subtitle: "以系统真实物理驻留（phys_footprint）为准，严守预算。")
+        let (card1, stack1) = createCardView(title: L10n.cardPerformanceTitle, subtitle: L10n.cardPerformanceSubtitle)
         performanceLine.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         performanceLine.textColor = .labelColor
         stack1.addArrangedSubview(performanceLine)
         view.addSubview(card1)
 
-        let (card2, stack2) = createCardView(title: "本地隐私与日志", subtitle: "零网络连接、零遥测收集；WAL 预写日志保障异常恢复。")
+        let (card2, stack2) = createCardView(title: L10n.cardPrivacyTitle, subtitle: L10n.cardPrivacySubtitle)
         privacyLine.font = NSFont.systemFont(ofSize: 11)
         privacyLine.textColor = .secondaryLabelColor
         privacyLine.maximumNumberOfLines = 2
@@ -490,10 +506,36 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         statusLine.textColor = .secondaryLabelColor
         statusLine.maximumNumberOfLines = 3
         stack2.addArrangedSubview(statusLine)
+
+        let actionsRow = NSStackView()
+        actionsRow.orientation = .horizontal
+        actionsRow.spacing = 8
+
+        let exportBtn = NSButton(title: L10n.exportDiagnosticsButton, target: self, action: #selector(exportDiagnosticsAction))
+        exportBtn.bezelStyle = .rounded
+        exportBtn.font = NSFont.systemFont(ofSize: 11)
+        actionsRow.addArrangedSubview(exportBtn)
+
+        let issueBtn = NSButton(title: L10n.reportIssueButton, target: self, action: #selector(reportIssueAction))
+        issueBtn.bezelStyle = .rounded
+        issueBtn.font = NSFont.systemFont(ofSize: 11)
+        actionsRow.addArrangedSubview(issueBtn)
+
+        let privacyBtn = NSButton(title: L10n.viewPrivacyPolicyButton, target: self, action: #selector(viewPrivacyAction))
+        privacyBtn.bezelStyle = .rounded
+        privacyBtn.font = NSFont.systemFont(ofSize: 11)
+        actionsRow.addArrangedSubview(privacyBtn)
+
+        let aboutBtn = NSButton(title: L10n.aboutTidyBar, target: self, action: #selector(openAboutAction))
+        aboutBtn.bezelStyle = .rounded
+        aboutBtn.font = NSFont.systemFont(ofSize: 11)
+        actionsRow.addArrangedSubview(aboutBtn)
+
+        stack2.addArrangedSubview(actionsRow)
         view.addSubview(card2)
 
-        let (card3, stack3) = createCardView(title: "自动化与高级规则", subtitle: "配置基于电量、Wi-Fi、聚焦模式或前台 App 的自动显示/隐藏规则。")
-        let ruleButton = NSButton(title: "打开规则编辑器…", target: self, action: #selector(openRuleEditorAction))
+        let (card3, stack3) = createCardView(title: L10n.cardRulesTitle, subtitle: L10n.cardRulesSubtitle)
+        let ruleButton = NSButton(title: L10n.openRuleEditorButton, target: self, action: #selector(openRuleEditorAction))
         ruleButton.bezelStyle = .rounded
         ruleButton.font = NSFont.systemFont(ofSize: 12)
         stack3.addArrangedSubview(ruleButton)
@@ -586,8 +628,8 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         stylingToggle.state = controller.settings.stylingEnabled ? .on : .off
         rehideStepper.doubleValue = controller.settings.rehideDelay
         rehideValue.stringValue = controller.settings.rehideDelay == 0
-            ? "长显显示：从不自动收起"
-            : String(format: "长显显示：%.1f 秒（无操作后收回）", controller.settings.rehideDelay)
+            ? L10n.rehideNever
+            : L10n.rehideSeconds(controller.settings.rehideDelay)
 
         // 自然手势触发与动作状态同步
         emptyBarToggle.state = controller.settings.revealTriggers.contains(.emptyBarClick) ? .on : .off
@@ -596,46 +638,79 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         emptyBarActionPopup.selectItem(at: controller.settings.emptyBarClickAction == .toggleFold ? 0 : 1)
         scrollActionPopup.selectItem(at: controller.settings.scrollOrSwipeAction == .toggleFold ? 0 : 1)
 
+        let langIdx = AppLanguage.allCases.firstIndex(of: controller.settings.appLanguage) ?? 0
+        languagePopup.selectItem(at: langIdx)
+
         let state = LaunchAtLogin.state()
         launchToggle.state = state == .enabled ? .on : .off
         switch state {
         case .needsApproval:
-            launchToggle.title = "开机自动启动：需在系统设置里批准"
+            launchToggle.title = L10n.launchNeedsApproval
         case .unknown(let reason):
-            launchToggle.title = "开机自动启动不可用：\(reason)"
+            launchToggle.title = "\(L10n.launchUnavailable)\(reason)"
         default:
-            launchToggle.title = "开机自动启动 TidyBar"
+            launchToggle.title = L10n.launchAtLogin
         }
 
         if NativeMenuBarHider.shared.isAvailable {
-            dividerButton.title = "✨ 规整菜单栏分区"
+            dividerButton.title = L10n.reconcileButtonTitle
             dividerButton.contentTintColor = .controlAccentColor
-            dividerButton.toolTip = "将隐藏区与始终隐藏区的所有图标一次性规整至显示区左侧，确保抽屉呼出时永远位于最左侧"
+            dividerButton.toolTip = L10n.reconcileTooltip
         } else if let arePlaced = controller.areDividersPlaced?(), arePlaced {
-            dividerButton.title = "收起菜单栏分隔符"
+            dividerButton.title = L10n.retractDividers
             dividerButton.contentTintColor = .secondaryLabelColor
             dividerButton.toolTip = nil
         } else {
-            dividerButton.title = "│ 摆放菜单栏分隔符"
+            dividerButton.title = "│ " + L10n.placeDividers
             dividerButton.contentTintColor = .controlAccentColor
             dividerButton.toolTip = nil
         }
 
         let isFolded = controller.isMenuBarFoldedQuery?() ?? false
-        foldButton.title = controller.isPhysicalLayoutBusy ? "正在整理菜单栏…"
-            : controller.capability == .panelOnlyFallback ? "打开收纳抽屉"
-            : (isFolded ? "◀ 展开菜单栏" : "▶ 原地折叠菜单栏")
+        foldButton.title = controller.isPhysicalLayoutBusy ? L10n.arrangingMenuBar
+            : controller.capability == .panelOnlyFallback ? L10n.showDrawer
+            : (isFolded ? "◀ " + L10n.unfoldIcons : "▶ " + L10n.foldIcons)
         foldButton.toolTip = controller.capabilityReason
         foldButton.isEnabled = !controller.isPhysicalLayoutBusy
         dividerButton.isEnabled = !controller.isPhysicalLayoutBusy
         foldButton.contentTintColor = isFolded ? .systemGreen : .systemBlue
 
         let footprint = ResourceProbe.residentMemoryBytes()
-        let memStr = footprint > 0 ? String(format: "%.1f MB", Double(footprint) / 1_048_576) : "暂不可用"
-        performanceLine.stringValue = "内存占用：\(memStr)（预算 ≤40 MB）｜ CPU：未采样"
-        performanceLine.toolTip = "内存采用系统物理占用（phys_footprint），与性能预算和启动日志一致。"
-        privacyLine.stringValue = "隐私（F2）：纯本地运行，零网络请求、零遥测收集；配置保存在本地。"
+        let memStr = footprint > 0 ? String(format: "%.1f MB", Double(footprint) / 1_048_576) : L10n.tr("暂不可用", "N/A")
+        performanceLine.stringValue = "\(L10n.memoryLabel)\(memStr)\(L10n.memoryBudgetSuffix)"
+        performanceLine.toolTip = L10n.tr("内存采用系统物理占用（phys_footprint），与性能预算和启动日志一致。", "Memory is measured via system physical footprint (phys_footprint).")
+        privacyLine.stringValue = L10n.privacyNotice
         statusLine.stringValue = controller.logs.suffix(2).joined(separator: "\n")
+    }
+
+    @objc private func changeLanguage() {
+        let index = languagePopup.indexOfSelectedItem
+        if index >= 0 && index < AppLanguage.allCases.count {
+            let selected = AppLanguage.allCases[index]
+            controller.update { $0.appLanguage = selected }
+            L10n.currentLanguage = selected
+            window?.title = L10n.tr("TidyBar 偏好设置", "TidyBar Settings")
+            for (t, btn) in sidebarButtons {
+                btn.title = t.title
+            }
+            refresh()
+        }
+    }
+
+    @objc private func exportDiagnosticsAction() {
+        DiagnosticExporter.exportDiagnostics(controller: controller, presentingWindow: window)
+    }
+
+    @objc private func reportIssueAction() {
+        DiagnosticExporter.openGitHubIssue()
+    }
+
+    @objc private func viewPrivacyAction() {
+        DiagnosticExporter.openPrivacyPolicy()
+    }
+
+    @objc private func openAboutAction() {
+        TidyBarAboutWindowController.shared.show()
     }
 
     @objc private func toggleEmptyBarClick() {
@@ -740,6 +815,10 @@ public final class FirstRunWizardController: NSWindowController {
     private let controller: TidyBarController
     private let onFinish: () -> Void
     private let body = NSTextField(wrappingLabelWithString: "")
+    private let authButton = NSButton(title: L10n.openAccessibilityButton, target: nil, action: nil)
+    private let screenCaptureButton = NSButton(title: L10n.openScreenCaptureButton, target: nil, action: nil)
+    private let nextButton = NSButton(title: L10n.buttonNext, target: nil, action: nil)
+    private let skipButton = NSButton(title: L10n.buttonSkip, target: nil, action: nil)
     private var step = 1
     /// 第 2 步复用的总览：与设置页同一个视图类型、同一套行语义，不会各长一套。
     private lazy var overviewInWizard: IconOverviewView = IconOverviewView(onReassign: { _, _ in false })
@@ -771,12 +850,12 @@ public final class FirstRunWizardController: NSWindowController {
         self.controller = controller
         self.onFinish = onFinish
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 500, height: 450),
+            contentRect: CGRect(x: 0, y: 0, width: 520, height: 460),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        window.title = "欢迎用 TidyBar（1/3）"
+        window.title = L10n.wizardTitle(step: 1)
         window.isReleasedWhenClosed = false
         super.init(window: window)
         build()
@@ -789,45 +868,104 @@ public final class FirstRunWizardController: NSWindowController {
         body.translatesAutoresizingMaskIntoConstraints = false
         body.font = NSFont.systemFont(ofSize: 12)
         root.addSubview(body)
+
+        authButton.translatesAutoresizingMaskIntoConstraints = false
+        authButton.bezelStyle = .rounded
+        authButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        authButton.target = self
+        authButton.action = #selector(openAccessibilitySettings)
+        root.addSubview(authButton)
+
+        screenCaptureButton.translatesAutoresizingMaskIntoConstraints = false
+        screenCaptureButton.bezelStyle = .rounded
+        screenCaptureButton.font = NSFont.systemFont(ofSize: 11)
+        screenCaptureButton.target = self
+        screenCaptureButton.action = #selector(openScreenCaptureSettings)
+        root.addSubview(screenCaptureButton)
+
         NSLayoutConstraint.activate([
             body.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
             body.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
             body.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+
+            authButton.topAnchor.constraint(equalTo: body.bottomAnchor, constant: 14),
+            authButton.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            authButton.heightAnchor.constraint(equalToConstant: 28),
+
+            screenCaptureButton.topAnchor.constraint(equalTo: authButton.bottomAnchor, constant: 8),
+            screenCaptureButton.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            screenCaptureButton.heightAnchor.constraint(equalToConstant: 26),
         ])
 
-        let next = NSButton(title: "下一步", target: self, action: #selector(advance))
-        let skip = NSButton(title: "跳过", target: self, action: #selector(finish))
-        for (index, button) in [next, skip].enumerated() {
-            button.translatesAutoresizingMaskIntoConstraints = false
-            root.addSubview(button)
-            NSLayoutConstraint.activate([
-                button.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
-                button.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20 - CGFloat(index) * 96),
-            ])
-        }
+        nextButton.target = self
+        nextButton.action = #selector(advance)
+        nextButton.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(nextButton)
+
+        skipButton.target = self
+        skipButton.action = #selector(finish)
+        skipButton.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(skipButton)
+
+        NSLayoutConstraint.activate([
+            nextButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
+            nextButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            nextButton.heightAnchor.constraint(equalToConstant: 28),
+
+            skipButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
+            skipButton.trailingAnchor.constraint(equalTo: nextButton.leadingAnchor, constant: -12),
+            skipButton.heightAnchor.constraint(equalToConstant: 28),
+        ])
+
         showStep()
+    }
+
+    @objc private func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func openScreenCaptureSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     /// 只刷新当前步骤，不推进向导；异步整理结果与设置窗口同步呈现。
     public func refresh() { showStep() }
 
     private func showStep() {
-        window?.title = "欢迎用 TidyBar（\(step)/3）"
+        window?.title = L10n.wizardTitle(step: step)
         // 总览只在第 2 步出现；别的步骤收回，避免窗口里挂着一块不相关的长表
         if step != 2 { overviewInWizard.removeFromSuperview() }
+        let isStep1 = (step == 1)
+        authButton.isHidden = !isStep1
+        screenCaptureButton.isHidden = !isStep1
+
+        nextButton.title = (step == 3) ? L10n.buttonFinish : L10n.buttonNext
+        skipButton.title = L10n.buttonSkip
+
         let trusted = controller.layoutEngineAllowsTakeoverDescription
         switch step {
         case 1:
-            body.stringValue = "第 1 步：辅助功能权限用于读取和整理菜单栏图标。\n当前：\(trusted)\n在系统设置中授权后，会自动更新可用能力。"
+            body.stringValue = "\(L10n.wizardStep1Body)\n\n"
+                + L10n.tr("当前辅助功能状态：\(trusted)", "Current Accessibility Status: \(trusted)")
+                + "\n" + L10n.wizardStep1ScreenCaptureNote
+            if AXIsProcessTrusted() {
+                authButton.title = L10n.tr("✓ 辅助功能权限已授予", "✓ Accessibility Permission Granted")
+                authButton.isEnabled = false
+            } else {
+                authButton.title = L10n.openAccessibilityButton
+                authButton.isEnabled = true
+            }
         case 2:
-            body.stringValue = "第 2 步：这张表就是全景——每个图标现在在哪个区一目了然。\n点右侧按钮即可调整；默认策略是"
-                + (controller.settings.askAboutNewItems ? "出现新图标时先问你" : "新图标自动收进隐藏区")
-                + "。也可以完全跳过，之后在设置里改。"
+            body.stringValue = L10n.wizardStep2BodyPrefix
+                + (controller.settings.askAboutNewItems ? L10n.wizardStep2Ask : L10n.wizardStep2Auto)
+                + L10n.wizardStep2BodySuffix
             installOverviewInWizard()
         default:
-            body.stringValue = "第 3 步：呼出隐藏区——点 ☰、点菜单栏分隔符"
-                + (controller.settings.revealTriggers.contains(.hotkey) ? "，或按 ⌥Space。" : "。")
-                + "\n点「完成」就开始用。"
+            body.stringValue = L10n.wizardStep3Body
         }
     }
 
