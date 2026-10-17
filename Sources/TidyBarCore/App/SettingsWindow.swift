@@ -4,7 +4,7 @@ import AppKit
 ///
 /// 刻意做得"直白"：每一项都是**读系统或读状态**再显示，不缓存自己算出来的假状态——
 /// 开机自启尤其如此，用户在系统设置里手动改过之后，我们这里必须跟着变。
-public final class TidyBarSettingsWindowController: NSWindowController {
+public final class TidyBarSettingsWindowController: NSWindowController, NSWindowDelegate {
     public enum Tab: String, CaseIterable {
         case layout = "layout"
         case triggers = "triggers"
@@ -52,6 +52,9 @@ public final class TidyBarSettingsWindowController: NSWindowController {
     private let emptyBarActionPopup = NSPopUpButton()
     private let scrollActionPopup = NSPopUpButton()
     private let languagePopup = NSPopUpButton()
+    private let systemHiddenContainer = NSStackView()
+    private let layoutSystemHiddenBanner = NSView()
+    private let layoutSystemHiddenStack = NSStackView()
 
     // 侧边栏与内容容器
     private let sidebarContainer = NSVisualEffectView()
@@ -80,6 +83,7 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.minSize = NSSize(width: 860, height: 580)
         super.init(window: window)
+        window.delegate = self
         overview.onReassign = { [weak controller] itemID, zone in
             controller?.reassignZone(itemID, to: zone) ?? false
         }
@@ -285,6 +289,20 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         overview.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(overview)
 
+        layoutSystemHiddenBanner.wantsLayer = true
+        layoutSystemHiddenBanner.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.45).cgColor
+        layoutSystemHiddenBanner.layer?.cornerRadius = 8
+        layoutSystemHiddenBanner.layer?.borderWidth = 1
+        layoutSystemHiddenBanner.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
+        layoutSystemHiddenBanner.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(layoutSystemHiddenBanner)
+
+        layoutSystemHiddenStack.orientation = .horizontal
+        layoutSystemHiddenStack.alignment = .centerY
+        layoutSystemHiddenStack.spacing = 8
+        layoutSystemHiddenStack.translatesAutoresizingMaskIntoConstraints = false
+        layoutSystemHiddenBanner.addSubview(layoutSystemHiddenStack)
+
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 2),
             titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
@@ -303,7 +321,17 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             overview.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             overview.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             overview.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 14),
-            overview.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            layoutSystemHiddenBanner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            layoutSystemHiddenBanner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            layoutSystemHiddenBanner.topAnchor.constraint(equalTo: overview.bottomAnchor, constant: 10),
+            layoutSystemHiddenBanner.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            layoutSystemHiddenBanner.heightAnchor.constraint(equalToConstant: 38),
+
+            layoutSystemHiddenStack.leadingAnchor.constraint(equalTo: layoutSystemHiddenBanner.leadingAnchor, constant: 12),
+            layoutSystemHiddenStack.trailingAnchor.constraint(equalTo: layoutSystemHiddenBanner.trailingAnchor, constant: -12),
+            layoutSystemHiddenStack.topAnchor.constraint(equalTo: layoutSystemHiddenBanner.topAnchor, constant: 4),
+            layoutSystemHiddenStack.bottomAnchor.constraint(equalTo: layoutSystemHiddenBanner.bottomAnchor, constant: -4),
         ])
 
         return view
@@ -423,6 +451,20 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         stack1.addArrangedSubview(askToggle)
         view.addSubview(card1)
 
+        // 卡片：macOS 27 系统设置已隐藏应用
+        let (cardSys, stackSys) = createCardView(title: L10n.systemHiddenAppsTitle, subtitle: L10n.systemHiddenAppsSubtitle)
+        systemHiddenContainer.orientation = .vertical
+        systemHiddenContainer.alignment = .leading
+        systemHiddenContainer.spacing = 8
+        systemHiddenContainer.translatesAutoresizingMaskIntoConstraints = false
+        stackSys.addArrangedSubview(systemHiddenContainer)
+
+        let openSystemBtn = NSButton(title: L10n.openSystemControlCenterSettings, target: self, action: #selector(openSystemControlCenterAction))
+        openSystemBtn.bezelStyle = .rounded
+        openSystemBtn.font = NSFont.systemFont(ofSize: 11)
+        stackSys.addArrangedSubview(openSystemBtn)
+        view.addSubview(cardSys)
+
         let (card2, stack2) = createCardView(title: L10n.cardRehideTitle, subtitle: L10n.cardRehideSubtitle)
         let rehideRow = NSStackView()
         rehideRow.orientation = .horizontal
@@ -464,7 +506,11 @@ public final class TidyBarSettingsWindowController: NSWindowController {
             card1.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             card1.trailingAnchor.constraint(equalTo: view.trailingAnchor),
 
-            card2.topAnchor.constraint(equalTo: card1.bottomAnchor, constant: 14),
+            cardSys.topAnchor.constraint(equalTo: card1.bottomAnchor, constant: 14),
+            cardSys.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            cardSys.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+
+            card2.topAnchor.constraint(equalTo: cardSys.bottomAnchor, constant: 14),
             card2.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             card2.trailingAnchor.constraint(equalTo: view.trailingAnchor),
 
@@ -681,6 +727,174 @@ public final class TidyBarSettingsWindowController: NSWindowController {
         performanceLine.toolTip = L10n.tr("内存采用系统物理占用（phys_footprint），与性能预算和启动日志一致。", "Memory is measured via system physical footprint (phys_footprint).")
         privacyLine.stringValue = L10n.privacyNotice
         statusLine.stringValue = controller.logs.suffix(2).joined(separator: "\n")
+        updateSystemHiddenAppsView()
+    }
+
+    // MARK: - NSWindowDelegate
+    public func windowDidBecomeKey(_ notification: Notification) {
+        refresh()
+    }
+
+    private func updateSystemHiddenAppsView() {
+        // 1. 更新常规设置页面中的详情卡片
+        for subview in systemHiddenContainer.arrangedSubviews {
+            systemHiddenContainer.removeArrangedSubview(subview)
+            subview.removeFromSuperview()
+        }
+
+        let disallowed = controller.systemSettingsReader.readTrackedApplications().filter { !$0.isAllowed }
+        if disallowed.isEmpty {
+            let emptyLabel = NSTextField(labelWithString: L10n.systemHiddenAppsEmpty)
+            emptyLabel.font = NSFont.systemFont(ofSize: 11)
+            emptyLabel.textColor = .secondaryLabelColor
+            systemHiddenContainer.addArrangedSubview(emptyLabel)
+        } else {
+            for app in disallowed {
+                let row = makeSystemHiddenAppRow(app: app)
+                systemHiddenContainer.addArrangedSubview(row)
+            }
+        }
+
+        // 2. 更新布局总览下方的常驻横幅
+        for sub in layoutSystemHiddenStack.arrangedSubviews {
+            layoutSystemHiddenStack.removeArrangedSubview(sub)
+            sub.removeFromSuperview()
+        }
+
+        if disallowed.isEmpty {
+            layoutSystemHiddenBanner.isHidden = true
+        } else {
+            layoutSystemHiddenBanner.isHidden = false
+            let shieldIcon = NSImageView(image: NSImage(systemSymbolName: "shield.checkered", accessibilityDescription: nil) ?? NSImage())
+            shieldIcon.contentTintColor = .secondaryLabelColor
+            shieldIcon.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                shieldIcon.widthAnchor.constraint(equalToConstant: 16),
+                shieldIcon.heightAnchor.constraint(equalToConstant: 16)
+            ])
+            layoutSystemHiddenStack.addArrangedSubview(shieldIcon)
+
+            let title = NSTextField(labelWithString: L10n.tr("macOS 27 系统设置已隐藏（已自动豁免整理）：", "macOS 27 System Hidden (Auto-exempt):"))
+            title.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            title.textColor = .secondaryLabelColor
+            layoutSystemHiddenStack.addArrangedSubview(title)
+
+            for app in disallowed {
+                let pill = makeMiniAppPill(app: app)
+                layoutSystemHiddenStack.addArrangedSubview(pill)
+            }
+
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            layoutSystemHiddenStack.addArrangedSubview(spacer)
+
+            let manageBtn = NSButton(title: L10n.tr("在系统设置中管理…", "Manage in System Settings…"), target: self, action: #selector(openSystemControlCenterAction))
+            manageBtn.bezelStyle = .inline
+            manageBtn.font = NSFont.systemFont(ofSize: 11)
+            layoutSystemHiddenStack.addArrangedSubview(manageBtn)
+        }
+    }
+
+    private func makeMiniAppPill(app: SystemTrackedApp) -> NSView {
+        let pill = NSStackView()
+        pill.orientation = .horizontal
+        pill.spacing = 5
+        pill.alignment = .centerY
+
+        let iconView = NSImageView()
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16)
+        ])
+        if let appURL = app.appURL {
+            iconView.image = NSWorkspace.shared.icon(forFile: appURL.path)
+        } else if let icon = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleID).map({ NSWorkspace.shared.icon(forFile: $0.path) }) {
+            iconView.image = icon
+        } else {
+            iconView.image = NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)
+        }
+        pill.addArrangedSubview(iconView)
+
+        let label = NSTextField(labelWithString: app.displayName)
+        label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        label.textColor = .labelColor
+        pill.addArrangedSubview(label)
+
+        pill.toolTip = "\(app.bundleID)\n\(L10n.systemHiddenExemptNotice)"
+        return pill
+    }
+
+
+    private func makeSystemHiddenAppRow(app: SystemTrackedApp) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let iconView = NSImageView()
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            iconView.widthAnchor.constraint(equalToConstant: 20),
+            iconView.heightAnchor.constraint(equalToConstant: 20)
+        ])
+        if let appURL = app.appURL {
+            iconView.image = NSWorkspace.shared.icon(forFile: appURL.path)
+        } else if let icon = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleID).map({ NSWorkspace.shared.icon(forFile: $0.path) }) {
+            iconView.image = icon
+        } else {
+            iconView.image = NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)
+        }
+        row.addArrangedSubview(iconView)
+
+        let textStack = NSStackView()
+        textStack.orientation = .horizontal
+        textStack.spacing = 6
+        textStack.alignment = .firstBaseline
+
+        let nameLabel = NSTextField(labelWithString: app.displayName)
+        nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        nameLabel.textColor = .labelColor
+        textStack.addArrangedSubview(nameLabel)
+
+        let bundleLabel = NSTextField(labelWithString: "(\(app.bundleID))")
+        bundleLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        bundleLabel.textColor = .secondaryLabelColor
+        textStack.addArrangedSubview(bundleLabel)
+
+        row.addArrangedSubview(textStack)
+
+        let badgeBox = NSBox()
+        badgeBox.boxType = .custom
+        badgeBox.borderWidth = 0
+        badgeBox.cornerRadius = 4
+        badgeBox.fillColor = NSColor.systemGray.withAlphaComponent(0.2)
+        badgeBox.translatesAutoresizingMaskIntoConstraints = false
+
+        let badgeLabel = NSTextField(labelWithString: L10n.systemHiddenBadge)
+        badgeLabel.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        badgeLabel.textColor = .secondaryLabelColor
+        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        badgeBox.addSubview(badgeLabel)
+
+        NSLayoutConstraint.activate([
+            badgeLabel.topAnchor.constraint(equalTo: badgeBox.topAnchor, constant: 2),
+            badgeLabel.bottomAnchor.constraint(equalTo: badgeBox.bottomAnchor, constant: -2),
+            badgeLabel.leadingAnchor.constraint(equalTo: badgeBox.leadingAnchor, constant: 6),
+            badgeLabel.trailingAnchor.constraint(equalTo: badgeBox.trailingAnchor, constant: -6),
+        ])
+
+        row.addArrangedSubview(badgeBox)
+        row.toolTip = L10n.systemHiddenExemptNotice
+
+        return row
+    }
+
+    @objc private func openSystemControlCenterAction() {
+        _ = controller.systemSettingsReader.openSystemSettingsControlCenter()
     }
 
     @objc private func changeLanguage() {

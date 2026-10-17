@@ -116,10 +116,50 @@ public final class TidyBarController {
 
     public var isMenuBarFolded: Bool { !reveal.isRevealed || reveal.surface != .menuBar }
 
+    /// 系统菜单栏设置读取器（macOS 27+ 自动感知并豁免系统设置中隐藏的应用）
+    public var systemSettingsReader: any MacOSSystemSettingsReading = MacOSSystemSettingsReader.shared
+
     public var assignableItems: [ManagedItem] {
-        items.filter {
-            !$0.isSystemOwned && !owns($0)
+        let systemHidden = systemSettingsReader.systemHiddenBundleIDs()
+        return items.filter { item in
+            guard !item.isSystemOwned && !owns(item) else { return false }
+            return !isSystemHidden(item: item, systemHidden: systemHidden)
         }
+    }
+
+    /// 判断某个图标是否已被 macOS 27 系统设置彻底隐藏
+    public func isSystemHidden(item: ManagedItem, systemHidden: Set<String>? = nil) -> Bool {
+        let hidden = systemHidden ?? systemSettingsReader.systemHiddenBundleIDs()
+        guard !hidden.isEmpty else { return false }
+        if let owner = item.ownerBundleID, isHiddenMatch(bundleID: owner, in: hidden) {
+            return true
+        }
+        if let ownerFromID = ManagedItem.ownerFromID(item.id), isHiddenMatch(bundleID: ownerFromID, in: hidden) {
+            return true
+        }
+        if isHiddenMatch(bundleID: item.id, in: hidden) {
+            return true
+        }
+        return false
+    }
+
+    /// 判断某个 Item ID 是否属于被 macOS 27 系统设置彻底隐藏的应用
+    public func isSystemHidden(itemID: String, systemHidden: Set<String>? = nil) -> Bool {
+        let hidden = systemHidden ?? systemSettingsReader.systemHiddenBundleIDs()
+        guard !hidden.isEmpty else { return false }
+        if isHiddenMatch(bundleID: itemID, in: hidden) {
+            return true
+        }
+        if let owner = ManagedItem.ownerFromID(itemID), isHiddenMatch(bundleID: owner, in: hidden) {
+            return true
+        }
+        return false
+    }
+
+    private func isHiddenMatch(bundleID: String, in hidden: Set<String>) -> Bool {
+        if hidden.contains(bundleID) { return true }
+        let lower = bundleID.lowercased()
+        return hidden.contains { $0.lowercased() == lower }
     }
 
     public var managedZoneAssignments: [String: MenuBarZone] {
@@ -150,8 +190,10 @@ public final class TidyBarController {
     public var drawerItems: [ManagedItem] {
         guard !isDemoMode else { return [] }
         let available = assignableItems
+        let systemHidden = systemSettingsReader.systemHiddenBundleIDs()
         return presentationLayout.items(in: .hidden).compactMap { id in
             if ManagedItem.isSystemOwned(itemID: id) { return nil }
+            if isSystemHidden(itemID: id, systemHidden: systemHidden) { return nil }
             if let found = available.first(where: { $0.matches(id: id) }) {
                 if let isProcessAlive {
                     let owner = found.ownerBundleID ?? ManagedItem.ownerFromID(found.id) ?? ""
@@ -160,6 +202,7 @@ public final class TidyBarController {
                 return found
             }
             if let inAllItems = items.first(where: { $0.matches(id: id) }) {
+                if isSystemHidden(item: inAllItems, systemHidden: systemHidden) { return nil }
                 if let isProcessAlive {
                     let owner = inAllItems.ownerBundleID ?? ManagedItem.ownerFromID(inAllItems.id) ?? ""
                     if !isProcessAlive(owner) { return nil }
@@ -169,6 +212,7 @@ public final class TidyBarController {
             let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
                 ?? ManagedItem.ownerFromID(id)
             if ManagedItem.isSystemOwned(bundleID: owner) { return nil }
+            if let owner, isHiddenMatch(bundleID: owner, in: systemHidden) { return nil }
             if let owner, let isProcessAlive, !isProcessAlive(owner) {
                 return nil
             }
@@ -187,8 +231,10 @@ public final class TidyBarController {
     public var visibleItems: [ManagedItem] {
         guard !isDemoMode else { return [] }
         let available = assignableItems
+        let systemHidden = systemSettingsReader.systemHiddenBundleIDs()
         return presentationLayout.items(in: .visible).compactMap { id in
             if ManagedItem.isSystemOwned(itemID: id) { return nil }
+            if isSystemHidden(itemID: id, systemHidden: systemHidden) { return nil }
             if let found = available.first(where: { $0.matches(id: id) }) {
                 if let isProcessAlive {
                     let owner = found.ownerBundleID ?? ManagedItem.ownerFromID(found.id) ?? ""
@@ -197,6 +243,7 @@ public final class TidyBarController {
                 return found
             }
             if let inAllItems = items.first(where: { $0.matches(id: id) }) {
+                if isSystemHidden(item: inAllItems, systemHidden: systemHidden) { return nil }
                 if let isProcessAlive {
                     let owner = inAllItems.ownerBundleID ?? ManagedItem.ownerFromID(inAllItems.id) ?? ""
                     if !isProcessAlive(owner) { return nil }
@@ -206,6 +253,7 @@ public final class TidyBarController {
             let owner = engine.ledgerRecordsSnapshot.first(where: { $0.currentID == id || $0.aliases.contains(id) })?.ownerBundleID
                 ?? ManagedItem.ownerFromID(id)
             if ManagedItem.isSystemOwned(bundleID: owner) { return nil }
+            if let owner, isHiddenMatch(bundleID: owner, in: systemHidden) { return nil }
             if let owner, let isProcessAlive, !isProcessAlive(owner) {
                 return nil
             }
@@ -564,8 +612,10 @@ public final class TidyBarController {
         engine.refreshAccessibilityCapability()
         let known = Set(items.map(\.id))
         let scannedIDs = Set(scanned.map(\.id))
+        let systemHidden = systemSettingsReader.systemHiddenBundleIDs()
         let preservedMissing = isMenuBarFolded ? items.filter { item in
             guard !scannedIDs.contains(item.id), !owns(item), !item.isSystemOwned,
+                  !isSystemHidden(item: item, systemHidden: systemHidden),
                   (presentationLayout.zone(of: item.id) == .hidden || presentationLayout.zone(of: item.id) == .alwaysHidden) else {
                 return false
             }
@@ -580,7 +630,7 @@ public final class TidyBarController {
         let merged = scanned + preservedMissing
         items = merged
         installTargetProviderOnce()
-        engine.fold(items: merged.filter { !owns($0) }, newItemZone: settings.newItemZone)
+        engine.fold(items: merged.filter { !owns($0) && !isSystemHidden(item: $0, systemHidden: systemHidden) }, newItemZone: settings.newItemZone)
         // A7「先问我」：默认策略照样先落一个确定的分区（不能让新图标悬着，
         // 否则它到底显不显示取决于 UI 有没有画那条问题），但把选择权挂出来等用户回答。
         if settings.askAboutNewItems {

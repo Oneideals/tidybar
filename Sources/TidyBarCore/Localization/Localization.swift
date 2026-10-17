@@ -97,6 +97,20 @@ public enum L10n {
     public static var launchNeedsApproval: String { tr("开机自动启动：需在系统设置里批准", "Launch at login: Requires approval in System Settings") }
     public static var launchUnavailable: String { tr("开机自动启动不可用：", "Launch at login unavailable: ") }
     public static var askAboutNewItems: String { tr("出现新图标时先问我", "Ask when new menu bar icons appear") }
+
+    // MARK: - 系统设置已隐藏应用（macOS 27+）
+    public static var systemHiddenAppsTitle: String { tr("macOS 系统设置已隐藏项", "macOS System Settings Hidden Items") }
+    public static var systemHiddenAppsSubtitle: String {
+        tr("在 macOS「系统设置 -> 菜单栏与控制中心」中被禁用的应用。TidyBar 自动感知并豁免整理，无需重复配置。",
+           "Apps disabled in macOS System Settings. TidyBar automatically detects and exempts them from management.")
+    }
+    public static var systemHiddenAppsEmpty: String {
+        tr("当前无系统设置隐藏的应用（全部菜单栏应用均由 TidyBar 统一智能收纳）。",
+           "No apps hidden by macOS System Settings (all menu bar apps managed by TidyBar).")
+    }
+    public static var systemHiddenBadge: String { tr("系统已隐藏", "System Hidden") }
+    public static var openSystemControlCenterSettings: String { tr("打开系统控制中心与菜单栏设置…", "Open macOS Control Center Settings…") }
+    public static var systemHiddenExemptNotice: String { tr("已被 macOS 系统设置隐藏，TidyBar 自动豁免二次整理", "Hidden by macOS System Settings; exempt from TidyBar arrangement") }
     public static var cardRehideTitle: String { tr("长显区域显示时间（临时浮现）", "Visible Area Dwell Time") }
     public static var cardRehideSubtitle: String { tr("从收纳抽屉点击图标临时显示在长显区域后的停留时间，支持右键唤出菜单，超时无操作自动收回。", "How long a drawer icon temporarily stays in the visible zone after being clicked.") }
     public static var rehideNever: String { tr("长显显示：从不自动收起", "Dwell Time: Never auto-rehide") }

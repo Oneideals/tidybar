@@ -61,6 +61,7 @@ let suites: [TestSuite] = [
     TestSuite("ImageCache", ImageCacheTests.testCases),
     TestSuite("PerformanceBudget", PerformanceBudgetTests.testCases),
     TestSuite("AppSettings", AppSettingsTests.testCases),
+    TestSuite("MacOSSystemSettingsReader", MacOSSystemSettingsReaderTests.testCases),
 ]
 
 let selected = filter.map { keyword in

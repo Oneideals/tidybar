@@ -185,3 +185,25 @@ enum TestDates {
     static func onWeekday(hour: Int = 11, minute: Int = 0) -> Date { on(weekday: 2, hour: hour, minute: minute) }
     static func onWeekend(hour: Int = 11, minute: Int = 0) -> Date { on(weekday: 7, hour: hour, minute: minute) }
 }
+
+final class FakeSystemSettingsReader: MacOSSystemSettingsReading, @unchecked Sendable {
+    var trackedApps: [SystemTrackedApp]
+    var hiddenBundleIDs: Set<String>
+    var openSettingsCalled = false
+
+    init(trackedApps: [SystemTrackedApp] = [], hiddenBundleIDs: Set<String> = []) {
+        self.trackedApps = trackedApps
+        self.hiddenBundleIDs = hiddenBundleIDs
+    }
+
+    func readTrackedApplications() -> [SystemTrackedApp] { trackedApps }
+    func systemHiddenBundleIDs() -> Set<String> { hiddenBundleIDs }
+    func isAppHiddenBySystem(bundleID: String) -> Bool {
+        if hiddenBundleIDs.contains(bundleID) { return true }
+        return hiddenBundleIDs.contains { $0.lowercased() == bundleID.lowercased() }
+    }
+    func openSystemSettingsControlCenter() -> Bool {
+        openSettingsCalled = true
+        return true
+    }
+}
