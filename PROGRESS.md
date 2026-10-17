@@ -1,7 +1,7 @@
 # 🚀 Project Progress & Agent Handover — tidybar
 
-> **Last Updated:** 2026-10-17T05:05:52Z (read-only projection)
-> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 283
+> **Last Updated:** 2026-10-17T05:12:35Z (read-only projection)
+> **Git State:** `clean` | **Branch:** `main` | **Events Count:** 286
 
 ---
 
@@ -21,7 +21,7 @@ _No open issues._
 
 ## 🔄 Active Leases & In-Progress Work
 
-_No active leases._
+- **antigravity** (`ee8f0e46-11c9-4abb-9a51-764429beee04`): fix(ci): 升级 GitHub Actions 到 macos-15 及 Xcode 16/Swift 6 环境 *(files: all)*
 
 ## 📝 Working Tree Changes
 
